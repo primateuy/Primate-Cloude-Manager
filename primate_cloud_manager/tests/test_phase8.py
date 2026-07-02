@@ -628,6 +628,8 @@ class TestManagedBackups(TransactionCase):
             "forum", "bucket", "p/forum/x.dump", "p/forum/x-filestore.tar.gz"
         )
         self.assertIn("set -euo pipefail", script)
+        # Guard de aws CLI (hallazgo de la prueba real: la AMI no lo trae).
+        self.assertIn("command -v aws >/dev/null", script)
         # Guarda de espacio + limpieza siempre.
         self.assertIn("df -Pm /tmp", script)
         self.assertIn("trap 'rm -f /tmp/pcm_backup_*", script)

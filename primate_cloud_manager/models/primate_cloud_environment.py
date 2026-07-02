@@ -1430,6 +1430,7 @@ class PrimateCloudEnvironment(models.Model):
             ]
         return "\n".join([
             "set -euo pipefail",
+            "command -v aws >/dev/null 2>&1 || { echo \"PCM_ERROR: aws CLI no está instalado en la instancia (el install de PCM lo trae vía snap; instalalo o re-aprovisioná)\" >&2; exit 1; }",
             "FREE_MB=$(df -Pm /tmp | awk 'NR==2 {print $4}')",
             'if [ "$FREE_MB" -lt 1024 ]; then '
             'echo "PCM_ERROR: menos de 1 GB libre en /tmp (${FREE_MB} MB)" >&2; '
@@ -1652,6 +1653,7 @@ class PrimateCloudEnvironment(models.Model):
         need_mb = int(max(backup.size_mb or 0, 1) * 1.5)
         lines = [
             "set -euo pipefail",
+            "command -v aws >/dev/null 2>&1 || { echo \"PCM_ERROR: aws CLI no está instalado en la instancia (el install de PCM lo trae vía snap; instalalo o re-aprovisioná)\" >&2; exit 1; }",
             'FNAME="/var/tmp/pcm_restore_$$.dump"',
             'FS_TAR="/var/tmp/pcm_restore_$$.tar.gz"',
             'FS_TMP="/var/tmp/pcm_restore_fs_$$"',

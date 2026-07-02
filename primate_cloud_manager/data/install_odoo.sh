@@ -45,6 +45,11 @@ apt-get install -y git python3-pip python3-venv build-essential \
     libxml2-dev libxslt1-dev libldap2-dev libsasl2-dev libpq-dev \
     libjpeg-dev nginx certbot python3-certbot-nginx wkhtmltopdf
 
+# AWS CLI: lo usan los flujos de backup/staging/restore de PCM (aws s3 cp en
+# streaming). Hallazgo de la prueba real de Fase 8: la AMI Ubuntu NO lo trae y
+# el paquete apt 'awscli' no tiene candidato en 24.04 -> snap (v2).
+command -v aws >/dev/null 2>&1 || snap install aws-cli --classic
+
 # 2. Usuario de servicio ------------------------------------------------------
 if ! id "${ODOO_USER}" >/dev/null 2>&1; then
     log "Creando usuario de servicio ${ODOO_USER}…"
