@@ -61,7 +61,29 @@
                         <span t-if="d.server_id" class="o_pcm_link"
                               t-on-click="() => this.openRecord('primate.cloud.ec2.instance', d.server_id, d.server_name)"
                               t-out="d.server_name"/>
-                        <span t-else="">—</span>
+                        <button t-else="" class="o_pcm_btn"
+                                t-on-click="() => this.assignInstance()">
+                            <i class="fa fa-link"/> Asociar a una instancia…
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Respaldos de esta base (el chip dice para qué se ejecutó) -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Respaldos</h2>
+                </div>
+                <div t-if="!(d.backups or []).length" class="o_pcm_card o_pcm_muted">
+                    Sin backups registrados para esta base.
+                </div>
+                <div t-else="" class="o_pcm_card">
+                    <div t-foreach="d.backups" t-as="bk" t-key="bk.id" class="o_pcm_line">
+                        <span class="o_pcm o_pcm_chip" t-out="bk.purpose_label"/>
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="bk.date"/>
+                            <span class="o_pcm_muted" t-if="bk.size_mb"> · <t t-out="bk.size_mb"/> MB</span>
+                        </div>
+                        <PcmStatusBadge value="bk.state" model="'primate.cloud.backup'"
+                                        field="'state'" label="bk.state_label"/>
                     </div>
                 </div>
             </t>

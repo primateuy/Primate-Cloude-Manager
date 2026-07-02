@@ -45,4 +45,12 @@ export class BaseDatosDetalle extends Component {
             this.props.onOpenRecord(model, id, name);
         }
     }
+
+    // Base suelta: abre el form nativo en el drawer para asociarla a una
+    // instancia (write de ec2_instance_id; el constraint valida el entorno).
+    assignInstance() {
+        this.env.pcm.openRecord(
+            "primate.cloud.database", this.props.recordId, this.d.name
+        );
+    }
 }

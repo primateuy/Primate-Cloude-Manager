@@ -76,6 +76,25 @@ class PrimateCloudBackup(models.Model):
         readonly=True,
         default="executed",
     )
+    purpose = fields.Selection(
+        [
+            ("scheduled", "Programado"),
+            ("manual", "Manual"),
+            ("staging", "Fuente de staging"),
+            ("pre_restore", "Pre-restore"),
+        ],
+        string="Propósito",
+        required=True,
+        readonly=True,
+        # Default "manual": los caminos reales SIEMPRE pasan el propósito
+        # explícito, así que esto solo aplica a registros previos al campo
+        # (backfill del upgrade) y a creates crudos — "Manual" es lo honesto
+        # ahí, y el chip nunca renderiza vacío.
+        default="manual",
+        help="Para qué se ejecutó: la lista de respaldos cuenta la historia "
+             "real. Todos cuentan igual para el validador (un backup es un "
+             "backup).",
+    )
     backup_date = fields.Datetime(
         string="Fecha",
         required=True,

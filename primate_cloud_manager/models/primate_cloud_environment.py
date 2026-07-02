@@ -801,7 +801,7 @@ class PrimateCloudEnvironment(models.Model):
         s3.ensure_bucket(bucket, region=region)
         source = origin._run_database_backup(
             origin_db, origin.backup_policy_id, bucket, "staging", region,
-            instance=origin_instance,
+            instance=origin_instance, purpose="staging",
         )
         if source.state != "completed":
             raise UserError(_("Falló el backup del origen: %s")
@@ -1246,7 +1246,7 @@ class PrimateCloudEnvironment(models.Model):
             ))
         self.with_delay(
             description=_("Backup manual: %s") % self.name
-        ).job_run_backup()
+        ).job_run_backup(trigger="manual")
         return {
             "type": "ir.actions.client",
             "tag": "display_notification",
@@ -1255,7 +1255,7 @@ class PrimateCloudEnvironment(models.Model):
                        "next": {"type": "ir.actions.act_window_close"}},
         }
 
-    def job_run_backup(self):
+    def job_run_backup(self, trigger="scheduled"):
         """Job: backup gestionado del entorno (pg_dump + filestore vía SSM → S3).
 
         Cubre las bases **PostgreSQL locales** (las RDS las respalda AWS con su
@@ -1289,7 +1289,10 @@ class PrimateCloudEnvironment(models.Model):
 
         databases = self.database_ids.filtered(lambda d: d.db_type == "local_pg")
         results = [
-            self._run_database_backup(database, policy, bucket, prefix, region).state
+            self._run_database_backup(
+                database, policy, bucket, prefix, region,
+                purpose="manual" if trigger == "manual" else "scheduled",
+            ).state
             for database in databases
         ]
         completed = results.count("completed")
@@ -1311,7 +1314,7 @@ class PrimateCloudEnvironment(models.Model):
         return result == "success"
 
     def _run_database_backup(self, database, policy, bucket, prefix, region,
-                             instance=None):
+                             instance=None, purpose="scheduled"):
         """Respalda UNA base. Devuelve el registro del backup.
 
         Decisiones del Bloque 3: chequeo barato del estado de la instancia
@@ -1337,6 +1340,7 @@ class PrimateCloudEnvironment(models.Model):
             "database_id": database.id,
             "backup_type": "pcm_dump",
             "source": "executed",
+            "purpose": purpose,
             "backup_date": now,
             "s3_bucket": bucket,
             "s3_key": key_base + ".dump",
@@ -1545,6 +1549,7 @@ class PrimateCloudEnvironment(models.Model):
             policy = self.backup_policy_id or backup.environment_id.backup_policy_id
             pre_record = self._run_database_backup(
                 target_db, policy, bucket, "pre-restore", region,
+                purpose="pre_restore",
             )
             if pre_record.state != "completed":
                 return fail(_(

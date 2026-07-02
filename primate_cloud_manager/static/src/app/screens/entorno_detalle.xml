@@ -57,12 +57,12 @@
                             <i class="fa fa-clone"/> Crear staging
                         </button>
                         <button t-if="d.env_type === 'staging'" class="o_pcm_btn"
-                                t-on-click="() => this.runEnvMethod('action_refresh_staging', { confirm: '¿Refrescar el staging desde su origen? Se sobrescribe la base actual.' })">
+                                t-on-click="() => this.runEnvMethod('action_refresh_staging')">
                             <i class="fa fa-refresh"/> Refrescar staging
                         </button>
                         <button t-if="d.servers.length" class="o_pcm_btn"
                                 t-on-click="() => this.syncServers()">
-                            <i class="fa fa-cloud-download"/> Sincronizar
+                            <i class="fa fa-cloud-download"/> Sincronizar servidores desde AWS
                         </button>
                     </div>
                 </div>
@@ -181,6 +181,60 @@
                         <button t-if="dep.state === 'draft'" class="o_pcm_btn"
                                 t-on-click="() => this.runDeploymentMethod(dep.id, 'action_run')">
                             <i class="fa fa-play"/> Ejecutar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Respaldos -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Respaldos</h2>
+                    <div class="o_pcm_actions">
+                        <button t-if="d.backup.policy" class="o_pcm_btn"
+                                t-on-click="() => this.runEnvMethod('action_check_backup_compliance')">
+                            <i class="fa fa-check-circle-o"/> Verificar ahora
+                        </button>
+                        <button t-if="d.backup.managed" class="o_pcm_btn o_pcm_btn_accent"
+                                t-on-click="() => this.runEnvMethod('action_run_backup')">
+                            <i class="fa fa-database"/> Respaldar ahora
+                        </button>
+                    </div>
+                </div>
+                <div class="o_pcm_card">
+                    <div class="o_pcm_line">
+                        <div class="o_pcm_line_main">
+                            <span t-if="d.backup.policy" class="o_pcm_line_name">
+                                Política: <t t-out="d.backup.policy"/>
+                            </span>
+                            <span t-else="" class="o_pcm_muted">Sin política de respaldo asignada.</span>
+                            <span class="o_pcm_muted" t-if="d.backup.last_check"> · Verificado: <t t-out="d.backup.last_check"/></span>
+                        </div>
+                        <PcmStatusBadge value="d.backup.compliance"
+                                        model="'primate.cloud.environment'"
+                                        field="'backup_compliance'"
+                                        label="d.backup.compliance_label"/>
+                    </div>
+                    <div t-if="d.backup.compliance_detail"
+                         class="o_pcm_muted o_pcm_backup_detail"
+                         t-out="d.backup.compliance_detail"/>
+                </div>
+                <div t-if="!d.backups.length" class="o_pcm_card o_pcm_muted">
+                    Sin backups registrados.
+                </div>
+                <div t-else="" class="o_pcm_card">
+                    <!-- El chip de propósito cuenta la historia real: programado /
+                         manual / fuente de staging / pre-restore. -->
+                    <div t-foreach="d.backups" t-as="bk" t-key="bk.id" class="o_pcm_line">
+                        <span class="o_pcm o_pcm_chip" t-out="bk.purpose_label"/>
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="bk.date"/>
+                            <span class="o_pcm_muted" t-if="bk.database"> · <t t-out="bk.database"/></span>
+                            <span class="o_pcm_muted" t-if="bk.size_mb"> · <t t-out="bk.size_mb"/> MB</span>
+                        </div>
+                        <PcmStatusBadge value="bk.state" model="'primate.cloud.backup'"
+                                        field="'state'" label="bk.state_label"/>
+                        <button t-if="bk.state === 'completed'" class="o_pcm_btn"
+                                t-on-click="() => this.restoreBackup(bk.id)">
+                            <i class="fa fa-history"/> Restaurar…
                         </button>
                     </div>
                 </div>

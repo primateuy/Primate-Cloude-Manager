@@ -224,6 +224,12 @@
     }
     .o_pcm_muted { color: var(--pcm-soft); }
     .o_pcm_spacer { flex: 1 1 auto; }
+    // Detalle de cumplimiento de respaldo: una línea por base (texto plano).
+    .o_pcm_backup_detail {
+        white-space: pre-line;
+        padding: 4px 0 0;
+        font-size: 12px;
+    }
     .o_pcm_mono {
         font-family: var(--o-mono-font-family, ui-monospace, monospace);
         font-size: 0.82rem;

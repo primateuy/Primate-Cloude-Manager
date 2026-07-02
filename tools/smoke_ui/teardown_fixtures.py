@@ -11,6 +11,13 @@ FIXTURE_NAME = "SMOKE UI (borrar)"
 fx = env["primate.cloud.environment"].search([("name", "=", FIXTURE_NAME)])
 removed = len(fx)
 if fx:
+    # El registro de backups es inmutable por diseño (unlink bloqueado en el
+    # modelo) y ondelete=restrict bloquearía el borrado del entorno: para el
+    # fixture del smoke se limpia por SQL directo (excepción justificada).
+    env.cr.execute(
+        "DELETE FROM primate_cloud_backup WHERE environment_id IN %s",
+        [tuple(fx.ids)],
+    )
     # Limpiar jobs fallidos de ese entorno (best-effort).
     try:
         jobs = env["queue.job"].search([("model_name", "=", "primate.cloud.environment")])

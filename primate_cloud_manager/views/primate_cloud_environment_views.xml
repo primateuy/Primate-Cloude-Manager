@@ -140,6 +140,7 @@
                                     <field name="backup_date"/>
                                     <field name="database_id"/>
                                     <field name="backup_type"/>
+                                    <field name="purpose" widget="pcm_category_chip"/>
                                     <field name="size_mb"/>
                                     <field name="state" widget="pcm_status_badge"/>
                                 </list>

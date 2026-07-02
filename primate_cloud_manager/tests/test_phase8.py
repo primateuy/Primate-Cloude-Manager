@@ -735,6 +735,44 @@ class TestManagedBackups(TransactionCase):
             self.Env._cron_run_managed_backups()
             with_delay.assert_not_called()
 
+    # --- Propósito del backup (Bloque 6: la lista cuenta la historia) ---
+    def test_purpose_programado_y_manual(self):
+        output = {"status": "Success",
+                  "stdout": "PCM_DUMP_SIZE_BYTES=1048576\n"
+                            "PCM_FS_SIZE_BYTES=0\nPCM_BACKUP_OK"}
+        ssm = mock.Mock()
+        ssm.run_script.return_value = output
+        Backup = self.env["primate.cloud.backup"]
+        with self._mock_s3(), mock.patch.object(
+                type(self.instance), "_get_ssm_service", return_value=ssm):
+            self.environment.job_run_backup()  # cron
+            scheduled = Backup.search([], order="id desc", limit=1)
+            self.environment.job_run_backup(trigger="manual")
+            manual = Backup.search([], order="id desc", limit=1)
+        self.assertEqual(scheduled.purpose, "scheduled")
+        self.assertEqual(manual.purpose, "manual")
+
+    def test_dashboard_expone_respaldos_con_proposito(self):
+        backup = self.env["primate.cloud.backup"].create({
+            "name": "fuente stg", "environment_id": self.environment.id,
+            "database_id": self.database.id, "backup_type": "pcm_dump",
+            "purpose": "staging",
+        })
+        backup.write({"state": "completed", "size_mb": 10.0})
+        data = self.env["primate.cloud.dashboard"].get_environment_detail(
+            self.environment.id)
+        self.assertEqual(data["backup"]["policy"], self.policy.display_name)
+        self.assertTrue(data["backup"]["managed"])
+        self.assertEqual(data["backup"]["compliance"], "no_policy")
+        entry = data["backups"][0]
+        self.assertEqual(entry["purpose"], "staging")
+        self.assertEqual(entry["purpose_label"], "Fuente de staging")
+        self.assertEqual(entry["state"], "completed")
+        db_data = self.env["primate.cloud.dashboard"].get_database_detail(
+            self.database.id)
+        self.assertEqual(db_data["backups"][0]["purpose_label"],
+                         "Fuente de staging")
+
     # --- In_progress zombi ---
     def test_mark_stuck_failed_umbral(self):
         """Un in_progress de 3 h se marca failed; uno de 30 min sobrevive."""

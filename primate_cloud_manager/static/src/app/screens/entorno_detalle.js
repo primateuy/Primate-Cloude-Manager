@@ -87,6 +87,13 @@ export class EntornoDetalle extends Component {
         );
     }
 
+    // Restaurar un backup: abre el wizard (con sus salvaguardas) en el drawer.
+    async restoreBackup(backupId) {
+        await runPcmModelAction(
+            this.env, this.orm, "primate.cloud.backup", "action_restore", [backupId]
+        );
+    }
+
     async runRepoMethod(repoId, method) {
         await runPcmModelAction(
             this.env, this.orm, "primate.cloud.repository", method, [repoId]

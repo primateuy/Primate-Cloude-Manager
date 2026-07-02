@@ -34,5 +34,20 @@ else:
         "odoo_version": "19",
         "odoo_edition": "community",
     })
+# Backup COMPLETADO en el fixture: habilita la sección Respaldos del hub y el
+# botón "Restaurar…" (que abre el wizard con salvaguardas en el drawer).
+Backup = env["primate.cloud.backup"]
+bk = Backup.search([("environment_id", "=", fx.id)], limit=1)
+if not bk:
+    bk = Backup.create({
+        "name": "Backup smoke (borrar)",
+        "environment_id": fx.id,
+        "backup_type": "pcm_dump",
+        "purpose": "manual",
+        "s3_bucket": "pcm-smoke-bucket",
+        "s3_key": "pcm-backups/smoke/fixture.dump",
+    })
+    bk.write({"state": "completed", "size_mb": 12.3})
+
 env.cr.commit()
 print("FIXTURE_ENV_ID", fx.id, "cuenta", fx.account_id.name, "estado", fx.state)

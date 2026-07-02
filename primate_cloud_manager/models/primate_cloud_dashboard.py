@@ -201,6 +201,11 @@ class PrimateCloudDashboard(models.AbstractModel):
         dns_state_labels = dict(Dns._fields["state"].selection)
         dep_state_labels = dict(Dep._fields["state"].selection)
         dep_type_labels = dict(Dep._fields["deployment_type"].selection)
+        Backup = self.env["primate.cloud.backup"]
+        compliance_labels = dict(Env._fields["backup_compliance"].selection)
+        backup_state_labels = dict(Backup._fields["state"].selection)
+        backup_type_labels = dict(Backup._fields["backup_type"].selection)
+        purpose_labels = dict(Backup._fields["purpose"].selection)
 
         def repo_dict(repo):
             modules = [{
@@ -278,6 +283,32 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "date": fields.Datetime.to_string(dep.execution_date) or "",
             } for dep in environment.deployment_ids[:20]],
             "repositories": [repo_dict(repo) for repo in environment.repository_ids],
+            "backup": {
+                "policy": environment.backup_policy_id.display_name or "",
+                "policy_id": environment.backup_policy_id.id or False,
+                "managed": environment.backup_policy_id.managed_by_pcm,
+                "compliance": environment.backup_compliance or "no_policy",
+                "compliance_label": compliance_labels.get(
+                    environment.backup_compliance, ""),
+                "compliance_detail": environment.backup_compliance_detail or "",
+                "last_check": fields.Datetime.to_string(
+                    environment.last_backup_check) or "",
+            },
+            # El propósito distingue la historia real de la lista (programado /
+            # manual / fuente de staging / pre-restore); para el validador
+            # todos cuentan igual.
+            "backups": [{
+                "id": backup.id, "name": backup.name,
+                "date": fields.Datetime.to_string(backup.backup_date) or "",
+                "database": backup.database_id.display_name or "",
+                "backup_type_label": backup_type_labels.get(
+                    backup.backup_type, ""),
+                "purpose": backup.purpose,
+                "purpose_label": purpose_labels.get(backup.purpose, ""),
+                "state": backup.state,
+                "state_label": backup_state_labels.get(backup.state, ""),
+                "size_mb": round(backup.size_mb or 0.0, 1),
+            } for backup in environment.backup_ids[:15]],
         }
 
     @api.model
@@ -347,6 +378,17 @@ class PrimateCloudDashboard(models.AbstractModel):
             "environment_name": db.environment_id.display_name or "",
             "server_id": db.ec2_instance_id.id or False,
             "server_name": db.ec2_instance_id.display_name or "",
+            "backups": [{
+                "id": backup.id, "name": backup.name,
+                "date": fields.Datetime.to_string(backup.backup_date) or "",
+                "purpose_label": dict(
+                    backup._fields["purpose"].selection).get(backup.purpose, ""),
+                "state": backup.state,
+                "state_label": dict(
+                    backup._fields["state"].selection).get(backup.state, ""),
+                "size_mb": round(backup.size_mb or 0.0, 1),
+            } for backup in self.env["primate.cloud.backup"].search(
+                [("database_id", "=", db.id)], limit=10)],
         }
 
     @api.model

@@ -11,6 +11,7 @@
                 <field name="environment_id"/>
                 <field name="database_id"/>
                 <field name="backup_type" widget="pcm_category_chip"/>
+                <field name="purpose" widget="pcm_category_chip"/>
                 <field name="source" optional="hide"/>
                 <field name="size_mb" optional="show"/>
                 <field name="expiry_date" optional="hide"/>
@@ -39,6 +40,7 @@
                             <field name="environment_id"/>
                             <field name="database_id"/>
                             <field name="backup_type"/>
+                            <field name="purpose"/>
                             <field name="source"/>
                             <field name="state" widget="pcm_status_badge"/>
                         </group>
