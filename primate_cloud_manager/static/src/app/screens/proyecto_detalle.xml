@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.ProyectoDetalle">
+        <div class="o_pcm_detalle">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró el registro.</div>
+
+            <t t-else="">
+                <!-- Hero -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <span class="o_pcm_spacer"/>
+                    </div>
+                </div>
+
+                <div class="o_pcm_cols2">
+                    <div class="o_pcm_card">
+                        <h2>General</h2>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Cuenta</span>
+                            <span t-if="d.account_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account_name)"
+                                  t-out="d.account_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Cliente</span><span t-out="d.partner_name or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Entornos</span><span t-out="d.environment_count"/></div>
+                    </div>
+                    <div class="o_pcm_card" t-if="d.notes">
+                        <h2>Notas</h2>
+                        <div t-out="d.notes"/>
+                    </div>
+                </div>
+
+                <!-- Entornos -->
+                <div class="o_pcm_card">
+                    <h2>Entornos</h2>
+                    <div t-foreach="d.environments" t-as="it" t-key="it.id"
+                         class="o_pcm_line o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.environment', it.id, it.name)">
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="it.name"/>
+                            <span t-if="it.env_type_label" class="o_pcm o_pcm_chip" t-out="it.env_type_label"/>
+                        </div>
+                        <PcmStatusBadge value="it.state" model="'primate.cloud.environment'"
+                                        field="'state'" label="it.state_label"/>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                    <div t-if="!d.environments.length" class="o_pcm_muted">Vacío.</div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

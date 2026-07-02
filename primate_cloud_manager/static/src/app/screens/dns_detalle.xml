@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.DnsDetalle">
+        <div class="o_pcm_detalle">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró el registro.</div>
+
+            <t t-else="">
+                <!-- Hero -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <PcmStatusBadge value="d.state"
+                                        model="'primate.cloud.dns.record'"
+                                        field="'state'" label="d.state_label"/>
+                        <span class="o_pcm_spacer"/>
+                    </div>
+                </div>
+
+                <div class="o_pcm_cols2">
+                    <div class="o_pcm_card">
+                        <h2>General</h2>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo de registro</span><span t-out="d.record_type or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Valor</span><span class="o_pcm_mono" t-out="d.record_value or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">TTL</span><span t-out="d.ttl or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Hosted Zone</span><span class="o_pcm_mono" t-out="d.hosted_zone_id or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <h2>Asociación</h2>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Entorno</span>
+                            <span t-if="d.environment_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.environment', d.environment_id, d.environment_name)"
+                                  t-out="d.environment_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Cuenta</span>
+                            <span t-if="d.account_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account_name)"
+                                  t-out="d.account_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

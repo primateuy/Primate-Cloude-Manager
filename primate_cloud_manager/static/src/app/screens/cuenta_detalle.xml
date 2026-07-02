@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.CuentaDetalle">
+        <div class="o_pcm_detalle">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró el registro.</div>
+
+            <t t-else="">
+                <!-- Hero + acciones -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <PcmStatusBadge value="d.connection_state"
+                                        model="'primate.cloud.account'"
+                                        field="'connection_state'" label="d.connection_state_label"/>
+                        <span class="o_pcm_spacer"/>
+                    </div>
+                    <div class="o_pcm_actions">
+                        <button class="o_pcm_btn o_pcm_btn_accent"
+                                t-on-click="() => this.runMethod('action_validate_connection')">
+                            <i class="fa fa-plug"/> Validar conexión
+                        </button>
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_sync_resources')">
+                            <i class="fa fa-cloud-download"/> Sincronizar recursos
+                        </button>
+                    </div>
+                </div>
+
+                <div class="o_pcm_cols2">
+                    <div class="o_pcm_card">
+                        <h2>General</h2>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Account ID</span><span class="o_pcm_mono" t-out="d.aws_account_id or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Región por defecto</span><span t-out="d.default_region or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Método de autenticación</span><span t-out="d.auth_method or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
+                    </div>
+                    <div class="o_pcm_card" t-if="d.notes">
+                        <h2>Notas</h2>
+                        <div t-out="d.notes"/>
+                    </div>
+                </div>
+
+                <!-- Entornos -->
+                <div class="o_pcm_card">
+                    <h2>Entornos</h2>
+                    <div t-foreach="d.environments" t-as="it" t-key="it.id"
+                         class="o_pcm_line o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.environment', it.id, it.name)">
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="it.name"/>
+                        </div>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                    <div t-if="!d.environments.length" class="o_pcm_muted">Vacío.</div>
+                </div>
+
+                <!-- Servidores -->
+                <div class="o_pcm_card">
+                    <h2>Servidores</h2>
+                    <div t-foreach="d.servers" t-as="it" t-key="it.id"
+                         class="o_pcm_line o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.ec2.instance', it.id, it.name)">
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="it.name"/>
+                            <span class="o_pcm_muted o_pcm_mono" t-if="it.public_ip"> · <t t-out="it.public_ip"/></span>
+                        </div>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                    <div t-if="!d.servers.length" class="o_pcm_muted">Vacío.</div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

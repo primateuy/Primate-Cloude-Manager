@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.DespliegueDetalle">
+        <div class="o_pcm_detalle">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró el registro.</div>
+
+            <t t-else="">
+                <!-- Hero + acciones -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <PcmStatusBadge value="d.state"
+                                        model="'primate.cloud.deployment'"
+                                        field="'state'" label="d.state_label"/>
+                        <span class="o_pcm_spacer"/>
+                    </div>
+                    <div class="o_pcm_actions">
+                        <button t-if="d.state === 'draft'" class="o_pcm_btn o_pcm_btn_accent"
+                                t-on-click="() => this.runMethod('action_run')">
+                            <i class="fa fa-play"/> Ejecutar
+                        </button>
+                        <button t-if="d.state === 'success' and !d.is_revert" class="o_pcm_btn o_pcm_btn_danger"
+                                t-on-click="() => this.runMethod('action_revert', { confirm: '¿Revertir este despliegue?' })">
+                            <i class="fa fa-undo"/> Revertir
+                        </button>
+                    </div>
+                </div>
+
+                <div class="o_pcm_cols2">
+                    <div class="o_pcm_card">
+                        <h2>General</h2>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span><span t-out="d.deployment_type_label or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Rama destino</span><span t-out="d.target_branch or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Commit destino</span><span class="o_pcm_mono" t-out="d.target_commit or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Commit origen</span><span class="o_pcm_mono" t-out="d.origin_commit or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Módulos</span><span t-out="d.module_names or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Es reversión</span><span t-out="d.is_revert ? 'Sí' : 'No'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Fecha de ejecución</span><span t-out="d.execution_date or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Ejecutado por</span><span t-out="d.triggered_by or '—'"/></div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <h2>Asociación</h2>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Entorno</span>
+                            <span t-if="d.environment_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.environment', d.environment_id, d.environment_name)"
+                                  t-out="d.environment_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Repositorio</span>
+                            <span t-if="d.repository_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.repository', d.repository_id, d.repository_name)"
+                                  t-out="d.repository_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="o_pcm_card" t-if="d.execution_log">
+                    <h2>Log de ejecución</h2>
+                    <pre class="o_pcm_mono" style="white-space:pre-wrap;" t-out="d.execution_log"/>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.RepositorioDetalle">
+        <div class="o_pcm_detalle">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró el registro.</div>
+
+            <t t-else="">
+                <!-- Hero + acciones -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <PcmStatusBadge value="d.sync_state"
+                                        model="'primate.cloud.repository'"
+                                        field="'sync_state'" label="d.sync_state_label"/>
+                        <span class="o_pcm_spacer"/>
+                    </div>
+                    <div class="o_pcm_actions">
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_check_sync_state')">
+                            <i class="fa fa-refresh"/> Verificar estado
+                        </button>
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_sync_commits')">
+                            <i class="fa fa-download"/> Sincronizar commits
+                        </button>
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_detect_modules')">
+                            <i class="fa fa-cubes"/> Detectar módulos
+                        </button>
+                    </div>
+                </div>
+
+                <div class="o_pcm_cols2">
+                    <div class="o_pcm_card">
+                        <h2>General</h2>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span><span t-out="d.repo_type_label or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">URL GitHub</span><span class="o_pcm_mono" t-out="d.github_url or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Organización</span><span t-out="d.organization or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Rama</span><span t-out="d.branch or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Ruta local</span><span class="o_pcm_mono" t-out="d.local_path or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Commit desplegado</span><span class="o_pcm_mono" t-out="d.current_commit or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último commit remoto</span><span class="o_pcm_mono" t-out="d.latest_commit or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <h2>Asociación</h2>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Entorno</span>
+                            <span t-if="d.environment_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.environment', d.environment_id, d.environment_name)"
+                                  t-out="d.environment_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Módulos</span><span t-out="d.module_count"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Commits</span><span t-out="d.commit_count"/></div>
+                    </div>
+                </div>
+
+                <!-- Módulos: disponibles (repo) vs instalados (base) -->
+                <div class="o_pcm_card">
+                    <h2>Módulos <span class="o_pcm_muted">(<t t-out="d.module_count"/>)</span></h2>
+                    <div t-if="!d.modules.length" class="o_pcm_muted">Sin módulos detectados.</div>
+                    <table t-else="" class="o_pcm_mod_table">
+                        <thead>
+                            <tr>
+                                <th>Módulo</th><th>Repo</th><th>Base</th><th>Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr t-foreach="d.modules" t-as="m" t-key="m.technical_name">
+                                <td>
+                                    <span class="o_pcm_mono" t-out="m.technical_name"/>
+                                    <div class="o_pcm_muted o_pcm_mod_fn" t-if="m.functional_name" t-out="m.functional_name"/>
+                                </td>
+                                <td class="o_pcm_mono" t-out="m.version or '—'"/>
+                                <td class="o_pcm_mono" t-out="m.db_version or '—'"/>
+                                <td>
+                                    <PcmStatusBadge value="m.db_state"
+                                                    model="'primate.cloud.module'"
+                                                    field="'db_state'" label="m.db_state_label"/>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Historial de commits -->
+                <div class="o_pcm_card">
+                    <h2>Commits <span class="o_pcm_muted">(<t t-out="d.commit_count"/>)</span></h2>
+                    <div t-if="!d.commits.length" class="o_pcm_muted">Sin commits sincronizados.</div>
+                    <div t-foreach="d.commits" t-as="c" t-key="c_index"
+                         t-attf-class="o_pcm_commit {{ c.is_current ? 'o_pcm_commit_current' : '' }}">
+                        <span class="o_pcm_mono o_pcm_commit_hash" t-out="c.short"/>
+                        <span class="o_pcm_commit_msg" t-out="c.message"/>
+                        <span class="o_pcm_muted o_pcm_commit_meta">
+                            <t t-if="c.author" t-out="c.author"/>
+                            <t t-if="c.is_current"> · actual</t>
+                        </span>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>
