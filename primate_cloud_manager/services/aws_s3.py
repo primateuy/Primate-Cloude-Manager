@@ -45,10 +45,12 @@ class AwsS3Service:
             code = (error.response.get("ResponseMetadata") or {}).get(
                 "HTTPStatusCode")
             if code == 403:
+                # 403 es ambiguo en HeadBucket (hallazgo de la prueba real):
+                # bucket de otra cuenta O falta s3:ListBucket en la política.
                 raise RuntimeError(
-                    "El bucket S3 '%s' existe pero pertenece a otra cuenta "
-                    "(los nombres de bucket son globales): usá otro nombre."
-                    % bucket
+                    "Sin acceso al bucket S3 '%s': o pertenece a otra cuenta "
+                    "(los nombres son globales) o a la identidad le falta "
+                    "s3:ListBucket sobre él (revisá la política IAM)." % bucket
                 ) from error
             if code != 404:
                 raise
