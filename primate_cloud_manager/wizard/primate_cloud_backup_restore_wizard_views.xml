@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_backup_restore_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.backup.restore.wizard.form</field>
+        <field name="model">primate.cloud.backup.restore.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Restaurar backup">
+                <div class="alert alert-danger" role="alert">
+                    <strong>Esta operación reemplaza la base de datos (y el
+                    filestore) del destino.</strong> El destino se respalda
+                    antes, salvo que lo desactives.
+                </div>
+                <group>
+                    <group string="Origen">
+                        <field name="backup_id"/>
+                        <field name="backup_environment_id"/>
+                        <field name="backup_date"/>
+                        <field name="backup_size_mb"/>
+                        <field name="backup_s3_key"/>
+                    </group>
+                    <group string="Destino">
+                        <field name="target_environment_id"/>
+                        <field name="target_is_production" invisible="1"/>
+                        <field name="target_instance_id"
+                               domain="[('environment_id', '=', target_environment_id), ('instance_state', '=', 'running')]"/>
+                        <field name="target_db_name"/>
+                        <field name="pre_backup"/>
+                    </group>
+                </group>
+                <div class="alert alert-warning" role="alert"
+                     invisible="not target_is_production">
+                    <strong>El destino es PRODUCCIÓN.</strong> Escribí el
+                    nombre exacto del entorno para habilitar la restauración.
+                    Producción no se neutraliza.
+                </div>
+                <group invisible="not target_is_production">
+                    <field name="confirm_environment_name"
+                           required="target_is_production"
+                           placeholder="Nombre exacto del entorno destino"/>
+                </group>
+                <footer>
+                    <button name="action_restore" type="object"
+                            string="Restaurar" class="btn-danger"
+                            confirm="Se reemplazará la base destino con el contenido del backup. ¿Continuar?"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

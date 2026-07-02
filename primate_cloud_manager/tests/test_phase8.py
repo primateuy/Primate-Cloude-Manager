@@ -808,3 +808,320 @@ class TestManagedBackups(TransactionCase):
         with mock.patch.object(type(self.environment), "with_delay") as with_delay:
             self.environment.action_run_backup()
             with_delay.assert_called_once()
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestBackupRestore(TransactionCase):
+    """Restore (Bloque 4): wizard con salvaguardas, script y job."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Forum", "account_id": self.account.id}
+        )
+        self.prod = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active",
+        })
+        self.staging = self.env["primate.cloud.environment"].create({
+            "name": "Forum Staging", "project_id": self.project.id,
+            "env_type": "staging", "state": "active",
+            "main_url": "staging.forum.primate.cloud",
+        })
+        self.prod_instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "prod-srv", "account_id": self.account.id,
+            "environment_id": self.prod.id, "aws_instance_id": "i-prod",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        self.staging_instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "stg-srv", "account_id": self.account.id,
+            "environment_id": self.staging.id, "aws_instance_id": "i-stg",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        self.prod_db = self.env["primate.cloud.database"].create({
+            "name": "forum", "account_id": self.account.id,
+            "environment_id": self.prod.id, "db_type": "local_pg",
+            "ec2_instance_id": self.prod_instance.id,
+        })
+        self.staging_db = self.env["primate.cloud.database"].create({
+            "name": "forum_stg", "account_id": self.account.id,
+            "environment_id": self.staging.id, "db_type": "local_pg",
+            "ec2_instance_id": self.staging_instance.id,
+        })
+        self.backup = self.env["primate.cloud.backup"].create({
+            "name": "Backup forum 20260701", "environment_id": self.prod.id,
+            "database_id": self.prod_db.id, "backup_type": "pcm_dump",
+            "s3_bucket": "pcm-backups-test",
+            "s3_key": "pcm-backups/Forum/Forum-Prod/forum/20260701.dump",
+            "s3_filestore_key":
+                "pcm-backups/Forum/Forum-Prod/forum/20260701-filestore.tar.gz",
+        })
+        self.backup.write({"state": "completed", "size_mb": 100.0})
+        self.Wizard = self.env["primate.cloud.backup.restore.wizard"]
+
+    def _wizard(self, **vals):
+        base = {"backup_id": self.backup.id,
+                "target_environment_id": self.staging.id,
+                "target_instance_id": self.staging_instance.id,
+                "target_db_name": "forum_stg"}
+        base.update(vals)
+        return self.Wizard.create(base)
+
+    # --- Wizard: defaults y salvaguardas ---
+    def test_default_no_propone_produccion(self):
+        """Backup de producción: el destino queda VACÍO."""
+        defaults = self.Wizard.with_context(
+            default_backup_id=self.backup.id
+        ).default_get(["backup_id", "target_environment_id", "target_db_name"])
+        self.assertFalse(defaults.get("target_environment_id"))
+        self.assertEqual(defaults.get("target_db_name"), "forum")
+
+    def test_default_origen_no_prod_se_propone(self):
+        staging_backup = self.env["primate.cloud.backup"].create({
+            "name": "Backup stg", "environment_id": self.staging.id,
+            "database_id": self.staging_db.id, "backup_type": "pcm_dump",
+        })
+        staging_backup.write({"state": "completed"})
+        defaults = self.Wizard.with_context(
+            default_backup_id=staging_backup.id
+        ).default_get(["backup_id", "target_environment_id"])
+        self.assertEqual(defaults.get("target_environment_id"), self.staging.id)
+
+    def test_prod_exige_nombre_exacto(self):
+        wizard = self._wizard(target_environment_id=self.prod.id,
+                              target_instance_id=self.prod_instance.id,
+                              target_db_name="forum",
+                              confirm_environment_name="forum prod")  # mal
+        with self.assertRaises(UserError):
+            wizard.action_restore()
+        wizard.confirm_environment_name = "Forum Prod"
+        with mock.patch.object(type(self.prod), "with_delay") as with_delay:
+            wizard.action_restore()
+            with_delay.assert_called_once()
+
+    def test_nombre_db_invalido(self):
+        wizard = self._wizard(target_db_name="forum; drop database x")
+        with self.assertRaises(UserError):
+            wizard.action_restore()
+
+    def test_instancia_de_otro_entorno(self):
+        wizard = self._wizard(target_instance_id=self.prod_instance.id)
+        with self.assertRaises(UserError):
+            wizard.action_restore()
+
+    def test_pre_restore_es_origen_valido(self):
+        """Nada filtra por tipo/nombre: un 'Pre-restore …' se puede restaurar."""
+        pre = self.env["primate.cloud.backup"].create({
+            "name": "Pre-restore forum_stg 20260702",
+            "environment_id": self.staging.id,
+            "database_id": self.staging_db.id, "backup_type": "pcm_dump",
+            "s3_bucket": "pcm-backups-test",
+            "s3_key": "pre-restore/Forum/Forum-Staging/forum_stg/x.dump",
+        })
+        pre.write({"state": "completed"})
+        action = pre.action_restore()
+        self.assertEqual(action["res_model"],
+                         "primate.cloud.backup.restore.wizard")
+        wizard = self._wizard(backup_id=pre.id)
+        with mock.patch.object(type(self.staging), "with_delay") as with_delay:
+            wizard.action_restore()
+            with_delay.assert_called_once()
+
+    def test_action_restore_solo_completed(self):
+        self.backup.write({"state": "expired"})
+        with self.assertRaises(UserError):
+            self.backup.action_restore()
+
+    # --- Script (golden, orden aprobado) ---
+    def test_script_orden_stop_terminate_drop(self):
+        script = self.env["primate.cloud.environment"] \
+            ._build_backup_restore_script("forum_stg", self.backup, True)
+        stop = script.index("systemctl stop odoo")
+        terminate = script.index("pg_terminate_backend")
+        drop = script.index("dropdb --if-exists")
+        self.assertLess(stop, terminate)
+        self.assertLess(terminate, drop)
+        # Validaciones ANTES de detener nada.
+        self.assertLess(script.index("df -Pm /var/tmp"), stop)
+        self.assertLess(script.index("PCM_ERROR_PG_MISMATCH"), stop)
+        # Punto de no retorno marcado antes del drop, y después del terminate.
+        drop_marker = script.index("PCM_DROP_STARTED")
+        self.assertLess(terminate, drop_marker)
+        self.assertLess(drop_marker, drop)
+        # Limpieza siempre + sin credenciales.
+        self.assertIn("trap 'rm -rf", script)
+        for forbidden in ("PGPASSWORD", "password", "postgresql://"):
+            self.assertNotIn(forbidden, script)
+        # Filestore: se renombra del nombre de origen al de destino.
+        self.assertIn("mv \"$FS_TMP\"/forum", script)
+        self.assertIn("chown -R odoo:odoo", script)
+
+    def test_script_start_vive_en_el_trap(self):
+        """El start de Odoo corre en CUALQUIER salida post-stop (trap EXIT),
+        no solo en el camino feliz: la EC2 puede hospedar más bases y un
+        restore fallido no puede dejar el servicio abajo para todas."""
+        script = self.env["primate.cloud.environment"] \
+            ._build_backup_restore_script("forum_stg", self.backup, True)
+        restart_trap = script.index("trap 'systemctl start odoo || true;")
+        stop = script.index("systemctl stop odoo")
+        drop = script.index("dropdb --if-exists")
+        # El trap se re-arma inmediatamente después del stop y antes del drop.
+        self.assertLess(stop, restart_trap)
+        self.assertLess(restart_trap, drop)
+        # Fuera del trap NO hay otro start (el camino feliz también sale por él).
+        self.assertEqual(script.count("systemctl start odoo"), 1)
+
+    def test_resolve_bucket_fallback_a_politica(self):
+        """Registro viejo sin s3_bucket: se resuelve por la política del
+        entorno de origen (decisión explícita, no accidente)."""
+        policy = self.env["primate.cloud.backup.policy"].create({
+            "name": "Con bucket (test)", "policy_type": "custom",
+            "managed_by_pcm": True, "s3_bucket": "bucket-politica",
+        })
+        self.prod.backup_policy_id = policy
+        legacy = self.env["primate.cloud.backup"].create({
+            "name": "viejo sin bucket", "environment_id": self.prod.id,
+            "database_id": self.prod_db.id, "backup_type": "pcm_dump",
+            "s3_key": "pcm-backups/x.dump",
+        })
+        legacy.write({"state": "completed"})
+        self.assertEqual(legacy._resolve_bucket(), "bucket-politica")
+        # Con campo propio, el campo gana.
+        self.assertEqual(self.backup._resolve_bucket(), "pcm-backups-test")
+
+    def test_job_sin_bucket_resoluble_falla_claro(self):
+        self.prod.backup_policy_id = False
+        legacy = self.env["primate.cloud.backup"].create({
+            "name": "irresoluble", "environment_id": self.prod.id,
+            "backup_type": "pcm_dump", "s3_key": "x.dump",
+        })
+        legacy.write({"state": "completed"})
+        self.assertFalse(legacy._resolve_bucket())
+        ssm = mock.Mock()
+        with mock.patch.object(type(self.staging_instance),
+                               "_get_ssm_service", return_value=ssm):
+            result = self.staging.job_restore_backup({
+                "backup_id": legacy.id, "db_name": "forum_stg",
+                "instance_id": self.staging_instance.id, "pre_backup": False,
+            })
+        self.assertFalse(result)
+        ssm.run_script.assert_not_called()
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_restore"),
+             ("resource_id", "=", self.staging.id)], limit=1,
+        )
+        self.assertIn("bucket", log.error_message)
+
+    def test_script_sin_filestore(self):
+        script = self.env["primate.cloud.environment"] \
+            ._build_backup_restore_script("forum_stg", self.backup, False)
+        self.assertNotIn("tar -xzf", script)
+        self.assertIn("PCM_RESTORE_OK", script)
+
+    # --- Job ---
+    def _run_restore(self, target=None, ssm_output=None, pre_backup=True,
+                     head=True, pre_state="completed"):
+        target = target or self.staging
+        params = {"backup_id": self.backup.id,
+                  "db_name": "forum_stg" if target == self.staging else "forum",
+                  "instance_id": (self.staging_instance
+                                  if target == self.staging
+                                  else self.prod_instance).id,
+                  "pre_backup": pre_backup}
+        ssm = mock.Mock()
+        ssm.run_script.return_value = ssm_output or {
+            "status": "Success", "stdout": "PCM_DROP_STARTED\nPCM_RESTORE_OK",
+        }
+        pre_record = self.env["primate.cloud.backup"].create({
+            "name": "Pre-restore x", "environment_id": target.id,
+            "backup_type": "pcm_dump", "s3_bucket": "pcm-backups-test",
+            "s3_key": "pre-restore/x.dump",
+        })
+        pre_record.write({"state": pre_state})
+        head_result = {"key": "x", "size": 1} if head else None
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value=head_result), \
+                mock.patch.object(type(target), "_run_database_backup",
+                                  return_value=pre_record) as pre_mock, \
+                mock.patch.object(type(target), "_staging_neutralize") \
+                as neutralize, \
+                mock.patch.object(
+                    type(self.staging_instance), "_get_ssm_service",
+                    return_value=ssm):
+            result = target.job_restore_backup(params)
+        return result, ssm, neutralize, pre_mock, pre_record
+
+    def test_job_exitoso_neutraliza_staging(self):
+        result, ssm, neutralize, _pre, _rec = self._run_restore()
+        self.assertTrue(result)
+        ssm.run_script.assert_called_once()
+        neutralize.assert_called_once()
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_restore"),
+             ("resource_id", "=", self.staging.id)], limit=1,
+        )
+        self.assertEqual(log.result, "success")
+
+    def test_job_prod_no_neutraliza(self):
+        result, _ssm, neutralize, _pre, _rec = self._run_restore(
+            target=self.prod)
+        self.assertTrue(result)
+        neutralize.assert_not_called()
+
+    def test_job_post_drop_muestra_pre_backup(self):
+        """Fracaso post-drop: la key del pre-backup queda a la vista."""
+        output = {"status": "Failed",
+                  "stdout": "PCM_DROP_STARTED", "stderr": "disco lleno"}
+        result, _ssm, _n, _pre, pre_record = self._run_restore(
+            ssm_output=output)
+        self.assertFalse(result)
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_restore"),
+             ("resource_id", "=", self.staging.id)], limit=1,
+        )
+        self.assertEqual(log.result, "failed")
+        self.assertIn("restaurable con este pre-backup", log.error_message)
+        self.assertIn(pre_record.s3_key, log.error_message)
+        self.assertIn("disco lleno", log.error_message)
+
+    def test_job_pre_drop_no_menciona_pre_backup(self):
+        output = {"status": "Failed", "stdout": "",
+                  "stderr": "PCM_ERROR: espacio insuficiente"}
+        result, _ssm, _n, _pre, _rec = self._run_restore(ssm_output=output)
+        self.assertFalse(result)
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_restore"),
+             ("resource_id", "=", self.staging.id)], limit=1,
+        )
+        self.assertNotIn("restaurable con este pre-backup",
+                         log.error_message or "")
+
+    def test_job_pg_mismatch_mensaje_claro(self):
+        output = {"status": "Failed", "stdout": "",
+                  "stderr": "PCM_ERROR_PG_MISMATCH origen=16 destino=14"}
+        result, _ssm, _n, _pre, _rec = self._run_restore(ssm_output=output)
+        self.assertFalse(result)
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_restore"),
+             ("resource_id", "=", self.staging.id)], limit=1,
+        )
+        self.assertIn("PostgreSQL incompatible", log.error_message)
+
+    def test_job_dump_ausente_aborta_sin_tocar(self):
+        result, ssm, _n, _pre, _rec = self._run_restore(head=False)
+        self.assertFalse(result)
+        ssm.run_script.assert_not_called()
+
+    def test_job_pre_backup_fallido_aborta(self):
+        result, ssm, _n, _pre, _rec = self._run_restore(pre_state="failed")
+        self.assertFalse(result)
+        ssm.run_script.assert_not_called()
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_restore"),
+             ("resource_id", "=", self.staging.id)], limit=1,
+        )
+        self.assertIn("pre-backup", log.error_message)

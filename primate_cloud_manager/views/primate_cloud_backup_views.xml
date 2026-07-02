@@ -24,6 +24,12 @@
         <field name="model">primate.cloud.backup</field>
         <field name="arch" type="xml">
             <form string="Backup" class="o_pcm" create="false" edit="false" delete="false">
+                <header>
+                    <button name="action_restore" type="object"
+                            string="Restaurar…" class="btn-primary"
+                            groups="primate_cloud_manager.group_cloud_admin"
+                            invisible="state != 'completed'"/>
+                </header>
                 <sheet>
                     <div class="oe_title">
                         <h1><field name="name"/></h1>
@@ -40,6 +46,7 @@
                             <field name="backup_date"/>
                             <field name="expiry_date"/>
                             <field name="size_mb"/>
+                            <field name="s3_bucket"/>
                             <field name="s3_key"/>
                             <field name="s3_filestore_key"/>
                         </group>

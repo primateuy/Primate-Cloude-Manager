@@ -95,6 +95,11 @@ class PrimateCloudBackup(models.Model):
         default="in_progress",
         index=True,
     )
+    s3_bucket = fields.Char(
+        string="Bucket S3", readonly=True,
+        help="Se fija al ejecutar: si la política cambia de bucket después, "
+             "este backup sigue siendo localizable.",
+    )
     s3_key = fields.Char(string="Key S3 (dump)")
     s3_filestore_key = fields.Char(string="Key S3 (filestore)")
     size_mb = fields.Float(string="Tamaño (MB)")
@@ -103,6 +108,38 @@ class PrimateCloudBackup(models.Model):
         help="Fecha de backup + retención de la política al momento de ejecutarlo.",
     )
     error_message = fields.Text(string="Mensaje de error")
+
+    def _resolve_bucket(self):
+        """Bucket S3 del backup, con fallback EXPLÍCITO para registros creados
+        antes de que existiera el campo ``s3_bucket``: el bucket de la política
+        del entorno de origen. Si ninguno está definido devuelve False — el
+        llamador falla con mensaje claro, nunca se adivina un bucket.
+        """
+        self.ensure_one()
+        return (self.s3_bucket
+                or self.environment_id.backup_policy_id.s3_bucket
+                or False)
+
+    def action_restore(self):
+        """Abre el asistente de restauración de este backup.
+
+        Sin filtro por tipo/nombre: un registro "Pre-restore …" es un backup
+        como cualquiera y puede ser el origen de una recuperación.
+        """
+        self.ensure_one()
+        if self.state != "completed":
+            raise UserError(
+                _("Solo se puede restaurar un backup completado (estado: %s).")
+                % self.state
+            )
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Restaurar backup"),
+            "res_model": "primate.cloud.backup.restore.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_backup_id": self.id},
+        }
 
     @api.model
     def _mark_stuck_failed(self, now=None):

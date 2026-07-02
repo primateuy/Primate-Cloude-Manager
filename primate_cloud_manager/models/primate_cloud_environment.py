@@ -1157,11 +1157,10 @@ class PrimateCloudEnvironment(models.Model):
             return False
 
         databases = self.database_ids.filtered(lambda d: d.db_type == "local_pg")
-        results = []
-        for database in databases:
-            results.append(self._run_database_backup(
-                database, policy, bucket, prefix, region
-            ))
+        results = [
+            self._run_database_backup(database, policy, bucket, prefix, region).state
+            for database in databases
+        ]
         completed = results.count("completed")
         if not results:
             result, summary = "success", _("Sin bases PostgreSQL locales que "
@@ -1181,7 +1180,7 @@ class PrimateCloudEnvironment(models.Model):
         return result == "success"
 
     def _run_database_backup(self, database, policy, bucket, prefix, region):
-        """Respalda UNA base local. Devuelve el estado final del registro.
+        """Respalda UNA base local. Devuelve el registro del backup.
 
         Decisiones del Bloque 3: chequeo barato del estado de la instancia
         ANTES de tocar SSM; nunca se enciende una instancia por un backup;
@@ -1203,6 +1202,7 @@ class PrimateCloudEnvironment(models.Model):
             "backup_type": "pcm_dump",
             "source": "executed",
             "backup_date": now,
+            "s3_bucket": bucket,
             "s3_key": key_base + ".dump",
             "s3_filestore_key": key_base + "-filestore.tar.gz",
             "expiry_date": expiry,
@@ -1212,7 +1212,7 @@ class PrimateCloudEnvironment(models.Model):
             record.write({"state": "failed",
                           "error_message": _("La base no tiene una instancia "
                                              "EC2 asociada.")})
-            return "failed"
+            return record
         if instance.instance_state != "running":
             record.write({"state": "failed",
                           "error_message": _("Instancia %(name)s detenida "
@@ -1220,7 +1220,7 @@ class PrimateCloudEnvironment(models.Model):
                                              "enciende infra por un backup.",
                                              name=instance.name,
                                              state=instance.instance_state)})
-            return "failed"
+            return record
         try:
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id,
@@ -1235,19 +1235,19 @@ class PrimateCloudEnvironment(models.Model):
         except Exception as error:  # noqa: BLE001 - SSM inaccesible: se registra
             record.write({"state": "failed",
                           "error_message": _("SSM inaccesible: %s") % error})
-            return "failed"
+            return record
         stdout = output.get("stdout") or ""
         if output.get("status") != "Success" or "PCM_BACKUP_OK" not in stdout:
             record.write({"state": "failed",
                           "error_message": (output.get("stderr")
                                             or stdout or output.get("status"))})
-            return "failed"
+            return record
         sizes = self._parse_backup_sizes(stdout)
         total_mb = (sizes.get("PCM_DUMP_SIZE_BYTES", 0)
                     + sizes.get("PCM_FS_SIZE_BYTES", 0)) / (1024.0 * 1024.0)
         record.write({"state": "completed", "size_mb": total_mb})
         database.write({"last_backup_date": now})
-        return "completed"
+        return record
 
     @api.model
     def _build_backup_script(self, db_name, bucket, dump_key, filestore_key):
@@ -1305,6 +1305,243 @@ class PrimateCloudEnvironment(models.Model):
     def _backup_slug(name):
         """Nombre seguro para keys S3 (sin espacios ni caracteres raros)."""
         return re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "").strip()) or "sin-nombre"
+
+    # ------------------------------------------------------------------
+    # Respaldos (Fase 8): restore (Bloque 4)
+    # ------------------------------------------------------------------
+    def job_restore_backup(self, params):
+        """Job: restaura un backup sobre este entorno (el DESTINO).
+
+        Regla de oro: **validar todo antes de dropear** — registro y objetos
+        en S3, instancia corriendo, pre-backup del destino, espacio en disco y
+        compatibilidad de versión PostgreSQL (estas dos últimas dentro del
+        script, también antes del drop). Si algo falla DESPUÉS del drop, el
+        mensaje incluye explícitamente la key del pre-backup: el operador ve
+        su camino de recuperación sin buscarlo (sin auto-rollback en v1,
+        decisión consciente).
+
+        Args:
+            params (dict): ``backup_id``, ``db_name``, ``instance_id``,
+                ``pre_backup`` (bool).
+        """
+        self.ensure_one()
+        backup = self.env["primate.cloud.backup"].browse(
+            params["backup_id"]
+        ).exists()
+        db_name = params["db_name"]
+        instance = self.env["primate.cloud.ec2.instance"].browse(
+            params["instance_id"]
+        ).exists()
+        log_name = _("Restaurar %(backup)s → %(env)s",
+                     backup=backup.name or "?", env=self.name)
+
+        def fail(message, result="failed"):
+            self._log("backup_restore", name=log_name, result=result,
+                      error_message=message)
+            self.message_post(body=_("Restore fallido: %s") % message)
+            return False
+
+        # 1. Registro válido + objetos realmente en S3 (¿los borró el lifecycle?).
+        if not backup or backup.state != "completed":
+            return fail(_("El backup no está disponible (estado: %s).")
+                        % (backup.state if backup else "?"))
+        # Fallback explícito para registros previos al campo s3_bucket
+        # (decisión Bloque 4): el bucket de la política del entorno de origen.
+        bucket = backup._resolve_bucket()
+        if not bucket or not backup.s3_key:
+            return fail(_(
+                "No se pudo resolver el bucket del backup: el registro no lo "
+                "tiene y la política del entorno de origen tampoco lo define "
+                "(o falta la key S3)."))
+        origin_account = backup.environment_id.account_id
+        region = origin_account.default_region
+        try:
+            s3 = aws_s3.AwsS3Service(origin_account._get_aws_service())
+            if not s3.head_object(bucket, backup.s3_key, region=region):
+                return fail(_(
+                    "El dump ya no está en S3 (¿expiró por lifecycle?): "
+                    "s3://%(bucket)s/%(key)s",
+                    bucket=bucket, key=backup.s3_key))
+            has_filestore = bool(backup.s3_filestore_key) and bool(
+                s3.head_object(bucket, backup.s3_filestore_key,
+                               region=region))
+        except Exception as error:  # noqa: BLE001 - se audita y aborta
+            return fail(_("No se pudo verificar el dump en S3: %s") % error)
+
+        # 2. Instancia destino corriendo (no se enciende infra para restaurar).
+        if not instance or instance.environment_id != self:
+            return fail(_("La instancia destino no pertenece al entorno."))
+        if instance.instance_state != "running":
+            return fail(_("La instancia destino no está corriendo (estado: "
+                          "%s). No se enciende infra para restaurar.")
+                        % instance.instance_state)
+
+        # 3. Pre-backup del destino (red de seguridad): si falla, se ABORTA.
+        pre_record = None
+        target_db = self.env["primate.cloud.database"].search(
+            [("environment_id", "=", self.id), ("name", "=", db_name)], limit=1,
+        )
+        if params.get("pre_backup") and target_db:
+            policy = self.backup_policy_id or backup.environment_id.backup_policy_id
+            pre_record = self._run_database_backup(
+                target_db, policy, bucket, "pre-restore", region,
+            )
+            if pre_record.state != "completed":
+                return fail(_(
+                    "El pre-backup del destino falló (%s): se aborta el "
+                    "restore. La base destino quedó intacta.")
+                    % (pre_record.error_message or "?"))
+        elif params.get("pre_backup"):
+            self.message_post(body=_(
+                "Pre-backup omitido: la base '%s' no existe aún en el destino."
+            ) % db_name)
+
+        # 4-5. Script: valida espacio y versión PG ANTES del drop; después
+        # stop Odoo → terminar conexiones → drop → restore → filestore → start.
+        try:
+            output = instance._get_ssm_service().run_script(
+                instance.aws_instance_id,
+                self._build_backup_restore_script(db_name, backup, has_filestore),
+                region=instance.region or region,
+                comment="pcm restore: %s" % db_name,
+                timeout=3600,
+            )
+        except Exception as error:  # noqa: BLE001 - SSM inaccesible
+            return fail(_("SSM inaccesible: %s") % error)
+        stdout = output.get("stdout") or ""
+        stderr = output.get("stderr") or ""
+        if output.get("status") != "Success" or "PCM_RESTORE_OK" not in stdout:
+            error_text = stderr or stdout or output.get("status")
+            if "PCM_ERROR_PG_MISMATCH" in stdout + stderr:
+                error_text = _(
+                    "Versión de PostgreSQL incompatible: el dump viene de una "
+                    "versión más nueva que la del destino (actualizá "
+                    "PostgreSQL del destino o usá otra instancia). Detalle: %s"
+                ) % error_text
+            if "PCM_DROP_STARTED" in stdout:
+                # Fracaso POST-DROP: el camino de recuperación, a la vista.
+                if pre_record:
+                    error_text = _(
+                        "Falló DESPUÉS del drop de '%(db)s'. El destino quedó "
+                        "restaurable con este pre-backup: "
+                        "s3://%(bucket)s/%(key)s. Error: %(error)s",
+                        db=db_name, bucket=pre_record.s3_bucket,
+                        key=pre_record.s3_key, error=error_text)
+                else:
+                    error_text = _(
+                        "Falló DESPUÉS del drop de '%(db)s' y NO hay "
+                        "pre-backup (se omitió o la base no existía). "
+                        "Error: %(error)s", db=db_name, error=error_text)
+            return fail(error_text)
+
+        # 6. Neutralización: siempre que el destino NO sea producción.
+        if self.env_type != "production":
+            url = "https://%s" % (self.main_url or self.name)
+            try:
+                self._staging_neutralize(
+                    instance, {"db_name": db_name},
+                    instance.region or region, url,
+                )
+            except Exception as error:  # noqa: BLE001 - alerta fuerte, sin silencio
+                return fail(_(
+                    "Restore OK pero la NEUTRALIZACIÓN falló: %s. NO usar el "
+                    "entorno hasta neutralizar a mano.") % error,
+                    result="partial")
+
+        # 7. Registro de la base destino (si no existía) + bitácora.
+        if not target_db:
+            self.env["primate.cloud.database"].create({
+                "name": db_name, "account_id": self.account_id.id,
+                "environment_id": self.id, "db_type": "local_pg",
+                "ec2_instance_id": instance.id,
+            })
+        extra = "" if has_filestore else _(" (sin filestore: el backup no "
+                                           "tenía o el objeto ya no está)")
+        self._log("backup_restore", name=log_name, result="success")
+        self.message_post(body=_(
+            "Backup %(backup)s restaurado en '%(db)s' (instancia "
+            "%(instance)s)%(extra)s.", backup=backup.name, db=db_name,
+            instance=instance.name, extra=extra))
+        return True
+
+    @api.model
+    def _build_backup_restore_script(self, db_name, backup, has_filestore):
+        """Script SSM del restore (orden aprobado en el diseño del Bloque 4).
+
+        Valida TODO antes de dropear (espacio en disco, versión PostgreSQL);
+        recién después: **stop Odoo → pg_terminate_backend → dropdb** →
+        createdb → pg_restore → filestore → start Odoo. ``PCM_DROP_STARTED``
+        marca el punto de no retorno: si el script falla después, el job arma
+        el mensaje de recuperación con la key del pre-backup.
+        """
+        db = shlex.quote(db_name)
+        bkt = shlex.quote(backup._resolve_bucket())
+        dump_key = shlex.quote(backup.s3_key)
+        # El nombre del directorio dentro del tar es el de la BD de ORIGEN.
+        origin_dir = shlex.quote(backup.database_id.name or db_name)
+        need_mb = int(max(backup.size_mb or 0, 1) * 1.5)
+        lines = [
+            "set -euo pipefail",
+            'FNAME="/var/tmp/pcm_restore_$$.dump"',
+            'FS_TAR="/var/tmp/pcm_restore_$$.tar.gz"',
+            'FS_TMP="/var/tmp/pcm_restore_fs_$$"',
+            "trap 'rm -rf \"$FNAME\" \"$FS_TAR\" \"$FS_TMP\" 2>/dev/null "
+            "|| true' EXIT",
+            # Guarda de espacio: acá el dump SÍ baja a disco (pg_restore -l
+            # necesita el archivo y el destino no es la producción de origen).
+            "NEED_MB=%d" % need_mb,
+            "FREE_MB=$(df -Pm /var/tmp | awk 'NR==2 {print $4}')",
+            'if [ "$FREE_MB" -lt "$NEED_MB" ]; then echo "PCM_ERROR: espacio '
+            'insuficiente en /var/tmp (${FREE_MB} MB < ${NEED_MB} MB)" >&2; '
+            "exit 1; fi",
+            'aws s3 cp s3://%s/%s "$FNAME" --only-show-errors' % (bkt, dump_key),
+            # Compatibilidad PostgreSQL ANTES de tocar nada del destino.
+            'SRC_VER=$(sudo -u postgres pg_restore -l "$FNAME" | '
+            "sed -n 's/.*dumped from database version "
+            "\\([0-9]*\\).*/\\1/p' | head -1)",
+            'DST_VER=$(sudo -u postgres psql -tAc "show server_version" '
+            "| cut -d. -f1)",
+            'if [ -n "$SRC_VER" ] && [ "$SRC_VER" -gt "$DST_VER" ]; then '
+            'echo "PCM_ERROR_PG_MISMATCH origen=$SRC_VER destino=$DST_VER" '
+            ">&2; exit 1; fi",
+            # Orden aprobado: 1) detener Odoo, 2) terminar conexiones
+            # residuales, 3) recién ahí el drop.
+            "systemctl stop odoo",
+            # Desde acá, CUALQUIER salida (éxito o fallo) re-arranca Odoo: la
+            # EC2 puede hospedar más bases y un restore fallido no puede dejar
+            # el servicio abajo para todas. El start vive en el trap EXIT.
+            "trap 'systemctl start odoo || true; rm -rf \"$FNAME\" \"$FS_TAR\" "
+            "\"$FS_TMP\" 2>/dev/null || true' EXIT",
+            'sudo -u postgres psql -tAc "SELECT pg_terminate_backend(pid) '
+            "FROM pg_stat_activity WHERE datname = '%s' AND pid <> "
+            'pg_backend_pid();" || true' % db_name,
+            'echo "PCM_DROP_STARTED"',
+            "sudo -u postgres dropdb --if-exists %s" % db,
+            "sudo -u postgres createdb -O odoo %s" % db,
+            'sudo -u postgres pg_restore -d %s "$FNAME" || true' % db,
+            # pg_restore devuelve != 0 por avisos ignorables (owners, etc.):
+            # la sanidad real es que la base restaurada sea un Odoo.
+            'sudo -u postgres psql -d %s -tAc "SELECT count(*) FROM '
+            'ir_module_module" >/dev/null' % db,
+        ]
+        if has_filestore:
+            filestore_key = shlex.quote(backup.s3_filestore_key)
+            target_dir = "%s/%s" % (BACKUP_FILESTORE_BASE, db)
+            lines += [
+                'aws s3 cp s3://%s/%s "$FS_TAR" --only-show-errors'
+                % (bkt, filestore_key),
+                'mkdir -p "$FS_TMP"',
+                'tar -xzf "$FS_TAR" -C "$FS_TMP"',
+                "rm -rf %s" % target_dir,
+                'mv "$FS_TMP"/%s %s' % (origin_dir, target_dir),
+                "chown -R odoo:odoo %s" % target_dir,
+            ]
+        lines += [
+            # El start NO va acá: lo hace el trap EXIT re-armado tras el stop,
+            # para cubrir también todos los caminos de error.
+            'echo "PCM_RESTORE_OK"',
+        ]
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Constructores de scripts SSM (puros, testeables por contenido)

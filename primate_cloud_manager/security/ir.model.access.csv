@@ -44,3 +44,4 @@ access_deployment_admin,primate.cloud.deployment admin,model_primate_cloud_deplo
 access_ec2_create_wizard_admin,ec2.create.wizard admin,model_primate_cloud_ec2_create_wizard,group_cloud_admin,1,1,1,1
 access_provision_wizard_admin,provision.wizard admin,model_primate_cloud_provision_wizard,group_cloud_admin,1,1,1,1
 access_staging_create_wizard_admin,staging.create.wizard admin,model_primate_cloud_staging_create_wizard,group_cloud_admin,1,1,1,1
+access_backup_restore_wizard_admin,backup.restore.wizard admin,model_primate_cloud_backup_restore_wizard,group_cloud_admin,1,1,1,1
