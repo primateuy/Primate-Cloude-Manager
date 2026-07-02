@@ -642,6 +642,19 @@ class TestManagedBackups(TransactionCase):
             self.assertNotIn(forbidden, script)
         self.assertIn("PCM_BACKUP_OK", script)
 
+    def test_scripts_corren_bajo_bash(self):
+        """SSM ejecuta con dash (sin pipefail): backup y restore van envueltos
+        en un heredoc de bash. Hallazgo de la prueba real de Fase 8."""
+        Env = self.env["primate.cloud.environment"]
+        backup_script = Env._build_backup_script("forum", "b", "k", "kf")
+        self.assertTrue(backup_script.startswith("bash <<'PCM_BASH_EOF'"))
+        self.assertTrue(backup_script.rstrip().endswith("PCM_BASH_EOF"))
+        self.assertIn("set -euo pipefail", backup_script)
+        restore_script = Env._build_backup_restore_script(
+            "forum_stg", self.env["primate.cloud.backup"], False
+        ) if False else None
+        # (el restore usa self.backup en su clase; acá solo validamos el backup)
+
     def test_parse_backup_sizes(self):
         stdout = "PCM_DUMP_SIZE_BYTES=1048576\nruido\nPCM_FS_SIZE_BYTES=2097152\nPCM_BACKUP_OK"
         sizes = self.Env._parse_backup_sizes(stdout)
@@ -1087,6 +1100,12 @@ class TestBackupRestore(TransactionCase):
              ("resource_id", "=", self.staging.id)], limit=1,
         )
         self.assertIn("bucket", log.error_message)
+
+    def test_restore_script_corre_bajo_bash(self):
+        script = self.env["primate.cloud.environment"] \
+            ._build_backup_restore_script("forum_stg", self.backup, True)
+        self.assertTrue(script.startswith("bash <<'PCM_BASH_EOF'"))
+        self.assertTrue(script.rstrip().endswith("PCM_BASH_EOF"))
 
     def test_script_sin_filestore(self):
         script = self.env["primate.cloud.environment"] \

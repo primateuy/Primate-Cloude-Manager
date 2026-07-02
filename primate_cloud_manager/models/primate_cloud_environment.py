@@ -1428,7 +1428,7 @@ class PrimateCloudEnvironment(models.Model):
                 "sudo -u postgres pg_dump -Fc -d %s | "
                 "aws s3 cp - s3://%s/%s --only-show-errors" % (db, bkt, dump),
             ]
-        return "\n".join([
+        return self._wrap_bash("\n".join([
             "set -euo pipefail",
             "command -v aws >/dev/null 2>&1 || { echo \"PCM_ERROR: aws CLI no está instalado en la instancia (el install de PCM lo trae vía snap; instalalo o re-aprovisioná)\" >&2; exit 1; }",
             "FREE_MB=$(df -Pm /tmp | awk 'NR==2 {print $4}')",
@@ -1449,7 +1449,19 @@ class PrimateCloudEnvironment(models.Model):
             '  echo "PCM_FS_SIZE_BYTES=0"',
             "fi",
             'echo "PCM_BACKUP_OK"',
-        ])
+        ]))
+
+    @staticmethod
+    def _wrap_bash(body):
+        """Envuelve un script para que corra bajo bash vía heredoc.
+
+        SSM (documento AWS-RunShellScript) ejecuta con ``/bin/sh`` = dash en
+        Ubuntu, que NO soporta ``set -o pipefail``. Sin pipefail, un ``pg_dump``
+        que falla en ``pg_dump | aws s3 cp`` dejaría subir un dump truncado sin
+        error. El heredoc con marcador entrecomillado evita expansiones del
+        shell externo; bash hace las suyas adentro.
+        """
+        return "bash <<'PCM_BASH_EOF'\n%s\nPCM_BASH_EOF" % body
 
     @staticmethod
     def _parse_backup_sizes(stdout):
@@ -1713,7 +1725,9 @@ class PrimateCloudEnvironment(models.Model):
             # para cubrir también todos los caminos de error.
             'echo "PCM_RESTORE_OK"',
         ]
-        return "\n".join(lines)
+        # Bajo bash (heredoc): usa pipefail/PIPESTATUS y arrays si hiciera falta;
+        # SSM corre con dash, que no soporta pipefail.
+        return self._wrap_bash("\n".join(lines))
 
     # ------------------------------------------------------------------
     # Constructores de scripts SSM (puros, testeables por contenido)
