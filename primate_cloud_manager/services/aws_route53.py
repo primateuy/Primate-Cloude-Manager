@@ -93,6 +93,65 @@ class AwsRoute53Service:
         )
         return response.get("ChangeInfo", {}).get("Id")
 
+    def delete_record(
+        self, hosted_zone_id, name, record_type, value, ttl=300, comment=None
+    ):
+        """Borra un registro DNS (acción ``DELETE``).
+
+        Route 53 exige el ``ResourceRecordSet`` EXACTO (nombre, tipo, TTL y
+        valores) para borrar; se toma del registro ya conocido por PCM. Falla
+        con ``InvalidChangeBatch`` si el RRSet no coincide con el real.
+
+        Args:
+            hosted_zone_id (str): ID de la zona (sin prefijo ``/hostedzone/``).
+            name (str): nombre del registro.
+            record_type (str): tipo (``A``, ``CNAME``, ``TXT``, ``MX``).
+            value (str|list[str]): valor(es) exactos del registro a borrar.
+            ttl (int): TTL exacto del registro.
+            comment (str, optional): comentario del change batch.
+
+        Returns:
+            str: el Change Id devuelto por AWS.
+        """
+        values = [value] if isinstance(value, str) else list(value)
+        client = self._base.get_client("route53")
+        response = client.change_resource_record_sets(
+            HostedZoneId=hosted_zone_id,
+            ChangeBatch={
+                "Comment": (comment or "primate_cloud_manager")[:256],
+                "Changes": [
+                    {
+                        "Action": "DELETE",
+                        "ResourceRecordSet": {
+                            "Name": name,
+                            "Type": record_type,
+                            "TTL": ttl,
+                            "ResourceRecords": [{"Value": v} for v in values],
+                        },
+                    }
+                ],
+            },
+        )
+        return response.get("ChangeInfo", {}).get("Id")
+
+    def get_change_status(self, change_id):
+        """Estado de propagación de un cambio: ``INSYNC`` o ``PENDING``.
+
+        Route 53 confirma un cambio de forma asíncrona: el ``ChangeId`` que
+        devuelve ``change_resource_record_sets`` nace ``PENDING`` y pasa a
+        ``INSYNC`` al propagar. Se consulta para no mostrar "sincronizado"
+        antes de tiempo.
+
+        Args:
+            change_id (str): el ``ChangeId`` (ej.: ``/change/C0123...``).
+
+        Returns:
+            str: ``"INSYNC"`` / ``"PENDING"`` (o ``None`` si no se pudo leer).
+        """
+        client = self._base.get_client("route53")
+        response = client.get_change(Id=change_id)
+        return response.get("ChangeInfo", {}).get("Status")
+
     @staticmethod
     def _normalize_record(record_set, hosted_zone_id):
         """Normaliza un ResourceRecordSet (incluye registros de tipo alias)."""

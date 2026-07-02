@@ -1,0 +1,219 @@
+# -*- coding: utf-8 -*-
+"""Tests de Fase 8.5 — Bloque 1: cimientos del CRUD de DNS.
+
+Servicio aws_route53 (delete + get_change, con moto), campos y reglas del
+modelo dns.record: guardia de borrado, validación de forma por tipo, detección
+de divergencia en el sync y comparación multi-valor.
+"""
+import unittest
+
+from odoo.exceptions import ValidationError
+from odoo.tests.common import TransactionCase, tagged
+
+from ..models.primate_cloud_operation_log import ACTION_TYPES
+from ..services import aws_route53
+
+try:
+    import boto3
+    from moto import mock_aws
+
+    HAS_MOTO = True
+except ImportError:  # pragma: no cover
+    HAS_MOTO = False
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestDnsModelPhase85(TransactionCase):
+    """Modelo dns.record: guardia, validación, divergencia (sin AWS)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Forum", "account_id": self.account.id}
+        )
+        self.prod = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active",
+        })
+        self.staging = self.env["primate.cloud.environment"].create({
+            "name": "Forum Staging", "project_id": self.project.id,
+            "env_type": "staging", "state": "active",
+        })
+        self.Dns = self.env["primate.cloud.dns.record"]
+
+    def _record(self, **vals):
+        base = {
+            "name": "forum.primate.cloud", "account_id": self.account.id,
+            "hosted_zone_id": "Z123", "record_type": "A",
+            "record_value": "1.2.3.4", "ttl": 300,
+        }
+        base.update(vals)
+        return self.Dns.create(base)
+
+    # --- Guardia de borrado (ajuste aprobado: sin entorno = alta) ---
+    def test_guardia_alta_en_produccion(self):
+        rec = self._record(environment_id=self.prod.id)
+        self.assertTrue(rec.delete_needs_ack)
+
+    def test_guardia_baja_en_no_produccion(self):
+        rec = self._record(environment_id=self.staging.id)
+        self.assertFalse(rec.delete_needs_ack)
+
+    def test_guardia_alta_sin_entorno(self):
+        """Registro huérfano (sin entorno): 'desconocido' = potencialmente
+        producción → fricción ALTA, nunca baja."""
+        rec = self._record(environment_id=False)
+        self.assertTrue(rec.delete_needs_ack)
+
+    # --- Validación de forma por tipo ---
+    def test_validate_a_ipv4(self):
+        self.Dns._validate_dns_value("A", ["1.2.3.4", "10.0.0.1"])
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("A", ["1.2.3.4", "no-ip"])
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("A", ["999.1.1.1"])
+
+    def test_validate_cname_unico_hostname(self):
+        self.Dns._validate_dns_value("CNAME", ["forum.primate.cloud"])
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("CNAME", ["a.com", "b.com"])  # >1
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("CNAME", ["1.2.3.4"])  # no hostname
+
+    def test_validate_mx_prioridad_host(self):
+        self.Dns._validate_dns_value("MX", ["10 mail.forum.cloud"])
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("MX", ["mail.forum.cloud"])  # sin prio
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("MX", ["10 no_host con espacio"])
+
+    def test_validate_txt_no_vacio_y_tipo_desconocido(self):
+        self.Dns._validate_dns_value("TXT", ["v=spf1 -all"])
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("A", [])  # sin valores
+        with self.assertRaises(ValidationError):
+            self.Dns._validate_dns_value("AAAA", ["::1"])  # no soportado v1
+
+    # --- Comparación multi-valor (conjuntos, sin orden) ---
+    def test_valores_difieren_por_conjunto(self):
+        self.assertFalse(self.Dns._dns_values_differ("1.1.1.1, 2.2.2.2",
+                                                     "2.2.2.2, 1.1.1.1"))
+        self.assertTrue(self.Dns._dns_values_differ("1.1.1.1", "1.1.1.2"))
+        self.assertTrue(self.Dns._dns_values_differ("1.1.1.1, 2.2.2.2",
+                                                    "1.1.1.1"))
+
+    # --- Divergencia en el sync ---
+    def test_sync_marca_synced_si_coincide(self):
+        rec = self._record(record_value="1.2.3.4", ttl=300)
+        self.Dns._sync_from_aws(self.account, [{
+            "hosted_zone_id": "Z123", "name": "forum.primate.cloud",
+            "record_type": "A", "record_value": "1.2.3.4", "ttl": 300,
+        }])
+        self.assertEqual(rec.sync_state, "synced")
+        self.assertFalse(rec.record_value_aws)
+
+    def test_sync_marca_divergent_si_valor_difiere(self):
+        rec = self._record(record_value="1.2.3.4", ttl=300)
+        self.Dns._sync_from_aws(self.account, [{
+            "hosted_zone_id": "Z123", "name": "forum.primate.cloud",
+            "record_type": "A", "record_value": "9.9.9.9", "ttl": 300,
+        }])
+        self.assertEqual(rec.sync_state, "divergent")
+        self.assertEqual(rec.record_value_aws, "9.9.9.9")
+        # NO se pisa el valor de PCM.
+        self.assertEqual(rec.record_value, "1.2.3.4")
+
+    def test_sync_marca_divergent_si_ttl_difiere(self):
+        rec = self._record(record_value="1.2.3.4", ttl=300)
+        self.Dns._sync_from_aws(self.account, [{
+            "hosted_zone_id": "Z123", "name": "forum.primate.cloud",
+            "record_type": "A", "record_value": "1.2.3.4", "ttl": 60,
+        }])
+        self.assertEqual(rec.sync_state, "divergent")
+
+    def test_sync_normaliza_dot_y_case_del_nombre(self):
+        """Mismo registro con distinto case y punto final (FQDN) → synced y SIN
+        duplicado; no debe marcarse divergent por diferencia cosmética."""
+        rec = self._record(name="Forum.Primate.Cloud", record_value="1.2.3.4",
+                           ttl=300)
+        before = self.Dns.search_count([])
+        self.Dns._sync_from_aws(self.account, [{
+            "hosted_zone_id": "Z123", "name": "forum.primate.cloud.",
+            "record_type": "A", "record_value": "1.2.3.4", "ttl": 300,
+        }])
+        self.assertEqual(rec.sync_state, "synced")
+        self.assertFalse(rec.record_value_aws)
+        # No se creó un duplicado por la diferencia de formato.
+        self.assertEqual(self.Dns.search_count([]), before)
+
+    def test_normalize_dns_name(self):
+        self.assertEqual(self.Dns._normalize_dns_name("Forum.X.Com."),
+                         "forum.x.com")
+        self.assertEqual(self.Dns._normalize_dns_name("  A.B.  "), "a.b")
+
+    def test_sync_nuevo_desde_aws_queda_synced(self):
+        res = self.Dns._sync_from_aws(self.account, [{
+            "hosted_zone_id": "Z999", "name": "nuevo.primate.cloud",
+            "record_type": "CNAME", "record_value": "forum.primate.cloud",
+            "ttl": 300,
+        }])
+        self.assertEqual(res["created"], 1)
+        rec = self.Dns.search([("name", "=", "nuevo.primate.cloud")])
+        self.assertEqual(rec.sync_state, "synced")
+
+    def test_action_types_dns(self):
+        keys = {k for k, _l in ACTION_TYPES}
+        self.assertIn("dns_update", keys)
+        self.assertIn("dns_delete", keys)
+
+
+@unittest.skipUnless(HAS_MOTO, "moto no está instalado")
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestRoute53ServicePhase85(TransactionCase):
+    """aws_route53: delete_record + get_change_status contra moto real."""
+
+    def _base(self):
+        from ..services import aws_base
+        return aws_base.AwsBaseService("testing", "testing", "us-east-1")
+
+    def _zone(self, client, name="test.local."):
+        zone = client.create_hosted_zone(Name=name, CallerReference="r85")
+        return zone["HostedZone"]["Id"].split("/")[-1]
+
+    def test_create_delete_y_get_change(self):
+        with mock_aws():
+            client = boto3.client("route53", region_name="us-east-1")
+            zone_id = self._zone(client)
+            service = aws_route53.AwsRoute53Service(self._base())
+            # Crear (UPSERT) y confirmar propagación.
+            change_id = service.create_record(
+                zone_id, "a.test.local", "A", "1.2.3.4", ttl=300)
+            self.assertTrue(change_id)
+            self.assertEqual(service.get_change_status(change_id), "INSYNC")
+            records = service.list_records(zone_id)
+            self.assertTrue(any(r["name"] == "a.test.local" for r in records))
+            # Borrar con el RRSet exacto.
+            del_id = service.delete_record(
+                zone_id, "a.test.local", "A", "1.2.3.4", ttl=300)
+            self.assertTrue(del_id)
+            records = service.list_records(zone_id)
+        self.assertFalse(any(r["name"] == "a.test.local" for r in records))
+
+    def test_delete_multivalor(self):
+        with mock_aws():
+            client = boto3.client("route53", region_name="us-east-1")
+            zone_id = self._zone(client)
+            service = aws_route53.AwsRoute53Service(self._base())
+            service.create_record(
+                zone_id, "multi.test.local", "A",
+                ["1.1.1.1", "2.2.2.2"], ttl=300)
+            del_id = service.delete_record(
+                zone_id, "multi.test.local", "A",
+                ["1.1.1.1", "2.2.2.2"], ttl=300)
+            self.assertTrue(del_id)
+            records = service.list_records(zone_id)
+        self.assertFalse(any(r["name"] == "multi.test.local" for r in records))

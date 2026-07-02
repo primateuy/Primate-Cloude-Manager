@@ -19,6 +19,8 @@ ACTION_TYPES = [
     ("ssm_command", "Ejecutar comando SSM"),
     ("rds_create", "Crear RDS"),
     ("dns_create", "Crear registro DNS"),
+    ("dns_update", "Actualizar registro DNS"),
+    ("dns_delete", "Eliminar registro DNS"),
     ("provision", "Aprovisionar entorno"),
     ("commit_sync", "Sincronizar commits"),
     ("repo_check", "Verificar estado de repo"),
