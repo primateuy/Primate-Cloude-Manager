@@ -20,8 +20,11 @@ class AwsS3Service:
     def ensure_bucket(self, bucket, region=None):
         """Crea el bucket si no existe (idempotente). Devuelve el nombre.
 
-        Maneja la particularidad de ``us-east-1`` (no admite
-        ``LocationConstraint``).
+        Chequea con ``head_bucket``, NO con ``list_buckets``: hallazgo de la
+        prueba real de Fase 8 — ListAllMyBuckets suele estar denegado en
+        cuentas con permisos mínimos, y head_bucket es además más preciso
+        (distingue "no existe" de "existe pero es de otra cuenta"). Maneja la
+        particularidad de ``us-east-1`` (no admite ``LocationConstraint``).
 
         Args:
             bucket (str): nombre del bucket.
@@ -29,16 +32,40 @@ class AwsS3Service:
 
         Returns:
             str: el nombre del bucket.
+
+        Raises:
+            RuntimeError: con mensaje accionable si el bucket es de otra
+                cuenta o si falta y la cuenta no puede crear buckets.
         """
         client = self._base.get_client("s3", region=region)
-        existing = {b["Name"] for b in client.list_buckets().get("Buckets", [])}
-        if bucket in existing:
+        try:
+            client.head_bucket(Bucket=bucket)
             return bucket
+        except client.exceptions.ClientError as error:
+            code = (error.response.get("ResponseMetadata") or {}).get(
+                "HTTPStatusCode")
+            if code == 403:
+                raise RuntimeError(
+                    "El bucket S3 '%s' existe pero pertenece a otra cuenta "
+                    "(los nombres de bucket son globales): usá otro nombre."
+                    % bucket
+                ) from error
+            if code != 404:
+                raise
         params = {"Bucket": bucket}
         location = region or getattr(self._base, "region", None)
         if location and location != "us-east-1":
             params["CreateBucketConfiguration"] = {"LocationConstraint": location}
-        client.create_bucket(**params)
+        try:
+            client.create_bucket(**params)
+        except client.exceptions.ClientError as error:
+            if (error.response.get("Error") or {}).get("Code") == "AccessDenied":
+                raise RuntimeError(
+                    "El bucket S3 '%s' no existe y esta cuenta no puede crear "
+                    "buckets (s3:CreateBucket denegado): crealo a mano o "
+                    "ampliá la política IAM del usuario." % bucket
+                ) from error
+            raise
         return bucket
 
     def delete_object(self, bucket, key, region=None):

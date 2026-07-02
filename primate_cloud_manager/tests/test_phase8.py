@@ -247,6 +247,38 @@ class TestAwsServicesPhase8(TransactionCase):
             Bucket="bucket", Prefix="pcm-backups/forum/"
         )
 
+    def test_s3_ensure_bucket_sin_list_buckets(self):
+        """ensure_bucket usa head_bucket (hallazgo de la prueba real: el user
+        mínimo no tiene ListAllMyBuckets) y crea solo si falta."""
+        base, client = self._base_with_client()
+
+        class FakeClientError(Exception):
+            def __init__(self, http_code=None, error_code=None):
+                self.response = {
+                    "ResponseMetadata": {"HTTPStatusCode": http_code},
+                    "Error": {"Code": error_code or ""},
+                }
+
+        client.exceptions.ClientError = FakeClientError
+        service = aws_s3.AwsS3Service(base)
+        # Existe: head_bucket pasa y NO se llama create ni list_buckets.
+        service.ensure_bucket("mi-bucket")
+        client.create_bucket.assert_not_called()
+        client.list_buckets.assert_not_called()
+        # 404: se crea.
+        client.head_bucket.side_effect = FakeClientError(404)
+        service.ensure_bucket("mi-bucket", region="us-east-2")
+        client.create_bucket.assert_called_once()
+        # 403 (bucket ajeno): error accionable.
+        client.head_bucket.side_effect = FakeClientError(403)
+        with self.assertRaises(RuntimeError):
+            service.ensure_bucket("ajeno")
+        # 404 + create denegado: error accionable.
+        client.head_bucket.side_effect = FakeClientError(404)
+        client.create_bucket.side_effect = FakeClientError(400, "AccessDenied")
+        with self.assertRaises(RuntimeError):
+            service.ensure_bucket("sin-permisos")
+
     def test_s3_head_object_404_devuelve_none(self):
         base, client = self._base_with_client()
 
