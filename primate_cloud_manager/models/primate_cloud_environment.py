@@ -8,8 +8,10 @@ queue_job. La trazabilidad (Fase 5) y el staging (Fase 7) se agregan luego.
 """
 import json
 import logging
+import re
 import shlex
 import uuid
+from datetime import timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -36,6 +38,10 @@ BACKUP_FREQUENCY_WINDOW_HOURS = {"daily": 26, "twice_daily": 14, "hourly": 2}
 # se recolecta en vivo en el mismo job, así que esto es una guarda de contrato
 # para cualquier llamada futura con datos cacheados.
 BACKUP_EVIDENCE_MAX_AGE_HOURS = 24
+
+# Ruta del filestore en las instancias aprovisionadas por PCM (install_odoo.sh
+# crea el usuario 'odoo' con home /opt/odoo y data_dir default de Odoo).
+BACKUP_FILESTORE_BASE = "/opt/odoo/.local/share/Odoo/filestore"
 
 
 class PrimateCloudEnvironment(models.Model):
@@ -1017,6 +1023,288 @@ class PrimateCloudEnvironment(models.Model):
         else:
             overall = "ok"
         return overall, "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Respaldos (Fase 8): ejecución de backups gestionados por PCM
+    # ------------------------------------------------------------------
+    @api.model
+    def _backup_window_start(self, policy, now=None):
+        """Inicio (UTC) de la ventana de ejecución vigente de la política.
+
+        Un backup exitoso con fecha >= inicio de ventana significa "la ventana
+        ya está cubierta". Todo en UTC (decisión de Fase 8): ``execution_hour``
+        se interpreta en UTC igual que los Datetime de Odoo.
+
+        Args:
+            policy (recordset): política de respaldo.
+            now (datetime, optional): inyectable para testear.
+
+        Returns:
+            datetime|bool: inicio de la ventana vigente, o False si la
+            frecuencia no es programable (manual / sin frecuencia).
+        """
+        now = now or fields.Datetime.now()
+        frequency = policy.expected_frequency
+        if frequency == "hourly":
+            return now.replace(minute=0, second=0, microsecond=0)
+        if frequency not in ("daily", "twice_daily"):
+            return False
+        hour = int(policy.execution_hour or 0) % 24
+        minute = int(((policy.execution_hour or 0) * 60) % 60)
+        anchor = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if frequency == "daily":
+            return anchor if anchor <= now else anchor - timedelta(days=1)
+        # twice_daily: ventanas en execution_hour y execution_hour + 12; la
+        # vigente es la más reciente que ya haya empezado.
+        candidates = []
+        for offset_hours in (0, 12):
+            slot = anchor + timedelta(hours=offset_hours)
+            candidates.extend([slot, slot - timedelta(days=1)])
+        return max(slot for slot in candidates if slot <= now)
+
+    @api.model
+    def _cron_run_managed_backups(self):
+        """Cron horario: encola el backup de los entornos cuya ventana venció.
+
+        Reintenta como mucho una vez por hora mientras la ventana siga
+        descubierta (sin tormenta de reintentos); cada intento fallido queda
+        registrado. Un backup ``in_progress`` de la ventana también cuenta como
+        cubierta para no encolar en paralelo.
+        """
+        now = fields.Datetime.now()
+        Backup = self.env["primate.cloud.backup"]
+        # Primero se liberan los in_progress zombis (job muerto sin cerrar):
+        # si no, contarían como "ventana cubierta" y bloquearían el reintento.
+        Backup._mark_stuck_failed(now)
+        environments = self.search([
+            ("state", "=", "active"),
+            ("backup_policy_id.managed_by_pcm", "=", True),
+        ])
+        enqueued = 0
+        for environment in environments:
+            window_start = self._backup_window_start(
+                environment.backup_policy_id, now
+            )
+            if not window_start:
+                continue
+            covered = Backup.search_count([
+                ("environment_id", "=", environment.id),
+                ("backup_type", "=", "pcm_dump"),
+                ("state", "in", ("completed", "in_progress")),
+                ("backup_date", ">=", window_start),
+            ])
+            if covered:
+                continue
+            environment.with_delay(
+                description=_("Backup gestionado: %s") % environment.name
+            ).job_run_backup()
+            enqueued += 1
+        _logger.info(
+            "Backups gestionados encolados: %s de %s entornos.",
+            enqueued, len(environments),
+        )
+
+    def action_run_backup(self):
+        """Botón: encola un backup gestionado inmediato de este entorno."""
+        self.ensure_one()
+        policy = self.backup_policy_id
+        if not policy or not policy.managed_by_pcm or not policy.s3_bucket:
+            raise UserError(_(
+                "El entorno necesita una política de respaldo gestionada por "
+                "PCM (con bucket S3 de destino)."
+            ))
+        self.with_delay(
+            description=_("Backup manual: %s") % self.name
+        ).job_run_backup()
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"type": "info",
+                       "message": _("Backup encolado."),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def job_run_backup(self):
+        """Job: backup gestionado del entorno (pg_dump + filestore vía SSM → S3).
+
+        Cubre las bases **PostgreSQL locales** (las RDS las respalda AWS con su
+        backup automático y el validador las verifica por esa vía). Cada base
+        deja su registro en ``primate.cloud.backup``, también los intentos
+        fallidos: son la evidencia del validador y la traza de reintentos.
+        """
+        self.ensure_one()
+        policy = self.backup_policy_id
+        if not policy or not policy.managed_by_pcm or not policy.s3_bucket:
+            raise UserError(_("La política del entorno no está gestionada por PCM."))
+        account = self.account_id
+        region = account.default_region
+        bucket = policy.s3_bucket
+        prefix = (policy.s3_prefix or "pcm-backups").strip("/")
+        try:
+            # Bucket + regla de retención (lifecycle: AWS borra solo lo vencido).
+            s3 = aws_s3.AwsS3Service(account._get_aws_service())
+            s3.ensure_bucket(bucket, region=region)
+            if policy.expected_retention_days:
+                s3.put_lifecycle_rule(
+                    bucket, prefix + "/", policy.expected_retention_days,
+                    region=region,
+                )
+        except Exception as error:  # noqa: BLE001 - se audita y no se traga
+            self._log("backup_run", name=_("Backup: %s") % self.name,
+                      result="failed", error_message=str(error))
+            self.message_post(
+                body=_("Backup fallido preparando S3: %s") % error)
+            return False
+
+        databases = self.database_ids.filtered(lambda d: d.db_type == "local_pg")
+        results = []
+        for database in databases:
+            results.append(self._run_database_backup(
+                database, policy, bucket, prefix, region
+            ))
+        completed = results.count("completed")
+        if not results:
+            result, summary = "success", _("Sin bases PostgreSQL locales que "
+                                           "respaldar (las RDS las cubre AWS).")
+        elif completed == len(results):
+            result, summary = "success", _("%s base(s) respaldada(s).") % completed
+        elif completed:
+            result = "partial"
+            summary = _("%(ok)s de %(total)s bases respaldadas; ver registros.",
+                        ok=completed, total=len(results))
+        else:
+            result, summary = "failed", _("Falló el backup de todas las bases.")
+        self._log("backup_run", name=_("Backup: %s") % self.name, result=result,
+                  error_message=summary if result != "success" else None)
+        if result != "success":
+            self.message_post(body=_("Backup gestionado: %s") % summary)
+        return result == "success"
+
+    def _run_database_backup(self, database, policy, bucket, prefix, region):
+        """Respalda UNA base local. Devuelve el estado final del registro.
+
+        Decisiones del Bloque 3: chequeo barato del estado de la instancia
+        ANTES de tocar SSM; nunca se enciende una instancia por un backup;
+        todo intento (incluso fallido) queda registrado.
+        """
+        Backup = self.env["primate.cloud.backup"].sudo()
+        now = fields.Datetime.now()
+        stamp = now.strftime("%Y%m%d-%H%M%S")
+        key_base = "%s/%s/%s/%s/%s" % (
+            prefix, self._backup_slug(self.project_id.name),
+            self._backup_slug(self.name), self._backup_slug(database.name), stamp,
+        )
+        expiry = (now + timedelta(days=policy.expected_retention_days)
+                  if policy.expected_retention_days else False)
+        record = Backup.create({
+            "name": _("Backup %(db)s %(stamp)s", db=database.name, stamp=stamp),
+            "environment_id": self.id,
+            "database_id": database.id,
+            "backup_type": "pcm_dump",
+            "source": "executed",
+            "backup_date": now,
+            "s3_key": key_base + ".dump",
+            "s3_filestore_key": key_base + "-filestore.tar.gz",
+            "expiry_date": expiry,
+        })
+        instance = database.ec2_instance_id
+        if not instance:
+            record.write({"state": "failed",
+                          "error_message": _("La base no tiene una instancia "
+                                             "EC2 asociada.")})
+            return "failed"
+        if instance.instance_state != "running":
+            record.write({"state": "failed",
+                          "error_message": _("Instancia %(name)s detenida "
+                                             "(estado: %(state)s). No se "
+                                             "enciende infra por un backup.",
+                                             name=instance.name,
+                                             state=instance.instance_state)})
+            return "failed"
+        try:
+            output = instance._get_ssm_service().run_script(
+                instance.aws_instance_id,
+                self._build_backup_script(
+                    database.name, bucket,
+                    record.s3_key, record.s3_filestore_key,
+                ),
+                region=instance.region or region,
+                comment="pcm backup: %s" % database.name,
+                timeout=3600,
+            )
+        except Exception as error:  # noqa: BLE001 - SSM inaccesible: se registra
+            record.write({"state": "failed",
+                          "error_message": _("SSM inaccesible: %s") % error})
+            return "failed"
+        stdout = output.get("stdout") or ""
+        if output.get("status") != "Success" or "PCM_BACKUP_OK" not in stdout:
+            record.write({"state": "failed",
+                          "error_message": (output.get("stderr")
+                                            or stdout or output.get("status"))})
+            return "failed"
+        sizes = self._parse_backup_sizes(stdout)
+        total_mb = (sizes.get("PCM_DUMP_SIZE_BYTES", 0)
+                    + sizes.get("PCM_FS_SIZE_BYTES", 0)) / (1024.0 * 1024.0)
+        record.write({"state": "completed", "size_mb": total_mb})
+        database.write({"last_backup_date": now})
+        return "completed"
+
+    @api.model
+    def _build_backup_script(self, db_name, bucket, dump_key, filestore_key):
+        """Script SSM del backup gestionado (decisiones del Bloque 3).
+
+        - **Streaming a S3**: el dump nunca toca el disco de la instancia
+          (elimina el riesgo de llenar el disco de producción); ``aws s3 cp``
+          aborta su multipart si el pipe falla (no quedan objetos a medias).
+        - **Guarda de espacio** como cinturón (los temporales de pg_dump y
+          aws-cli usan /tmp) + ``trap`` de limpieza en éxito o error.
+        - **Cero credenciales**: peer auth local (``sudo -u postgres``) e
+          instance profile para S3. El stdout solo lleva marcadores y tamaños.
+        """
+        db = shlex.quote(db_name)
+        bkt = shlex.quote(bucket)
+        dump = shlex.quote(dump_key)
+        filestore = shlex.quote(filestore_key)
+        return "\n".join([
+            "set -euo pipefail",
+            "FREE_MB=$(df -Pm /tmp | awk 'NR==2 {print $4}')",
+            'if [ "$FREE_MB" -lt 1024 ]; then '
+            'echo "PCM_ERROR: menos de 1 GB libre en /tmp (${FREE_MB} MB)" >&2; '
+            "exit 1; fi",
+            "trap 'rm -f /tmp/pcm_backup_* 2>/dev/null || true' EXIT",
+            "sudo -u postgres pg_dump -Fc -d %s | "
+            "aws s3 cp - s3://%s/%s --only-show-errors" % (db, bkt, dump),
+            'echo "PCM_DUMP_SIZE_BYTES=$(aws s3api head-object --bucket %s '
+            '--key %s --query ContentLength --output text)"' % (bkt, dump),
+            'FS_DIR=%s/%s' % (BACKUP_FILESTORE_BASE, db),
+            'if [ -d "$FS_DIR" ]; then',
+            '  tar -czf - -C "$(dirname "$FS_DIR")" "$(basename "$FS_DIR")" | '
+            "aws s3 cp - s3://%s/%s --only-show-errors" % (bkt, filestore),
+            '  echo "PCM_FS_SIZE_BYTES=$(aws s3api head-object --bucket %s '
+            '--key %s --query ContentLength --output text)"' % (bkt, filestore),
+            "else",
+            '  echo "PCM_FS_SIZE_BYTES=0"',
+            "fi",
+            'echo "PCM_BACKUP_OK"',
+        ])
+
+    @staticmethod
+    def _parse_backup_sizes(stdout):
+        """Extrae los marcadores de tamaño (bytes) del stdout del script."""
+        sizes = {}
+        for line in (stdout or "").splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and key in ("PCM_DUMP_SIZE_BYTES", "PCM_FS_SIZE_BYTES"):
+                try:
+                    sizes[key] = int(value)
+                except ValueError:
+                    pass
+        return sizes
+
+    @staticmethod
+    def _backup_slug(name):
+        """Nombre seguro para keys S3 (sin espacios ni caracteres raros)."""
+        return re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "").strip()) or "sin-nombre"
 
     # ------------------------------------------------------------------
     # Constructores de scripts SSM (puros, testeables por contenido)

@@ -126,6 +126,10 @@
                                             string="Verificar ahora" icon="fa-check-circle-o"
                                             class="btn-secondary" colspan="2"
                                             invisible="not backup_policy_id"/>
+                                    <button name="action_run_backup" type="object"
+                                            string="Respaldar ahora" icon="fa-database"
+                                            class="btn-secondary" colspan="2"
+                                            invisible="not backup_policy_id"/>
                                 </group>
                                 <group string="Detalle de cumplimiento">
                                     <field name="backup_compliance_detail" nolabel="1" colspan="2"/>

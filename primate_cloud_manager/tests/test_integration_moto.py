@@ -295,3 +295,29 @@ class TestMotoPhase8(TransactionCase):
                 "pcm-backups-test", "no-existe.dump", region="us-east-1"
             )
         self.assertIsNone(missing)
+
+    def test_s3_lifecycle_merge_de_reglas(self):
+        """put_lifecycle_rule no pisa reglas ajenas: lee, mergea por id y sube."""
+        with mock_aws():
+            service = aws_s3.AwsS3Service(_make_base())
+            service.ensure_bucket("pcm-lc-test", region="us-east-1")
+            # Primera regla sobre bucket sin configuración (NoSuchLifecycle...).
+            rule_a = service.put_lifecycle_rule(
+                "pcm-lc-test", "pcm-backups/", 7, region="us-east-1"
+            )
+            # Segunda regla con otro prefijo: la primera debe sobrevivir.
+            rule_b = service.put_lifecycle_rule(
+                "pcm-lc-test", "otro-prefijo/", 30, region="us-east-1"
+            )
+            # Re-aplicar la primera con otra retención: actualiza, no duplica.
+            service.put_lifecycle_rule(
+                "pcm-lc-test", "pcm-backups/", 14, region="us-east-1"
+            )
+            client = boto3.client("s3", region_name="us-east-1")
+            rules = client.get_bucket_lifecycle_configuration(
+                Bucket="pcm-lc-test"
+            )["Rules"]
+        by_id = {rule["ID"]: rule for rule in rules}
+        self.assertEqual(set(by_id), {rule_a, rule_b})
+        self.assertEqual(by_id[rule_a]["Expiration"]["Days"], 14)
+        self.assertEqual(by_id[rule_b]["Expiration"]["Days"], 30)

@@ -10,11 +10,18 @@ la interfaz no se editan ni se eliminan. Solo se permiten los writes de cierre
 de ciclo (estado, tamaño, keys, error) que hace el propio código.
 """
 import logging
+from datetime import timedelta
 
-from odoo import _, fields, models
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
+# Umbral (horas) para dar por muerto un backup ``in_progress`` cuyo job no
+# cerró el ciclo (OOM, reinicio del server, kill). Superado, el cron lo marca
+# ``failed`` y la ventana vuelve a quedar descubierta para el reintento
+# natural. Ningún backup gestionado debería tardar más que esto.
+STUCK_IN_PROGRESS_HOURS = 2
 
 # Campos que el código puede actualizar al cerrar el ciclo de un backup
 # (in_progress → completed/failed, expiración). Todo lo demás es inmutable.
@@ -96,6 +103,57 @@ class PrimateCloudBackup(models.Model):
         help="Fecha de backup + retención de la política al momento de ejecutarlo.",
     )
     error_message = fields.Text(string="Mensaje de error")
+
+    @api.model
+    def _mark_stuck_failed(self, now=None):
+        """Marca ``failed`` los ``in_progress`` zombis (job muerto sin cerrar).
+
+        Sin esto, un registro colgado contaría como "ventana cubierta" para el
+        cron y bloquearía el reintento. Se avisa en el chatter del entorno.
+
+        Args:
+            now (datetime, optional): inyectable para testear el umbral.
+
+        Returns:
+            recordset: los backups marcados.
+        """
+        now = now or fields.Datetime.now()
+        stuck = self.search([
+            ("state", "=", "in_progress"),
+            ("backup_date", "<", now - timedelta(hours=STUCK_IN_PROGRESS_HOURS)),
+        ])
+        for backup in stuck:
+            backup.write({
+                "state": "failed",
+                "error_message": _(
+                    "Interrumpido: el job no cerró el registro (más de %s h "
+                    "en progreso). Se reintenta en la próxima corrida del cron."
+                ) % STUCK_IN_PROGRESS_HOURS,
+            })
+            backup.environment_id.message_post(
+                body=_("Backup '%s' interrumpido (job muerto sin cerrar el "
+                       "registro): marcado como fallido.") % backup.name)
+        if stuck:
+            _logger.warning("Backups in_progress zombis marcados failed: %s.",
+                            len(stuck))
+        return stuck
+
+    @api.model
+    def _cron_mark_expired(self):
+        """Cron: marca ``expired`` los backups vencidos.
+
+        El objeto en S3 ya lo borró (o borrará) la regla de lifecycle que PCM
+        asegura al ejecutar; acá solo se refleja en el registro para que el
+        validador y la UI no cuenten backups que ya no existen.
+        """
+        expired = self.search([
+            ("state", "=", "completed"),
+            ("expiry_date", "!=", False),
+            ("expiry_date", "<", fields.Datetime.now()),
+        ])
+        if expired:
+            expired.write({"state": "expired"})
+            _logger.info("Backups marcados como expirados: %s.", len(expired))
 
     def write(self, vals):
         """Solo permite los writes de cierre de ciclo que hace el código."""

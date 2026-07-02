@@ -73,6 +73,48 @@ class AwsS3Service:
                 })
         return result
 
+    def put_lifecycle_rule(self, bucket, prefix, expiration_days, rule_id=None,
+                           region=None):
+        """Asegura una regla de expiración por prefijo SIN pisar reglas ajenas.
+
+        ``put_bucket_lifecycle_configuration`` REEMPLAZA la configuración entera
+        del bucket: acá se lee la existente, se actualiza/inserta solo la regla
+        propia (por su id) y se vuelve a subir todo junto. Con esta regla, AWS
+        borra solo los objetos vencidos (retención de la política, Fase 8).
+
+        Args:
+            bucket (str): nombre del bucket.
+            prefix (str): prefijo de keys que expira (ej.: ``pcm-backups/``).
+            expiration_days (int): días de retención.
+            rule_id (str, optional): id de la regla; default derivado del prefijo.
+            region (str, optional): región.
+
+        Returns:
+            str: el id de la regla asegurada.
+        """
+        client = self._base.get_client("s3", region=region)
+        rule_id = rule_id or "pcm-%s" % (prefix or "all").strip("/").replace("/", "-")
+        try:
+            existing = client.get_bucket_lifecycle_configuration(
+                Bucket=bucket
+            ).get("Rules", [])
+        except client.exceptions.ClientError as error:
+            code = (error.response.get("Error") or {}).get("Code")
+            if code != "NoSuchLifecycleConfiguration":
+                raise
+            existing = []
+        rules = [rule for rule in existing if rule.get("ID") != rule_id]
+        rules.append({
+            "ID": rule_id,
+            "Status": "Enabled",
+            "Filter": {"Prefix": prefix or ""},
+            "Expiration": {"Days": int(expiration_days)},
+        })
+        client.put_bucket_lifecycle_configuration(
+            Bucket=bucket, LifecycleConfiguration={"Rules": rules}
+        )
+        return rule_id
+
     def head_object(self, bucket, key, region=None):
         """Verifica que un objeto exista. Devuelve sus metadatos o None (404).
 
