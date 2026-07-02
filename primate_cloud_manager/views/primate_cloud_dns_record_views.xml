@@ -11,6 +11,7 @@
                 <field name="record_value"/>
                 <field name="ttl"/>
                 <field name="environment_id"/>
+                <field name="sync_state" widget="pcm_status_badge"/>
                 <field name="state" widget="badge" decoration-success="state == 'active'"/>
                 <field name="last_sync_date"/>
             </list>
@@ -22,25 +23,41 @@
         <field name="model">primate.cloud.dns.record</field>
         <field name="arch" type="xml">
             <form string="Registro DNS">
+                <header>
+                    <button name="action_open_edit" type="object" string="Editar"
+                            class="btn-primary" invisible="state == 'deleted'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <button name="action_check_sync_state" type="object" string="Verificar"
+                            invisible="state == 'deleted'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <button name="action_open_delete" type="object" string="Eliminar"
+                            class="btn-secondary" invisible="state == 'deleted'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <field name="sync_state" widget="statusbar"/>
+                </header>
                 <sheet>
                     <div class="oe_title">
                         <h1><field name="name"/></h1>
                     </div>
                     <group>
                         <group>
-                            <field name="record_type"/>
-                            <field name="record_value"/>
-                            <field name="ttl"/>
+                            <field name="record_type" readonly="1"/>
+                            <field name="record_value" readonly="1"/>
+                            <field name="ttl" readonly="1"/>
+                            <field name="record_value_aws" readonly="1"
+                                   invisible="sync_state != 'divergent'"/>
                         </group>
                         <group>
                             <field name="account_id" readonly="1"/>
-                            <field name="environment_id"/>
+                            <field name="environment_id" readonly="1"/>
                             <field name="hosted_zone_id" readonly="1"/>
                             <field name="state" readonly="1"/>
+                            <field name="last_change_id" readonly="1"/>
                             <field name="last_sync_date" readonly="1"/>
                         </group>
                     </group>
                 </sheet>
+                <chatter/>
             </form>
         </field>
     </record>

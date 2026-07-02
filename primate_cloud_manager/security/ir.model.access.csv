@@ -46,3 +46,5 @@ access_provision_wizard_admin,provision.wizard admin,model_primate_cloud_provisi
 access_staging_create_wizard_admin,staging.create.wizard admin,model_primate_cloud_staging_create_wizard,group_cloud_admin,1,1,1,1
 access_backup_restore_wizard_admin,backup.restore.wizard admin,model_primate_cloud_backup_restore_wizard,group_cloud_admin,1,1,1,1
 access_staging_refresh_wizard_admin,staging.refresh.wizard admin,model_primate_cloud_staging_refresh_wizard,group_cloud_admin,1,1,1,1
+access_dns_record_wizard_admin,dns.record.wizard admin,model_primate_cloud_dns_record_wizard,group_cloud_admin,1,1,1,1
+access_dns_delete_wizard_admin,dns.delete.wizard admin,model_primate_cloud_dns_delete_wizard,group_cloud_admin,1,1,1,1

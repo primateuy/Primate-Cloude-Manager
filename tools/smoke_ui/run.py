@@ -21,6 +21,7 @@ SETTINGS = f"{BASE}/odoo/action-base_setup.action_general_configuration"
 SHOT = os.path.join(os.path.dirname(__file__), "screenshots")
 FIXTURE = "SMOKE UI (borrar)"          # entorno draft con cuenta de prueba
 INFRA_ENV = "Forum Producción"          # entorno con infra para drill-through
+DNS_ENV = "SMOKE DNS (borrar)"          # entorno producción con registro DNS
 
 console_errors = []
 results = []
@@ -243,6 +244,36 @@ def s06_respaldos_y_wizards_fase8(pg):
 
 
 @scenario
+def s07_dns_crud(pg):
+    """Fase 8.5: sección DNS del hub — crear registro (wizard en drawer) y la
+    fricción ALTA al intentar borrar un registro de producción (alerta roja)."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+    open_env(pg, DNS_ENV)
+    # La sección DNS lista el registro sembrado.
+    pg.wait_for_selector(".o_pcm_section_head:has-text('Registros DNS')",
+                         timeout=10000)
+    assert pg.locator(".o_pcm_line:has-text('prod.smoke.local')").count() >= 1, \
+        "falta el registro DNS sembrado en el hub"
+    # 1) Crear registro: abre el wizard REAL en el drawer.
+    pg.click("button:has-text('Agregar registro')")
+    pg.wait_for_selector(dr, timeout=10000)
+    pg.wait_for_selector(f"{dr} [name='name']", timeout=8000)
+    pg.screenshot(path=f"{SHOT}/s07_dns_create.png")
+    pg.click(f"{dr} .modal-footer button:has-text('Cancelar')")
+    pg.wait_for_selector(dr, state="detached", timeout=8000)
+    # 2) Borrar el registro de producción: wizard con fricción alta (alerta roja).
+    pg.click(".o_pcm_line:has-text('prod.smoke.local') button[title='Eliminar']")
+    pg.wait_for_selector(dr, timeout=10000)
+    pg.wait_for_selector(f"{dr} [name='confirm_name']", timeout=8000)
+    alert = pg.locator(f"{dr} .alert-danger:has-text('PRODUCCIÓN')")
+    assert alert.count() >= 1, "no apareció la fricción alta de borrado en prod"
+    pg.screenshot(path=f"{SHOT}/s07_dns_delete_prod.png")
+    pg.click(f"{dr} .modal-footer button:has-text('Cancelar')")
+    pg.wait_for_selector(dr, state="detached", timeout=8000)
+
+
+@scenario
 def s05_salir_y_volver(pg):
     """Salir a Ajustes y volver a Cloud Manager 2 veces: remonta limpio."""
     open_app(pg)
@@ -279,7 +310,8 @@ def main():
         pg.wait_for_timeout(1500)
         for fn in (s01_app_y_sidebar, s02_hub_y_drill, s03_drawer_cancelar,
                    s04_drawer_error_correccion_exito,
-                   s06_respaldos_y_wizards_fase8, s05_salir_y_volver):
+                   s06_respaldos_y_wizards_fase8, s07_dns_crud,
+                   s05_salir_y_volver):
             fn(pg)
         br.close()
 

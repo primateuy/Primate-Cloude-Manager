@@ -124,10 +124,34 @@ export class EntornoDetalle extends Component {
     }
 
     addDns() {
-        this.env.pcm.newRecord("primate.cloud.dns.record", {
+        // Wizard de creación en el drawer (no form nativo). Prefija la zona
+        // desde un registro existente del entorno, si hay.
+        const zoneHint = (this.d.dns_records || [])
+            .map((r) => r.hosted_zone_id).find(Boolean) || "";
+        this.env.pcm.openWizard("primate.cloud.dns.record.wizard", {
             default_environment_id: this.props.envId,
             default_account_id: this.d.account_id || false,
-        });
+            default_hosted_zone_id: zoneHint,
+        }, "Nuevo registro DNS");
+    }
+
+    // Editar / borrar / verificar un registro DNS (wizards en drawer o job).
+    async editDns(recordId) {
+        await runPcmModelAction(
+            this.env, this.orm, "primate.cloud.dns.record",
+            "action_open_edit", [recordId]);
+    }
+
+    async deleteDns(recordId) {
+        await runPcmModelAction(
+            this.env, this.orm, "primate.cloud.dns.record",
+            "action_open_delete", [recordId]);
+    }
+
+    async checkDns(recordId) {
+        await runPcmModelAction(
+            this.env, this.orm, "primate.cloud.dns.record",
+            "action_check_sync_state", [recordId]);
     }
 
     addDatabase() {

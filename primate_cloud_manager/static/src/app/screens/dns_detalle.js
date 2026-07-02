@@ -3,6 +3,7 @@
 import { Component, onWillStart, onWillUpdateProps, useState } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
+import { runPcmModelAction } from "../pcm_actions";
 
 /**
  * Detalle de un registro DNS: datos generales y asociación (entorno, cuenta).
@@ -45,4 +46,17 @@ export class DnsDetalle extends Component {
             this.props.onOpenRecord(model, id, name);
         }
     }
+
+    async _run(method) {
+        const ran = await runPcmModelAction(
+            this.env, this.orm, "primate.cloud.dns.record", method,
+            [this.props.recordId]);
+        if (ran) {
+            await this.load(this.props.recordId);
+        }
+    }
+
+    editDns() { return this._run("action_open_edit"); }
+    deleteDns() { return this._run("action_open_delete"); }
+    checkDns() { return this._run("action_check_sync_state"); }
 }

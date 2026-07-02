@@ -199,6 +199,7 @@ class PrimateCloudDashboard(models.AbstractModel):
         repo_type_labels = dict(Repo._fields["repo_type"].selection)
         mod_labels = dict(Mod._fields["db_state"].selection)
         dns_state_labels = dict(Dns._fields["state"].selection)
+        dns_sync_labels = dict(Dns._fields["sync_state"].selection)
         dep_state_labels = dict(Dep._fields["state"].selection)
         dep_type_labels = dict(Dep._fields["deployment_type"].selection)
         Backup = self.env["primate.cloud.backup"]
@@ -274,6 +275,12 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "record_value": rec.record_value or "",
                 "state": rec.state,
                 "state_label": dns_state_labels.get(rec.state, rec.state or ""),
+                "sync_state": rec.sync_state,
+                "sync_state_label": dns_sync_labels.get(rec.sync_state, ""),
+                "record_value_aws": rec.record_value_aws or "",
+                "delete_needs_ack": rec.delete_needs_ack,
+                "is_deleted": rec.state == "deleted",
+                "hosted_zone_id": rec.hosted_zone_id or "",
             } for rec in environment.dns_record_ids],
             "deployments": [{
                 "id": dep.id, "name": dep.display_name,
@@ -475,11 +482,18 @@ class PrimateCloudDashboard(models.AbstractModel):
             return {}
         Dns = self.env["primate.cloud.dns.record"]
         state_labels = dict(Dns._fields["state"].selection)
+        sync_labels = dict(Dns._fields["sync_state"].selection)
         return {
             "id": rec.id,
             "name": rec.display_name,
             "state": rec.state,
             "state_label": state_labels.get(rec.state, rec.state or ""),
+            "sync_state": rec.sync_state,
+            "sync_state_label": sync_labels.get(rec.sync_state, ""),
+            "record_value_aws": rec.record_value_aws or "",
+            "last_change_id": rec.last_change_id or "",
+            "delete_needs_ack": rec.delete_needs_ack,
+            "is_deleted": rec.state == "deleted",
             "record_type": rec.record_type,
             "record_value": rec.record_value or "",
             "ttl": rec.ttl or 0,

@@ -10,7 +10,7 @@ from datetime import timedelta
 from unittest import mock
 
 from odoo import fields
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 from odoo.tests.common import TransactionCase, tagged
 
 from ..models.primate_cloud_operation_log import ACTION_TYPES
@@ -152,6 +152,38 @@ class TestDnsModelPhase85(TransactionCase):
         self.assertFalse(rec.record_value_aws)
         # No se creó un duplicado por la diferencia de formato.
         self.assertEqual(self.Dns.search_count([]), before)
+
+    def test_sync_puebla_is_alias(self):
+        """El sync marca is_alias desde AliasTarget (señal real), no desde TTL."""
+        self.Dns._sync_from_aws(self.account, [{
+            "hosted_zone_id": "Z1", "name": "alias.primate.cloud",
+            "record_type": "A", "record_value": "elb.amazonaws.com",
+            "ttl": 300, "is_alias": True,
+        }, {
+            "hosted_zone_id": "Z1", "name": "simple.primate.cloud",
+            "record_type": "A", "record_value": "1.2.3.4",
+            "ttl": 300, "is_alias": False,
+        }])
+        alias = self.Dns.search([("name", "=", "alias.primate.cloud")])
+        simple = self.Dns.search([("name", "=", "simple.primate.cloud")])
+        self.assertTrue(alias.is_alias)
+        self.assertFalse(simple.is_alias)
+
+    def test_normalize_record_marca_alias(self):
+        """_normalize_record deriva is_alias de AliasTarget, no del TTL."""
+        alias_rrset = {
+            "Name": "cdn.forum.cloud.", "Type": "A",
+            "AliasTarget": {"DNSName": "d123.cloudfront.net."},
+        }
+        simple_rrset = {
+            "Name": "web.forum.cloud.", "Type": "A", "TTL": 0,
+            "ResourceRecords": [{"Value": "1.2.3.4"}],
+        }
+        alias = aws_route53.AwsRoute53Service._normalize_record(alias_rrset, "Z1")
+        simple = aws_route53.AwsRoute53Service._normalize_record(simple_rrset, "Z1")
+        self.assertTrue(alias["is_alias"])
+        # TTL 0 pero NO alias: tiene ResourceRecords.
+        self.assertFalse(simple["is_alias"])
 
     def test_normalize_dns_name(self):
         self.assertEqual(self.Dns._normalize_dns_name("Forum.X.Com."),
@@ -399,3 +431,129 @@ class TestRoute53ServicePhase85(TransactionCase):
             rec.job_delete()
             self.assertEqual(rec.state, "deleted")
             self.assertEqual(rec.sync_state, "synced")
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestDnsWizardsPhase85(TransactionCase):
+    """Wizards de crear/editar y borrar (Bloque 3): validación, alias, guardia."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Forum", "account_id": self.account.id}
+        )
+        self.prod = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active",
+        })
+        self.staging = self.env["primate.cloud.environment"].create({
+            "name": "Forum Staging", "project_id": self.project.id,
+            "env_type": "staging", "state": "active",
+        })
+        self.Dns = self.env["primate.cloud.dns.record"]
+        self.CreateWiz = self.env["primate.cloud.dns.record.wizard"]
+        self.DeleteWiz = self.env["primate.cloud.dns.delete.wizard"]
+
+    def _record(self, **vals):
+        base = {
+            "name": "forum.primate.cloud", "account_id": self.account.id,
+            "hosted_zone_id": "Z1", "record_type": "A",
+            "record_value": "1.2.3.4", "ttl": 300, "environment_id": self.staging.id,
+        }
+        base.update(vals)
+        return self.Dns.create(base)
+
+    # --- Crear/editar ---
+    def test_wizard_crea_y_encola(self):
+        wiz = self.CreateWiz.create({
+            "account_id": self.account.id, "environment_id": self.staging.id,
+            "hosted_zone_id": "Z1", "name": "web.forum.cloud",
+            "record_type": "A", "record_value": "1.2.3.4\n5.6.7.8", "ttl": 300,
+        })
+        with mock.patch.object(type(self.Dns), "with_delay") as with_delay:
+            wiz.action_confirm()
+            with_delay.assert_called_once()
+        rec = self.Dns.search([("name", "=", "web.forum.cloud")])
+        self.assertTrue(rec)
+        # Multi-valor unido con ', '.
+        self.assertEqual(rec.record_value, "1.2.3.4, 5.6.7.8")
+        self.assertEqual(rec.sync_state, "pending")
+
+    def test_wizard_valida_forma(self):
+        wiz = self.CreateWiz.create({
+            "account_id": self.account.id, "hosted_zone_id": "Z1",
+            "name": "web.forum.cloud", "record_type": "A",
+            "record_value": "no-es-ip",
+        })
+        with self.assertRaises(ValidationError):
+            wiz.action_confirm()
+
+    def test_wizard_edicion_precarga(self):
+        rec = self._record()
+        wiz = self.CreateWiz.with_context(
+            default_record_id=rec.id).create({})
+        self.assertTrue(wiz.is_edit)
+        self.assertEqual(wiz.name, rec.name)
+        self.assertEqual(wiz.record_type, "A")
+
+    def test_wizard_bloquea_alias(self):
+        """Un registro alias (marcador EXPLÍCITO is_alias) no se edita."""
+        alias = self._record(name="alias.forum.cloud", is_alias=True,
+                             record_value="elb-123.us-east-1.elb.amazonaws.com")
+        with self.assertRaises(UserError):
+            self.CreateWiz.with_context(default_record_id=alias.id).create({})
+
+    def test_wizard_permite_registro_simple_ttl_cero(self):
+        """Un registro simple con TTL 0 (válido aunque raro) NO es alias: debe
+        poder editarse. El proxy por TTL lo habría bloqueado mal."""
+        rec = self._record(name="ttl0.forum.cloud", ttl=0, is_alias=False)
+        wiz = self.CreateWiz.with_context(default_record_id=rec.id).create({})
+        self.assertTrue(wiz.is_edit)
+        self.assertEqual(wiz.name, "ttl0.forum.cloud")
+
+    # --- Borrado (guardia server-side) ---
+    def test_delete_exige_nombre_exacto(self):
+        rec = self._record(environment_id=self.staging.id)
+        wiz = self.DeleteWiz.create({
+            "record_id": rec.id, "confirm_name": "otro.nombre"})
+        with self.assertRaises(UserError):
+            wiz.action_confirm()
+
+    def test_delete_no_prod_sin_ack_ok(self):
+        rec = self._record(environment_id=self.staging.id)  # no prod
+        wiz = self.DeleteWiz.create({
+            "record_id": rec.id, "confirm_name": rec.name})
+        self.assertFalse(wiz.needs_ack)
+        with mock.patch.object(type(rec), "with_delay") as with_delay:
+            wiz.action_confirm()
+            with_delay.assert_called_once()
+
+    def test_delete_prod_exige_ack(self):
+        rec = self._record(environment_id=self.prod.id)  # prod
+        self.assertTrue(rec.delete_needs_ack)
+        wiz = self.DeleteWiz.create({
+            "record_id": rec.id, "confirm_name": rec.name, "acknowledge": False})
+        with self.assertRaises(UserError):
+            wiz.action_confirm()
+        wiz.acknowledge = True
+        with mock.patch.object(type(rec), "with_delay") as with_delay:
+            wiz.action_confirm()
+            with_delay.assert_called_once()
+
+    def test_delete_huerfano_exige_ack(self):
+        """Registro sin entorno (origen desconocido): guardia alta igual."""
+        rec = self._record(environment_id=False)
+        self.assertTrue(rec.delete_needs_ack)
+        wiz = self.DeleteWiz.create({
+            "record_id": rec.id, "confirm_name": rec.name, "acknowledge": False})
+        with self.assertRaises(UserError):
+            wiz.action_confirm()
+
+    def test_action_open_delete_bloquea_ya_borrado(self):
+        rec = self._record(state="deleted")
+        with self.assertRaises(ValidationError):
+            rec.action_open_delete()

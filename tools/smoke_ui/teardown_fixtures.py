@@ -25,5 +25,12 @@ if fx:
     except Exception:  # noqa: BLE001 - limpieza opcional
         pass
     fx.unlink()
+
+# Entorno DNS de prueba: borrar sus registros DNS y el entorno.
+dns_env = env["primate.cloud.environment"].search(
+    [("name", "=", "SMOKE DNS (borrar)")])
+if dns_env:
+    dns_env.dns_record_ids.unlink()
+    dns_env.unlink()
 env.cr.commit()
 print("TEARDOWN eliminados", removed)

@@ -11,10 +11,24 @@
                 <div class="o_pcm_hero o_pcm_card">
                     <div class="o_pcm_hero_head">
                         <h1 t-out="d.name"/>
-                        <PcmStatusBadge value="d.state"
+                        <PcmStatusBadge value="d.sync_state"
                                         model="'primate.cloud.dns.record'"
-                                        field="'state'" label="d.state_label"/>
+                                        field="'sync_state'" label="d.sync_state_label"/>
                         <span class="o_pcm_spacer"/>
+                        <div class="o_pcm_actions" t-if="!d.is_deleted">
+                            <button class="o_pcm_btn" t-on-click="() => this.checkDns()">
+                                <i class="fa fa-refresh"/> Verificar
+                            </button>
+                            <button class="o_pcm_btn" t-on-click="() => this.editDns()">
+                                <i class="fa fa-pencil"/> Editar
+                            </button>
+                            <button class="o_pcm_btn o_pcm_btn_danger" t-on-click="() => this.deleteDns()">
+                                <i class="fa fa-trash"/> Eliminar
+                            </button>
+                        </div>
+                    </div>
+                    <div t-if="d.sync_state === 'divergent'" class="o_pcm_muted o_pcm_mono">
+                        Valor real en AWS: <t t-out="d.record_value_aws"/>
                     </div>
                 </div>
 

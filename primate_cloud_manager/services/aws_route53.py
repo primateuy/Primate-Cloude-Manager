@@ -156,7 +156,8 @@ class AwsRoute53Service:
     def _normalize_record(record_set, hosted_zone_id):
         """Normaliza un ResourceRecordSet (incluye registros de tipo alias)."""
         values = [r.get("Value") for r in record_set.get("ResourceRecords", [])]
-        if not values and record_set.get("AliasTarget"):
+        is_alias = bool(record_set.get("AliasTarget"))
+        if not values and is_alias:
             # Registros alias: el valor está en AliasTarget.DNSName.
             values = [record_set["AliasTarget"].get("DNSName", "").rstrip(".")]
         return {
@@ -165,4 +166,8 @@ class AwsRoute53Service:
             "ttl": record_set.get("TTL", 300),
             "record_value": ", ".join(v for v in values if v),
             "hosted_zone_id": hosted_zone_id,
+            # Señal REAL de alias de Route 53 (AliasTarget presente / sin
+            # ResourceRecords). NO se infiere del TTL: un alias no trae TTL y un
+            # registro simple con TTL 0 es válido — el proxy los confundiría.
+            "is_alias": is_alias,
         }

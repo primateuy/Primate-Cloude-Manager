@@ -145,16 +145,30 @@
                 </div>
                 <div t-else="" class="o_pcm_card">
                     <div t-foreach="d.dns_records" t-as="rec" t-key="rec.id"
-                         class="o_pcm_line o_pcm_line_click"
-                         t-on-click="() => this.openRecord('primate.cloud.dns.record', rec.id, rec.name)">
+                         class="o_pcm_line">
                         <span class="o_pcm o_pcm_chip" t-out="rec.record_type"/>
-                        <div class="o_pcm_line_main">
+                        <div class="o_pcm_line_main o_pcm_link"
+                             t-on-click="() => this.openRecord('primate.cloud.dns.record', rec.id, rec.name)">
                             <span class="o_pcm_line_name" t-out="rec.name"/>
                             <span class="o_pcm_muted o_pcm_mono" t-if="rec.record_value"> → <t t-out="rec.record_value"/></span>
+                            <span t-if="rec.sync_state === 'divergent'" class="o_pcm_muted o_pcm_mono">
+                                (AWS: <t t-out="rec.record_value_aws"/>)
+                            </span>
                         </div>
-                        <PcmStatusBadge value="rec.state" model="'primate.cloud.dns.record'"
-                                        field="'state'" label="rec.state_label"/>
-                        <i class="fa fa-angle-right o_pcm_muted"/>
+                        <PcmStatusBadge value="rec.sync_state" model="'primate.cloud.dns.record'"
+                                        field="'sync_state'" label="rec.sync_state_label"/>
+                        <button t-if="!rec.is_deleted" class="o_pcm_btn"
+                                t-on-click="() => this.checkDns(rec.id)" title="Verificar contra Route 53">
+                            <i class="fa fa-refresh"/>
+                        </button>
+                        <button t-if="!rec.is_deleted" class="o_pcm_btn"
+                                t-on-click="() => this.editDns(rec.id)" title="Editar">
+                            <i class="fa fa-pencil"/>
+                        </button>
+                        <button t-if="!rec.is_deleted" class="o_pcm_btn o_pcm_btn_danger"
+                                t-on-click="() => this.deleteDns(rec.id)" title="Eliminar">
+                            <i class="fa fa-trash"/>
+                        </button>
                     </div>
                 </div>
 

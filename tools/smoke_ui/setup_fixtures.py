@@ -49,5 +49,26 @@ if not bk:
     })
     bk.write({"state": "completed", "size_mb": 12.3})
 
+# Entorno de PRODUCCIÓN con un registro DNS: ejercita el CRUD de DNS del hub y,
+# al ser producción, la fricción ALTA del borrado (alerta roja + acknowledge).
+DNS_ENV_NAME = "SMOKE DNS (borrar)"
+dns_env = Env.search([("name", "=", DNS_ENV_NAME)], limit=1)
+if not dns_env:
+    dns_env = Env.create({
+        "name": DNS_ENV_NAME, "project_id": project.id, "account_id": fake.id,
+        "env_type": "production", "state": "active",
+        "odoo_version": "19", "odoo_edition": "community",
+    })
+Dns = env["primate.cloud.dns.record"]
+dns_rec = Dns.search([("environment_id", "=", dns_env.id)], limit=1)
+if not dns_rec:
+    Dns.create({
+        "name": "prod.smoke.local", "account_id": fake.id,
+        "environment_id": dns_env.id, "hosted_zone_id": "Z-SMOKE",
+        "record_type": "A", "record_value": "1.2.3.4", "ttl": 300,
+        "state": "active", "sync_state": "synced",
+    })
+
 env.cr.commit()
 print("FIXTURE_ENV_ID", fx.id, "cuenta", fx.account_id.name, "estado", fx.state)
+print("FIXTURE_DNS_ENV_ID", dns_env.id)

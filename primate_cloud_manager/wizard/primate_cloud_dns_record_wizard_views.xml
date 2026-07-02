@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_dns_record_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.dns.record.wizard.form</field>
+        <field name="model">primate.cloud.dns.record.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Registro DNS">
+                <group>
+                    <group>
+                        <field name="is_edit" invisible="1"/>
+                        <field name="record_id" invisible="1"/>
+                        <field name="account_id" invisible="1"/>
+                        <field name="environment_id" invisible="1"/>
+                        <field name="name" readonly="is_edit"/>
+                        <field name="record_type" readonly="is_edit"/>
+                        <field name="hosted_zone_id" readonly="is_edit"/>
+                    </group>
+                    <group>
+                        <field name="ttl"/>
+                    </group>
+                </group>
+                <group string="Valor(es) — uno por línea">
+                    <field name="record_value" nolabel="1"
+                           placeholder="1.2.3.4&#10;5.6.7.8"/>
+                </group>
+                <footer>
+                    <button name="action_confirm" type="object"
+                            string="Aplicar" class="btn-primary"
+                            confirm="El cambio se aplicará en Route 53. ¿Continuar?"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

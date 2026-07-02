@@ -99,6 +99,13 @@ class PrimateCloudDnsRecord(models.Model):
         help="ChangeId del último cambio aplicado en Route 53 (para consultar "
              "la propagación).",
     )
+    is_alias = fields.Boolean(
+        string="Registro alias", readonly=True,
+        help="Registro alias de Route 53 (apunta a un recurso AWS: ELB, "
+             "CloudFront, S3). Forma distinta —AliasTarget, sin TTL/valores "
+             "simples—: PCM no lo edita en v1 para no romperlo. La señal es la "
+             "presencia de AliasTarget en AWS, NO el TTL.",
+    )
     delete_needs_ack = fields.Boolean(
         string="Borrado con confirmación reforzada",
         compute="_compute_delete_needs_ack",
@@ -187,6 +194,7 @@ class PrimateCloudDnsRecord(models.Model):
                 continue
             aws_value = data.get("record_value")
             aws_ttl = data.get("ttl") or 300
+            aws_is_alias = bool(data.get("is_alias"))
             # El NAME se compara NORMALIZADO (sin punto final, minúsculas): los
             # nombres DNS son case-insensitive y Route 53 los devuelve como FQDN
             # con punto final. Sin esto, un registro PCM 'Forum.X.com' no
@@ -211,6 +219,7 @@ class PrimateCloudDnsRecord(models.Model):
                     existing.write({
                         "record_value_aws": aws_value,
                         "sync_state": "divergent",
+                        "is_alias": aws_is_alias,
                         "last_sync_date": now,
                     })
                 else:
@@ -218,6 +227,7 @@ class PrimateCloudDnsRecord(models.Model):
                         "record_value_aws": False,
                         "sync_state": "synced",
                         "state": "active",
+                        "is_alias": aws_is_alias,
                         "last_sync_date": now,
                     })
                 updated += 1
@@ -232,6 +242,7 @@ class PrimateCloudDnsRecord(models.Model):
                     "ttl": aws_ttl,
                     "state": "active",
                     "sync_state": "synced",
+                    "is_alias": aws_is_alias,
                     "last_sync_date": now,
                 })
                 created += 1
@@ -349,6 +360,32 @@ class PrimateCloudDnsRecord(models.Model):
         self._log_dns("dns_delete", change_id=change_id)
         self._poll_and_finalize(service, change_id)
         return True
+
+    def action_open_edit(self):
+        """Abre el wizard de edición de este registro (en el drawer)."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Editar registro DNS"),
+            "res_model": "primate.cloud.dns.record.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_record_id": self.id},
+        }
+
+    def action_open_delete(self):
+        """Abre el wizard de borrado (confirmación fuerte) de este registro."""
+        self.ensure_one()
+        if self.state == "deleted":
+            raise ValidationError(_("El registro ya está eliminado."))
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Eliminar registro DNS"),
+            "res_model": "primate.cloud.dns.delete.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_record_id": self.id},
+        }
 
     def action_check_sync_state(self):
         """Encola la re-verificación de un registro contra Route 53 (divergencia)."""

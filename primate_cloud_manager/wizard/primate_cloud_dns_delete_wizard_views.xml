@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_dns_delete_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.dns.delete.wizard.form</field>
+        <field name="model">primate.cloud.dns.delete.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Eliminar registro DNS">
+                <div class="alert alert-danger" role="alert">
+                    <strong>Eliminar un registro DNS puede tirar abajo el
+                    dominio.</strong> El borrado se aplica en Route 53.
+                </div>
+                <group>
+                    <field name="record_id" invisible="1"/>
+                    <field name="needs_ack" invisible="1"/>
+                    <field name="record_name" readonly="1"/>
+                    <field name="record_value" readonly="1"/>
+                    <field name="environment_name" readonly="1"/>
+                </group>
+                <div class="alert alert-danger" role="alert"
+                     invisible="not needs_ack">
+                    <strong>Registro de PRODUCCIÓN o de origen desconocido.</strong>
+                    Confirmá el nombre y marcá la conformidad para continuar.
+                </div>
+                <group>
+                    <field name="confirm_name"
+                           placeholder="Nombre exacto del registro"/>
+                    <field name="acknowledge" invisible="not needs_ack"
+                           required="needs_ack"/>
+                </group>
+                <footer>
+                    <button name="action_confirm" type="object"
+                            string="Eliminar" class="btn-danger"
+                            confirm="Se eliminará el registro en Route 53. ¿Continuar?"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

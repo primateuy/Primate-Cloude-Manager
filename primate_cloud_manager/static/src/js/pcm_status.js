@@ -19,7 +19,7 @@ const GLOBAL = {
     // ok
     active: "ok", running: "ok", connected: "ok", available: "ok",
     success: "ok", updated: "ok", installed: "ok", compliant: "ok",
-    ok: "ok", completed: "ok",
+    ok: "ok", completed: "ok", synced: "ok",
     // warn / en progreso
     provisioning: "warn", pending: "warn", creating: "warn", installing: "warn",
     deploying: "warn", syncing: "warn", outdated: "warn", stale: "warn",
