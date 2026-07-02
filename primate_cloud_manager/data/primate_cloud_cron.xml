@@ -12,4 +12,16 @@
         <field name="active" eval="True"/>
     </record>
 
+    <!-- Corre después del sync (02:00): la evidencia RDS del inventario está fresca. -->
+    <record id="cron_check_backup_compliance" model="ir.cron">
+        <field name="name">Primate Cloud: verificar cumplimiento de respaldos</field>
+        <field name="model_id" ref="model_primate_cloud_environment"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_check_backup_compliance()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="nextcall" eval="(DateTime.now() + timedelta(days=1)).strftime('%Y-%m-%d 03:30:00')"/>
+        <field name="active" eval="True"/>
+    </record>
+
 </odoo>

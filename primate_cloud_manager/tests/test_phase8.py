@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Tests de Fase 8 — Bloque 1: cimientos de respaldos.
+"""Tests de Fase 8 — Bloques 1 y 2: cimientos de respaldos y validador.
 
-Modelos backup.policy y backup, campos de cumplimiento en environment,
-constraint de coherencia entorno↔instancia en database y action_types nuevos.
-Sin AWS: todo es modelo puro.
+Bloque 1: modelos backup.policy y backup, campos de cumplimiento en
+environment, constraint de coherencia entorno↔instancia y action_types.
+Bloque 2: extensiones aws_rds/aws_s3 (mockeadas), regla pura de evaluación
+de cumplimiento, job de verificación y cron. Sin AWS real.
 """
+from datetime import timedelta
+from unittest import mock
+
+from odoo import fields
 from odoo.exceptions import UserError, ValidationError
 from odoo.tests.common import TransactionCase, tagged
 
 from ..models.primate_cloud_operation_log import ACTION_TYPES
+from ..services import aws_rds, aws_s3
 
 
 @tagged("post_install", "-at_install", "primate_cloud")
@@ -182,3 +188,323 @@ class TestPhase8Foundations(TransactionCase):
         )
         self.assertEqual(entry.action_type, "backup_run")
         self.assertEqual(entry.resource_model, "primate.cloud.environment")
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestAwsServicesPhase8(TransactionCase):
+    """Extensiones de aws_rds y aws_s3 para el validador (boto3 mockeado)."""
+
+    def _base_with_client(self):
+        base = mock.Mock()
+        return base, base.get_client.return_value
+
+    def test_rds_normaliza_latest_restorable_time(self):
+        base, client = self._base_with_client()
+        client.describe_db_instances.return_value = {"DBInstances": [{
+            "DBInstanceIdentifier": "forum-db", "Engine": "postgres",
+            "BackupRetentionPeriod": 7, "DBInstanceStatus": "available",
+            "LatestRestorableTime": "2026-07-01T03:00:00Z",
+        }]}
+        data = aws_rds.AwsRdsService(base).get_instance("forum-db")
+        self.assertEqual(data["backup_retention_days"], 7)
+        self.assertEqual(data["latest_restorable_time"], "2026-07-01T03:00:00Z")
+
+    def test_rds_list_snapshots(self):
+        base, client = self._base_with_client()
+        client.get_paginator.return_value.paginate.return_value = [{
+            "DBSnapshots": [{
+                "DBSnapshotIdentifier": "rds:forum-db-2026-07-01",
+                "DBInstanceIdentifier": "forum-db",
+                "SnapshotType": "automated", "Status": "available",
+                "SnapshotCreateTime": "2026-07-01T03:00:00Z",
+                "AllocatedStorage": 50,
+            }]
+        }]
+        snapshots = aws_rds.AwsRdsService(base).list_snapshots(identifier="forum-db")
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]["snapshot_id"], "rds:forum-db-2026-07-01")
+        self.assertEqual(snapshots[0]["snapshot_type"], "automated")
+        client.get_paginator.return_value.paginate.assert_called_once_with(
+            DBInstanceIdentifier="forum-db"
+        )
+
+    def test_s3_list_objects_con_prefijo(self):
+        base, client = self._base_with_client()
+        client.get_paginator.return_value.paginate.return_value = [{
+            "Contents": [
+                {"Key": "pcm-backups/forum/a.dump", "Size": 100},
+                {"Key": "pcm-backups/forum/b.dump", "Size": 200},
+            ]
+        }]
+        objects = aws_s3.AwsS3Service(base).list_objects(
+            "bucket", prefix="pcm-backups/forum/"
+        )
+        self.assertEqual([o["key"] for o in objects],
+                         ["pcm-backups/forum/a.dump", "pcm-backups/forum/b.dump"])
+        client.get_paginator.return_value.paginate.assert_called_once_with(
+            Bucket="bucket", Prefix="pcm-backups/forum/"
+        )
+
+    def test_s3_head_object_404_devuelve_none(self):
+        base, client = self._base_with_client()
+
+        class FakeClientError(Exception):
+            def __init__(self, code):
+                self.response = {"ResponseMetadata": {"HTTPStatusCode": code}}
+
+        client.exceptions.ClientError = FakeClientError
+        client.head_object.side_effect = FakeClientError(404)
+        self.assertIsNone(aws_s3.AwsS3Service(base).head_object("bucket", "no-existe"))
+        # Otro código de error NO se traga: se propaga.
+        client.head_object.side_effect = FakeClientError(403)
+        with self.assertRaises(FakeClientError):
+            aws_s3.AwsS3Service(base).head_object("bucket", "prohibido")
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestBackupCompliance(TransactionCase):
+    """Regla de evaluación, job de verificación y cron (Bloque 2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Forum", "account_id": self.account.id}
+        )
+        self.environment = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active",
+        })
+        # Política propia con valores explícitos (NO usar seeds: son noupdate
+        # y el admin puede editarlas en su base).
+        self.policy = self.env["primate.cloud.backup.policy"].create({
+            "name": "Diaria 7d (test)", "policy_type": "custom",
+            "expected_frequency": "daily", "expected_retention_days": 7,
+            "managed_by_pcm": True, "s3_bucket": "pcm-test-bucket",
+        })
+        self.environment.backup_policy_id = self.policy
+        self.Env = self.env["primate.cloud.environment"]
+
+    def _evidence(self, **overrides):
+        entry = {"name": "forum", "db_type": "local_pg",
+                 "last_backup": fields.Datetime.now() - timedelta(hours=2),
+                 "retention_days": 7, "error": None,
+                 "as_of": fields.Datetime.now()}
+        entry.update(overrides)
+        return [entry]
+
+    # --- Regla pura ---
+    def test_evaluate_sin_politica(self):
+        state, _detail = self.Env._evaluate_backup_compliance(
+            self.env["primate.cloud.backup.policy"], []
+        )
+        self.assertEqual(state, "no_policy")
+
+    def test_evaluate_politica_none_es_ok(self):
+        policy = self.env["primate.cloud.backup.policy"].create(
+            {"name": "Nada (test)", "policy_type": "none"}
+        )
+        state, _detail = self.Env._evaluate_backup_compliance(policy, [])
+        self.assertEqual(state, "ok")
+
+    def test_evaluate_sin_bases_no_verificable(self):
+        state, _detail = self.Env._evaluate_backup_compliance(self.policy, [])
+        self.assertEqual(state, "unverifiable")
+
+    def test_evaluate_cumple(self):
+        state, detail = self.Env._evaluate_backup_compliance(
+            self.policy, self._evidence()
+        )
+        self.assertEqual(state, "ok")
+        self.assertIn("cumple", detail)
+
+    def test_evaluate_backup_viejo_no_cumple(self):
+        evidence = self._evidence(
+            last_backup=fields.Datetime.now() - timedelta(hours=30)
+        )
+        state, detail = self.Env._evaluate_backup_compliance(self.policy, evidence)
+        self.assertEqual(state, "non_compliant")
+        self.assertIn("fuera de la ventana", detail)
+
+    def test_evaluate_sin_backups_no_cumple(self):
+        state, detail = self.Env._evaluate_backup_compliance(
+            self.policy, self._evidence(last_backup=False)
+        )
+        self.assertEqual(state, "non_compliant")
+        self.assertIn("sin backups registrados", detail)
+
+    def test_evaluate_retencion_menor_no_cumple(self):
+        state, detail = self.Env._evaluate_backup_compliance(
+            self.policy, self._evidence(retention_days=3)
+        )
+        self.assertEqual(state, "non_compliant")
+        self.assertIn("retención 3 < 7", detail)
+
+    def test_evaluate_retencion_desconocida_no_verificable(self):
+        state, detail = self.Env._evaluate_backup_compliance(
+            self.policy, self._evidence(retention_days=None)
+        )
+        self.assertEqual(state, "unverifiable")
+        self.assertIn("retención no verificable", detail)
+
+    def test_evaluate_evidencia_vieja_no_verificable(self):
+        """Evidencia recolectada hace >24 h: NUNCA 'Cumple' sobre datos viejos,
+        aunque el backup y la retención se vean perfectos."""
+        evidence = self._evidence(as_of=fields.Datetime.now() - timedelta(hours=30))
+        state, detail = self.Env._evaluate_backup_compliance(self.policy, evidence)
+        self.assertEqual(state, "unverifiable")
+        self.assertIn("más vieja que 24 h", detail)
+
+    def test_evaluate_evidencia_sin_marca_temporal_no_verificable(self):
+        state, detail = self.Env._evaluate_backup_compliance(
+            self.policy, self._evidence(as_of=None)
+        )
+        self.assertEqual(state, "unverifiable")
+        self.assertIn("sin marca temporal", detail)
+
+    def test_evaluate_evidencia_vieja_gana_a_cumple_en_mixto(self):
+        evidence = self._evidence() + self._evidence(
+            name="otra", as_of=fields.Datetime.now() - timedelta(days=2)
+        )
+        state, _detail = self.Env._evaluate_backup_compliance(self.policy, evidence)
+        self.assertEqual(state, "unverifiable")
+
+    def test_evaluate_error_no_verificable(self):
+        state, detail = self.Env._evaluate_backup_compliance(
+            self.policy, self._evidence(error="AccessDenied")
+        )
+        self.assertEqual(state, "unverifiable")
+        self.assertIn("AccessDenied", detail)
+
+    def test_evaluate_prioridad_no_cumple_gana(self):
+        evidence = self._evidence() + self._evidence(error="timeout") + \
+            self._evidence(retention_days=1)
+        state, _detail = self.Env._evaluate_backup_compliance(self.policy, evidence)
+        self.assertEqual(state, "non_compliant")
+
+    def test_evaluate_frecuencia_manual_solo_retencion(self):
+        policy = self.env["primate.cloud.backup.policy"].create({
+            "name": "Manual (test)", "policy_type": "custom",
+            "expected_frequency": "manual", "expected_retention_days": 7,
+        })
+        # Sin backups pero con retención suficiente: manual no evalúa ventana.
+        state, _detail = self.Env._evaluate_backup_compliance(
+            policy, self._evidence(last_backup=False)
+        )
+        self.assertEqual(state, "ok")
+
+    # --- Evidencia y job (sin AWS: base local + registro PCM) ---
+    def _create_local_db(self, name="forum"):
+        return self.env["primate.cloud.database"].create({
+            "name": name, "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "local_pg",
+        })
+
+    def _register_backup(self, database, hours_ago=2, state="completed"):
+        return self.env["primate.cloud.backup"].create({
+            "name": "Backup %s" % database.name,
+            "environment_id": self.environment.id,
+            "database_id": database.id,
+            "backup_date": fields.Datetime.now() - timedelta(hours=hours_ago),
+            "state": state,
+        })
+
+    def test_job_local_con_backup_fresco_cumple(self):
+        database = self._create_local_db()
+        self._register_backup(database, hours_ago=2)
+        state = self.environment.job_check_backup_compliance()
+        self.assertEqual(state, "ok")
+        self.assertEqual(self.environment.backup_compliance, "ok")
+        self.assertTrue(self.environment.last_backup_check)
+        # La evidencia refresca el último backup de la base.
+        self.assertTrue(database.last_backup_date)
+
+    def test_job_local_backup_viejo_no_cumple_y_loguea(self):
+        database = self._create_local_db()
+        self._register_backup(database, hours_ago=48)
+        state = self.environment.job_check_backup_compliance()
+        self.assertEqual(state, "non_compliant")
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_check"),
+             ("resource_id", "=", self.environment.id)],
+            order="id desc", limit=1,
+        )
+        self.assertEqual(log.result, "failed")
+
+    def test_job_solo_loguea_transiciones(self):
+        database = self._create_local_db()
+        self._register_backup(database, hours_ago=2)
+        Log = self.env["primate.cloud.operation.log"]
+        domain = [("action_type", "=", "backup_check"),
+                  ("resource_id", "=", self.environment.id)]
+        self.environment.job_check_backup_compliance()  # no_policy -> ok: loguea
+        count_first = Log.search_count(domain)
+        self.assertEqual(count_first, 1)
+        self.environment.job_check_backup_compliance()  # ok -> ok: silencio
+        self.assertEqual(Log.search_count(domain), count_first)
+
+    def test_job_backup_fallido_no_cuenta(self):
+        database = self._create_local_db()
+        self._register_backup(database, hours_ago=2, state="failed")
+        state = self.environment.job_check_backup_compliance()
+        self.assertEqual(state, "non_compliant")
+
+    def test_job_rds_con_error_no_verificable(self):
+        self.env["primate.cloud.database"].create({
+            "name": "forum-rds", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "rds",
+            "rds_identifier": "forum-rds",
+        })
+        with mock.patch.object(
+            aws_rds.AwsRdsService, "get_instance",
+            side_effect=Exception("AccessDenied"),
+        ):
+            state = self.environment.job_check_backup_compliance()
+        self.assertEqual(state, "unverifiable")
+        self.assertIn("AccessDenied", self.environment.backup_compliance_detail)
+
+    def test_job_rds_actualiza_base(self):
+        database = self.env["primate.cloud.database"].create({
+            "name": "forum-rds", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "rds",
+            "rds_identifier": "forum-rds",
+        })
+        fresh = fields.Datetime.now() - timedelta(hours=1)
+        with mock.patch.object(
+            aws_rds.AwsRdsService, "get_instance",
+            return_value={"backup_retention_days": 14,
+                          "latest_restorable_time": fresh},
+        ):
+            state = self.environment.job_check_backup_compliance()
+        self.assertEqual(state, "ok")
+        self.assertEqual(database.backup_retention_days, 14)
+        self.assertEqual(database.last_backup_date, fresh)
+
+    # --- Cron y botón ---
+    def test_cron_encola_y_marca_sin_politica(self):
+        other = self.env["primate.cloud.environment"].create({
+            "name": "Sin Política", "project_id": self.project.id,
+            "env_type": "testing", "state": "active",
+            "backup_compliance": "ok",  # simular estado previo
+        })
+        with mock.patch.object(type(self.environment), "with_delay") as with_delay:
+            self.Env._cron_check_backup_compliance()
+            with_delay.assert_called_once()
+        self.assertEqual(other.backup_compliance, "no_policy")
+        self.assertTrue(other.last_backup_check)
+
+    def test_action_check_requiere_politica(self):
+        other = self.env["primate.cloud.environment"].create({
+            "name": "Sin Política 2", "project_id": self.project.id,
+            "env_type": "testing", "state": "active",
+        })
+        with self.assertRaises(UserError):
+            other.action_check_backup_compliance()
+
+    def test_action_check_encola(self):
+        with mock.patch.object(type(self.environment), "with_delay") as with_delay:
+            self.environment.action_check_backup_compliance()
+            with_delay.assert_called_once()

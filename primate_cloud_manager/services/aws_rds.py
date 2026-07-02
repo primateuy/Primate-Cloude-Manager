@@ -41,6 +41,39 @@ class AwsRdsService:
             return self._normalize_db(db, region)
         return None
 
+    def list_snapshots(self, identifier=None, region=None):
+        """Lista snapshots RDS (automáticos y manuales), opcionalmente de una base.
+
+        Evidencia para el validador de respaldos (Fase 8): fecha y estado de
+        los snapshots reales.
+
+        Args:
+            identifier (str, optional): filtra por instancia RDS.
+            region (str, optional): región.
+
+        Returns:
+            list[dict]: ``{"snapshot_id", "rds_identifier", "snapshot_type",
+            "status", "created_at", "size_gb"}`` (``created_at`` tz-aware,
+            como lo entrega boto3).
+        """
+        client = self._base.get_client("rds", region=region)
+        paginator = client.get_paginator("describe_db_snapshots")
+        params = {}
+        if identifier:
+            params["DBInstanceIdentifier"] = identifier
+        result = []
+        for page in paginator.paginate(**params):
+            for snapshot in page.get("DBSnapshots", []):
+                result.append({
+                    "snapshot_id": snapshot["DBSnapshotIdentifier"],
+                    "rds_identifier": snapshot.get("DBInstanceIdentifier"),
+                    "snapshot_type": snapshot.get("SnapshotType"),
+                    "status": snapshot.get("Status"),
+                    "created_at": snapshot.get("SnapshotCreateTime"),
+                    "size_gb": snapshot.get("AllocatedStorage"),
+                })
+        return result
+
     # ------------------------------------------------------------------
     # Creación de instancias RDS (Fase 4). Devuelve la base normalizada.
     # ------------------------------------------------------------------
@@ -142,6 +175,8 @@ class AwsRdsService:
             "rds_storage_gb": db.get("AllocatedStorage"),
             "rds_multi_az": db.get("MultiAZ", False),
             "backup_retention_days": db.get("BackupRetentionPeriod"),
+            # Último punto restaurable del backup automático (tz-aware, UTC).
+            "latest_restorable_time": db.get("LatestRestorableTime"),
             "status": db.get("DBInstanceStatus"),
             "endpoint": endpoint.get("Address"),
             "region": region,

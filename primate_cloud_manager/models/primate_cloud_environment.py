@@ -16,13 +16,26 @@ from odoo.exceptions import UserError
 from odoo.tools import file_open
 
 from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm
-from ..tools import bus, crypto
+from ..tools import bus, crypto, dates
 
 _logger = logging.getLogger(__name__)
 
 # Rutas (relativas al addons-path) de las plantillas corridas por SSM.
 INSTALL_SCRIPT_PATH = "primate_cloud_manager/data/install_odoo.sh"
 NEUTRALIZATION_SQL_PATH = "primate_cloud_manager/data/neutralization.sql"
+
+# Ventana máxima (horas) para dar por cumplida cada frecuencia esperada.
+# Todo se interpreta y compara en UTC (decisión de Fase 8: los Datetime de Odoo,
+# el cron y los timestamps de AWS son UTC). El margen sobre la frecuencia
+# nominal absorbe corrimientos del cron y duración del propio backup.
+BACKUP_FREQUENCY_WINDOW_HOURS = {"daily": 26, "twice_daily": 14, "hourly": 2}
+
+# Edad máxima (horas) de la evidencia para poder evaluarla. Evidencia más vieja
+# (o sin marca temporal) => "No verificable": NUNCA "Cumple" sobre datos viejos,
+# es el peor falso positivo posible en respaldos. En el flujo normal la evidencia
+# se recolecta en vivo en el mismo job, así que esto es una guarda de contrato
+# para cualquier llamada futura con datos cacheados.
+BACKUP_EVIDENCE_MAX_AGE_HOURS = 24
 
 
 class PrimateCloudEnvironment(models.Model):
@@ -787,6 +800,223 @@ class PrimateCloudEnvironment(models.Model):
         with file_open(NEUTRALIZATION_SQL_PATH, "r") as sql_file:
             sql = sql_file.read()
         return sql.replace("%%STAGING_URL%%", staging_url or "")
+
+    # ------------------------------------------------------------------
+    # Respaldos (Fase 8): validador de cumplimiento esperado vs detectado
+    # ------------------------------------------------------------------
+    @api.model
+    def _cron_check_backup_compliance(self):
+        """Cron diario: encola la verificación de cumplimiento por entorno.
+
+        El cron solo selecciona y encola; la consulta a AWS va en queue_job.
+        Los entornos sin política no consultan nada: se marcan directo.
+        """
+        environments = self.search([("backup_policy_id", "!=", False)])
+        for environment in environments:
+            environment.with_delay(
+                description=_("Verificar respaldo: %s") % environment.name
+            ).job_check_backup_compliance()
+        no_policy = self.search([
+            ("backup_policy_id", "=", False),
+            ("backup_compliance", "!=", "no_policy"),
+        ])
+        if no_policy:
+            no_policy.write({
+                "backup_compliance": "no_policy",
+                "backup_compliance_detail":
+                    _("El entorno no tiene política de respaldo asignada."),
+                "last_backup_check": fields.Datetime.now(),
+            })
+        _logger.info(
+            "Verificación de respaldos encolada para %s entornos.", len(environments)
+        )
+
+    def action_check_backup_compliance(self):
+        """Botón: encola la verificación de cumplimiento de este entorno."""
+        self.ensure_one()
+        if not self.backup_policy_id:
+            raise UserError(_("Asigná una política de respaldo antes de verificar."))
+        self.with_delay(
+            description=_("Verificar respaldo: %s") % self.name
+        ).job_check_backup_compliance()
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"type": "info",
+                       "message": _("Verificación de respaldo encolada."),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def job_check_backup_compliance(self):
+        """Job: compara la política esperada contra la evidencia real.
+
+        Persiste el resultado en los campos de cumplimiento y deja traza en la
+        bitácora SOLO cuando el estado cambia (evita ruido con el cron diario).
+        """
+        self.ensure_one()
+        previous = self.backup_compliance
+        evidence = self._collect_backup_evidence()
+        state, detail = self._evaluate_backup_compliance(
+            self.backup_policy_id, evidence
+        )
+        self.write({
+            "backup_compliance": state,
+            "backup_compliance_detail": detail,
+            "last_backup_check": fields.Datetime.now(),
+        })
+        if state != previous:
+            result = {"ok": "success", "unverifiable": "partial"}.get(state, "failed")
+            self._log(
+                "backup_check",
+                name=_("Verificar respaldo: %s") % self.name,
+                result=result,
+                error_message=detail if result == "failed" else None,
+            )
+            if state == "non_compliant":
+                self.message_post(
+                    body=_("El entorno NO cumple su política de respaldo "
+                           "(%(policy)s):\n%(detail)s",
+                           policy=self.backup_policy_id.name, detail=detail)
+                )
+        return state
+
+    def _collect_backup_evidence(self):
+        """Junta la evidencia real de respaldo, base por base.
+
+        - RDS: consulta viva a AWS (retención configurada + último punto
+          restaurable del backup automático) y refresca esos datos en el
+          registro de la base.
+        - PostgreSQL local: último backup ``completed`` del registro de PCM
+          (`primate.cloud.backup`). La retención solo es verificable si la
+          política es gestionada por PCM (el lifecycle S3 lo configura PCM
+          con la retención de la política, ver Bloque 3).
+
+        Returns:
+            list[dict]: por base: ``{"name", "db_type", "last_backup"
+            (datetime naive UTC | False), "retention_days" (int | None),
+            "error" (str | None)}``.
+        """
+        self.ensure_one()
+        Backup = self.env["primate.cloud.backup"]
+        policy = self.backup_policy_id
+        services_by_account = {}
+        evidence = []
+        for database in self.database_ids:
+            entry = {"name": database.name, "db_type": database.db_type,
+                     "last_backup": False, "retention_days": None, "error": None,
+                     "as_of": fields.Datetime.now()}
+            if database.db_type == "rds" and database.rds_identifier:
+                account = database.account_id
+                try:
+                    service = services_by_account.get(account.id)
+                    if service is None:
+                        service = aws_rds.AwsRdsService(account._get_aws_service())
+                        services_by_account[account.id] = service
+                    data = service.get_instance(
+                        database.rds_identifier, region=account.default_region
+                    ) or {}
+                    entry["retention_days"] = data.get("backup_retention_days") or 0
+                    entry["last_backup"] = dates.to_naive_utc(
+                        data.get("latest_restorable_time")
+                    )
+                    database.write({
+                        "backup_retention_days": entry["retention_days"],
+                        "last_backup_date": entry["last_backup"] or False,
+                    })
+                except Exception as error:  # noqa: BLE001 - evidencia no verificable
+                    entry["error"] = str(error)
+            else:
+                last = Backup.search(
+                    [("database_id", "=", database.id), ("state", "=", "completed")],
+                    order="backup_date desc", limit=1,
+                )
+                entry["last_backup"] = last.backup_date or False
+                if policy.managed_by_pcm:
+                    entry["retention_days"] = policy.expected_retention_days
+                if last:
+                    database.write({"last_backup_date": last.backup_date})
+            evidence.append(entry)
+        return evidence
+
+    @api.model
+    def _evaluate_backup_compliance(self, policy, evidence, now=None):
+        """Regla PURA de comparación esperado vs detectado (spec §10.2).
+
+        No consulta AWS ni escribe: recibe la política y la evidencia y decide.
+        Todos los timestamps se comparan en UTC naive (como guarda Odoo).
+
+        Args:
+            policy (recordset): ``primate.cloud.backup.policy`` (o vacío).
+            evidence (list[dict]): salida de :meth:`_collect_backup_evidence`.
+            now (datetime, optional): inyectable para testear ventanas.
+
+        Returns:
+            tuple[str, str]: (estado de cumplimiento, detalle legible).
+        """
+        if not policy:
+            return "no_policy", _("El entorno no tiene política de respaldo asignada.")
+        if policy.policy_type == "none":
+            return "ok", _("Política 'Sin respaldo gestionado': no se realiza comparación.")
+        if not evidence:
+            return "unverifiable", _("El entorno no tiene bases de datos registradas.")
+        now = now or fields.Datetime.now()
+        window_hours = BACKUP_FREQUENCY_WINDOW_HOURS.get(policy.expected_frequency)
+        lines, states = [], []
+        for entry in evidence:
+            if entry.get("error"):
+                states.append("unverifiable")
+                lines.append(_("? %(db)s: no verificable (%(error)s)",
+                               db=entry["name"], error=entry["error"]))
+                continue
+            # Evidencia vieja o sin marca temporal: no se evalúa. Nunca dar
+            # "Cumple" sobre datos viejos.
+            as_of = entry.get("as_of")
+            if not as_of or (now - as_of).total_seconds() \
+                    > BACKUP_EVIDENCE_MAX_AGE_HOURS * 3600:
+                states.append("unverifiable")
+                lines.append(_(
+                    "? %(db)s: evidencia %(when)s — más vieja que %(max)s h, "
+                    "no evaluable",
+                    db=entry["name"],
+                    when=fields.Datetime.to_string(as_of) if as_of
+                    else _("sin marca temporal"),
+                    max=BACKUP_EVIDENCE_MAX_AGE_HOURS))
+                continue
+            state, problems = "ok", []
+            if window_hours:
+                last = entry.get("last_backup")
+                if not last:
+                    state = "non_compliant"
+                    problems.append(_("sin backups registrados"))
+                elif (now - last).total_seconds() > window_hours * 3600:
+                    state = "non_compliant"
+                    problems.append(_("último backup %(date)s (fuera de la ventana "
+                                      "de %(hours)s h)",
+                                      date=fields.Datetime.to_string(last),
+                                      hours=window_hours))
+            if policy.expected_retention_days:
+                retention = entry.get("retention_days")
+                if retention is None:
+                    if state == "ok":
+                        state = "unverifiable"
+                    problems.append(_("retención no verificable"))
+                elif retention < policy.expected_retention_days:
+                    state = "non_compliant"
+                    problems.append(_("retención %(real)s < %(expected)s días",
+                                      real=retention,
+                                      expected=policy.expected_retention_days))
+            states.append(state)
+            marker = {"ok": "✔", "non_compliant": "✖"}.get(state, "?")
+            lines.append("%s %s: %s" % (
+                marker, entry["name"], "; ".join(problems) or _("cumple")))
+        # Prioridad: no cumple > no verificable > cumple.
+        if "non_compliant" in states:
+            overall = "non_compliant"
+        elif "unverifiable" in states:
+            overall = "unverifiable"
+        else:
+            overall = "ok"
+        return overall, "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Constructores de scripts SSM (puros, testeables por contenido)

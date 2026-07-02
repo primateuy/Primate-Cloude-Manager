@@ -45,3 +45,49 @@ class AwsS3Service:
         """Elimina un objeto del bucket (limpieza del dump). Best-effort."""
         client = self._base.get_client("s3", region=region)
         client.delete_object(Bucket=bucket, Key=key)
+
+    def list_objects(self, bucket, prefix=None, region=None):
+        """Lista objetos del bucket (evidencia de backups en S3, Fase 8).
+
+        Args:
+            bucket (str): nombre del bucket.
+            prefix (str, optional): filtra por prefijo de key.
+            region (str, optional): región.
+
+        Returns:
+            list[dict]: ``{"key", "size", "last_modified"}`` (``last_modified``
+            tz-aware, como lo entrega boto3).
+        """
+        client = self._base.get_client("s3", region=region)
+        paginator = client.get_paginator("list_objects_v2")
+        params = {"Bucket": bucket}
+        if prefix:
+            params["Prefix"] = prefix
+        result = []
+        for page in paginator.paginate(**params):
+            for obj in page.get("Contents", []):
+                result.append({
+                    "key": obj["Key"],
+                    "size": obj.get("Size"),
+                    "last_modified": obj.get("LastModified"),
+                })
+        return result
+
+    def head_object(self, bucket, key, region=None):
+        """Verifica que un objeto exista. Devuelve sus metadatos o None (404).
+
+        Usado por el validador para confirmar que el dump registrado sigue en S3.
+        """
+        client = self._base.get_client("s3", region=region)
+        try:
+            response = client.head_object(Bucket=bucket, Key=key)
+        except client.exceptions.ClientError as error:
+            code = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if code == 404:
+                return None
+            raise
+        return {
+            "key": key,
+            "size": response.get("ContentLength"),
+            "last_modified": response.get("LastModified"),
+        }

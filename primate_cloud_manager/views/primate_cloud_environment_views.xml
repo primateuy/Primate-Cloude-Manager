@@ -122,6 +122,10 @@
                                     <field name="backup_policy_id"/>
                                     <field name="backup_compliance" widget="pcm_status_badge"/>
                                     <field name="last_backup_check"/>
+                                    <button name="action_check_backup_compliance" type="object"
+                                            string="Verificar ahora" icon="fa-check-circle-o"
+                                            class="btn-secondary" colspan="2"
+                                            invisible="not backup_policy_id"/>
                                 </group>
                                 <group string="Detalle de cumplimiento">
                                     <field name="backup_compliance_detail" nolabel="1" colspan="2"/>

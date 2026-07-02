@@ -10,7 +10,7 @@ import unittest
 
 from odoo.tests.common import TransactionCase, tagged
 
-from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_ssm
+from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm
 
 try:
     import boto3
@@ -242,3 +242,56 @@ class TestMotoCreate(TransactionCase):
         match = [r for r in records if r["name"] == "nuevo.primate.cloud"]
         self.assertEqual(len(match), 1)
         self.assertEqual(match[0]["record_value"], "5.6.7.8")
+
+
+@unittest.skipUnless(HAS_MOTO, "moto no está instalado")
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestMotoPhase8(TransactionCase):
+    """Fase 8: evidencia de respaldos (retención RDS, snapshots, listing S3)."""
+
+    def test_rds_retencion_y_snapshots(self):
+        with mock_aws():
+            _create_rds("forum-db")
+            service = aws_rds.AwsRdsService(_make_base())
+            data = service.get_instance("forum-db", region="us-east-1")
+            self.assertEqual(data["backup_retention_days"], 7)
+            # Snapshot manual: aparece en la evidencia con fecha y tipo.
+            boto3.client("rds", region_name="us-east-1").create_db_snapshot(
+                DBSnapshotIdentifier="manual-1", DBInstanceIdentifier="forum-db",
+            )
+            snapshots = service.list_snapshots(
+                identifier="forum-db", region="us-east-1"
+            )
+        # moto replica AWS: además del manual existe el snapshot automático
+        # que genera la creación de la RDS con retención > 0.
+        by_type = {s["snapshot_type"]: s for s in snapshots}
+        self.assertIn("manual", by_type)
+        manual = by_type["manual"]
+        self.assertEqual(manual["snapshot_id"], "manual-1")
+        self.assertEqual(manual["rds_identifier"], "forum-db")
+        self.assertTrue(all(s["created_at"] for s in snapshots))
+
+    def test_s3_list_y_head(self):
+        with mock_aws():
+            service = aws_s3.AwsS3Service(_make_base())
+            service.ensure_bucket("pcm-backups-test", region="us-east-1")
+            client = boto3.client("s3", region_name="us-east-1")
+            client.put_object(Bucket="pcm-backups-test",
+                              Key="pcm-backups/forum/a.dump", Body=b"dump")
+            client.put_object(Bucket="pcm-backups-test",
+                              Key="otro/b.dump", Body=b"x")
+            objects = service.list_objects(
+                "pcm-backups-test", prefix="pcm-backups/forum/", region="us-east-1"
+            )
+            self.assertEqual([o["key"] for o in objects],
+                             ["pcm-backups/forum/a.dump"])
+            self.assertEqual(objects[0]["size"], 4)
+            self.assertTrue(objects[0]["last_modified"])
+            head = service.head_object(
+                "pcm-backups-test", "pcm-backups/forum/a.dump", region="us-east-1"
+            )
+            self.assertEqual(head["size"], 4)
+            missing = service.head_object(
+                "pcm-backups-test", "no-existe.dump", region="us-east-1"
+            )
+        self.assertIsNone(missing)
