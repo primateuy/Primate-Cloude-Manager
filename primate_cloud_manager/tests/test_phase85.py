@@ -6,7 +6,10 @@ modelo dns.record: guardia de borrado, validación de forma por tipo, detección
 de divergencia en el sync y comparación multi-valor.
 """
 import unittest
+from datetime import timedelta
+from unittest import mock
 
+from odoo import fields
 from odoo.exceptions import ValidationError
 from odoo.tests.common import TransactionCase, tagged
 
@@ -171,6 +174,151 @@ class TestDnsModelPhase85(TransactionCase):
         self.assertIn("dns_delete", keys)
 
 
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestDnsJobsPhase85(TransactionCase):
+    """Jobs de aplicación/propagación/divergencia (Bloque 2), Route 53 mockeado."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Forum", "account_id": self.account.id}
+        )
+        self.env_prod = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active",
+        })
+        self.Dns = self.env["primate.cloud.dns.record"]
+        self.rec = self.Dns.create({
+            "name": "a.forum.cloud", "account_id": self.account.id,
+            "environment_id": self.env_prod.id, "hosted_zone_id": "Z1",
+            "record_type": "A", "record_value": "1.2.3.4", "ttl": 300,
+        })
+
+    def _aws_record(self, value="1.2.3.4", ttl=300):
+        return {"name": "a.forum.cloud", "record_type": "A",
+                "record_value": value, "ttl": ttl}
+
+    # --- Propagación: nunca synced mientras PENDING ---
+    def test_poll_pending_no_pasa_a_synced(self):
+        service = mock.Mock()
+        service.get_change_status.return_value = "PENDING"
+        self.rec.sync_state = "pending"
+        res = self.rec._poll_and_finalize(
+            service, "c1", timeout=2, interval=1, _sleep=lambda s: None)
+        self.assertEqual(res, "PENDING")
+        self.assertEqual(self.rec.sync_state, "pending")  # NUNCA synced
+
+    def test_poll_insync_finaliza_synced(self):
+        service = mock.Mock()
+        service.get_change_status.return_value = "INSYNC"
+        service.list_records.return_value = [self._aws_record()]
+        res = self.rec._poll_and_finalize(
+            service, "c1", timeout=10, interval=1, _sleep=lambda s: None)
+        self.assertEqual(res, "INSYNC")
+        self.assertEqual(self.rec.sync_state, "synced")
+
+    # --- Finalización contra la realidad de AWS ---
+    def test_finalize_divergente_si_alguien_cambio_afuera(self):
+        service = mock.Mock()
+        service.list_records.return_value = [self._aws_record(value="9.9.9.9")]
+        self.rec._finalize_dns_sync(service)
+        self.assertEqual(self.rec.sync_state, "divergent")
+        self.assertEqual(self.rec.record_value_aws, "9.9.9.9")
+
+    def test_finalize_borrado_confirma_ausencia(self):
+        self.rec.state = "deleted"
+        service = mock.Mock()
+        service.list_records.return_value = []  # ya no está
+        self.rec._finalize_dns_sync(service)
+        self.assertEqual(self.rec.sync_state, "synced")
+
+    def test_finalize_borrado_divergente_si_sigue(self):
+        self.rec.state = "deleted"
+        service = mock.Mock()
+        service.list_records.return_value = [self._aws_record()]
+        self.rec._finalize_dns_sync(service)
+        self.assertEqual(self.rec.sync_state, "divergent")
+
+    # --- job_apply_change / job_delete (servicio mockeado) ---
+    def test_job_apply_error_marca_error(self):
+        service = mock.Mock()
+        service.create_record.side_effect = Exception("AccessDenied")
+        with mock.patch.object(type(self.rec), "_service", return_value=service):
+            ok = self.rec.job_apply_change()
+        self.assertFalse(ok)
+        self.assertEqual(self.rec.sync_state, "error")
+
+    def test_job_apply_ok_encadena_pending_a_synced(self):
+        service = mock.Mock()
+        service.create_record.return_value = "/change/C1"
+        service.get_change_status.return_value = "INSYNC"
+        service.list_records.return_value = [self._aws_record()]
+        with mock.patch.object(type(self.rec), "_service", return_value=service):
+            ok = self.rec.job_apply_change(action_type="dns_create")
+        self.assertTrue(ok)
+        self.assertEqual(self.rec.last_change_id, "/change/C1")
+        self.assertEqual(self.rec.sync_state, "synced")
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "dns_create"), ("resource_id", "=", self.rec.id)],
+            limit=1)
+        self.assertEqual(log.result, "success")
+
+    def test_job_delete_marca_deleted(self):
+        service = mock.Mock()
+        service.delete_record.return_value = "/change/C2"
+        service.get_change_status.return_value = "INSYNC"
+        service.list_records.return_value = []  # confirmado ausente
+        with mock.patch.object(type(self.rec), "_service", return_value=service):
+            ok = self.rec.job_delete()
+        self.assertTrue(ok)
+        self.assertEqual(self.rec.state, "deleted")
+        self.assertEqual(self.rec.sync_state, "synced")
+
+    def test_apply_change_valida_forma(self):
+        with self.assertRaises(ValidationError):
+            self.rec.action_apply_change({"record_value": "no-ip"})
+
+    # --- Cron anti-zombi ---
+    def test_cron_resync_insync_finaliza(self):
+        self.rec.write({"sync_state": "pending", "last_change_id": "/change/C1"})
+        service = mock.Mock()
+        service.get_change_status.return_value = "INSYNC"
+        service.list_records.return_value = [self._aws_record()]
+        with mock.patch.object(type(self.rec), "_service", return_value=service):
+            self.Dns._cron_resync_pending()
+        self.assertEqual(self.rec.sync_state, "synced")
+
+    def test_cron_resync_zombi_a_error(self):
+        """Un pending que sigue PENDING más del umbral → error (ni eterno ni
+        falso synced). Se envejece write_date por SQL para simularlo."""
+        self.rec.write({"sync_state": "pending", "last_change_id": "/change/C1"})
+        # Flush ANTES de envejecer write_date por SQL: si no, el flush implícito
+        # del search del cron reescribiría write_date a now() y anularía el SQL.
+        self.rec.flush_recordset()
+        old = fields.Datetime.now() - timedelta(hours=2)
+        self.env.cr.execute(
+            "UPDATE primate_cloud_dns_record SET write_date = %s WHERE id = %s",
+            (old, self.rec.id))
+        self.rec.invalidate_recordset()
+        service = mock.Mock()
+        service.get_change_status.return_value = "PENDING"
+        with mock.patch.object(type(self.rec), "_service", return_value=service):
+            self.Dns._cron_resync_pending()
+        self.assertEqual(self.rec.sync_state, "error")
+
+    def test_cron_resync_pending_fresco_sigue_pending(self):
+        self.rec.write({"sync_state": "pending", "last_change_id": "/change/C1"})
+        service = mock.Mock()
+        service.get_change_status.return_value = "PENDING"
+        with mock.patch.object(type(self.rec), "_service", return_value=service):
+            self.Dns._cron_resync_pending()
+        self.assertEqual(self.rec.sync_state, "pending")
+
+
 @unittest.skipUnless(HAS_MOTO, "moto no está instalado")
 @tagged("post_install", "-at_install", "primate_cloud")
 class TestRoute53ServicePhase85(TransactionCase):
@@ -217,3 +365,37 @@ class TestRoute53ServicePhase85(TransactionCase):
             self.assertTrue(del_id)
             records = service.list_records(zone_id)
         self.assertFalse(any(r["name"] == "multi.test.local" for r in records))
+
+    def test_job_apply_y_delete_end_to_end(self):
+        """job_apply_change/job_delete completos contra moto: crear→synced,
+        borrar→deleted+synced (registro ausente en la zona)."""
+        with mock_aws():
+            client = boto3.client("route53", region_name="us-east-1")
+            zone_id = self._zone(client, name="forum.cloud.")
+            account = self.env["primate.cloud.account"].create({
+                "name": "moto", "default_region": "us-east-1",
+                "iam_access_key_id": "testing", "iam_secret_access_key": "testing",
+            })
+            project = self.env["primate.cloud.project"].create(
+                {"name": "P", "account_id": account.id})
+            environment = self.env["primate.cloud.environment"].create({
+                "name": "E", "project_id": project.id, "env_type": "staging",
+                "state": "active"})
+            rec = self.env["primate.cloud.dns.record"].create({
+                "name": "web.forum.cloud", "account_id": account.id,
+                "environment_id": environment.id, "hosted_zone_id": zone_id,
+                "record_type": "A", "record_value": "1.2.3.4", "ttl": 300,
+            })
+            ok = rec.job_apply_change(action_type="dns_create")
+            self.assertTrue(ok)
+            self.assertEqual(rec.sync_state, "synced")
+            self.assertEqual(rec.state, "active")
+            # Editar el valor → sigue synced con el valor nuevo.
+            rec.record_value = "5.6.7.8"
+            rec.job_apply_change()
+            self.assertEqual(rec.sync_state, "synced")
+            self.assertEqual(rec.record_value_aws, False)
+            # Borrar → deleted + confirmado ausente.
+            rec.job_delete()
+            self.assertEqual(rec.state, "deleted")
+            self.assertEqual(rec.sync_state, "synced")

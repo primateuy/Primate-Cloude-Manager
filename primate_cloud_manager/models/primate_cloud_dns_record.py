@@ -2,11 +2,24 @@
 """Registro DNS en Route 53 (inventario en Fase 2, CRUD en Fase 8.5)."""
 import logging
 import re
+import time
 
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
 
+from ..services import aws_route53
+
 _logger = logging.getLogger(__name__)
+
+# Propagación de Route 53: get_change nace PENDING y pasa a INSYNC (segundos a
+# pocos minutos). El job espera acotado; si no llega, deja el estado honesto
+# (pending) y el cron reintenta.
+DNS_PROPAGATION_TIMEOUT = 180
+DNS_PROPAGATION_INTERVAL = 15
+# Anti-zombi (mismo criterio que los backups): un 'pending' que no llega a
+# INSYNC tras estas horas es anómalo en Route 53 → error honesto, ni pending
+# eterno ni falso synced.
+DNS_PENDING_STUCK_HOURS = 1
 
 # Tipos de registro que gestiona el módulo. El resto (NS, SOA, ...) se ignora.
 SUPPORTED_RECORD_TYPES = {"A", "CNAME", "TXT", "MX"}
@@ -27,6 +40,7 @@ class PrimateCloudDnsRecord(models.Model):
 
     _name = "primate.cloud.dns.record"
     _description = "Registro DNS"
+    _inherit = ["mail.thread"]
     _order = "name"
 
     name = fields.Char(string="Nombre", required=True, help="Ej.: forum.primate.cloud")
@@ -241,3 +255,216 @@ class PrimateCloudDnsRecord(models.Model):
         def as_set(value):
             return {v.strip() for v in (value or "").split(",") if v.strip()}
         return as_set(pcm_value) != as_set(aws_value)
+
+    # ------------------------------------------------------------------
+    # CRUD sobre Route 53 (Fase 8.5, Bloque 2): aplicar / borrar / propagación
+    # ------------------------------------------------------------------
+    def _value_list(self):
+        """Valores del registro como lista limpia (separados por coma o línea)."""
+        self.ensure_one()
+        return [v.strip() for v in re.split(r"[\n,]", self.record_value or "")
+                if v.strip()]
+
+    def _service(self):
+        """Adaptador Route 53 autenticado para la cuenta del registro."""
+        self.ensure_one()
+        return aws_route53.AwsRoute53Service(self.account_id._get_aws_service())
+
+    def _log_dns(self, action_type, result="success", error=None, change_id=None):
+        """Atajo de bitácora para operaciones DNS."""
+        self.ensure_one()
+        self.env["primate.cloud.operation.log"].log_operation(
+            action_type,
+            name=_("%(action)s DNS: %(name)s",
+                   action=dict(self.env["primate.cloud.operation.log"]
+                               ._fields["action_type"].selection).get(action_type),
+                   name=self.name),
+            record=self, result=result, error_message=error, aws_request_id=change_id,
+        )
+
+    def action_apply_change(self, vals=None, action_type="dns_update"):
+        """Encola la aplicación (crear/editar) del registro en Route 53.
+
+        Valida la forma antes de encolar; el trabajo pesado (llamada AWS +
+        propagación) va en queue_job.
+        """
+        self.ensure_one()
+        if vals:
+            self.write(vals)
+        self._validate_dns_value(self.record_type, self._value_list())
+        self.sync_state = "pending"
+        self.with_delay(
+            description=_("Aplicar DNS: %s") % self.name
+        ).job_apply_change(action_type=action_type)
+        return True
+
+    def job_apply_change(self, action_type="dns_update"):
+        """Job: aplica el registro (UPSERT) en Route 53 y confirma propagación.
+
+        Nunca deja el registro en ``synced`` mientras Route 53 responda
+        ``PENDING``: aplica, queda ``pending`` y sólo pasa a ``synced`` (o
+        ``divergent``) tras releer la realidad cuando el cambio está ``INSYNC``.
+        """
+        self.ensure_one()
+        self._validate_dns_value(self.record_type, self._value_list())
+        try:
+            service = self._service()
+            change_id = service.create_record(
+                self.hosted_zone_id, self.name, self.record_type,
+                self._value_list(), ttl=self.ttl,
+                comment="pcm dns apply: %s" % self.name,
+            )
+        except Exception as error:  # noqa: BLE001 - se audita y no se traga
+            self.write({"sync_state": "error"})
+            self.message_post(body=_("Aplicación DNS fallida: %s") % error)
+            self._log_dns(action_type, result="failed", error=str(error))
+            return False
+        self.write({"last_change_id": change_id, "sync_state": "pending",
+                    "state": "active"})
+        self._log_dns(action_type, change_id=change_id)
+        self._poll_and_finalize(service, change_id)
+        return True
+
+    def job_delete(self):
+        """Job: borra el registro en Route 53 y confirma su desaparición.
+
+        El registro PCM se conserva con ``state='deleted'`` para auditoría
+        (no se hace ``unlink``); ``sync_state`` refleja la confirmación.
+        """
+        self.ensure_one()
+        try:
+            service = self._service()
+            change_id = service.delete_record(
+                self.hosted_zone_id, self.name, self.record_type,
+                self._value_list(), ttl=self.ttl,
+                comment="pcm dns delete: %s" % self.name,
+            )
+        except Exception as error:  # noqa: BLE001
+            self.write({"sync_state": "error"})
+            self.message_post(body=_("Borrado DNS fallido: %s") % error)
+            self._log_dns("dns_delete", result="failed", error=str(error))
+            return False
+        self.write({"state": "deleted", "last_change_id": change_id,
+                    "sync_state": "pending"})
+        self._log_dns("dns_delete", change_id=change_id)
+        self._poll_and_finalize(service, change_id)
+        return True
+
+    def action_check_sync_state(self):
+        """Encola la re-verificación de un registro contra Route 53 (divergencia)."""
+        self.ensure_one()
+        self.with_delay(
+            description=_("Verificar DNS: %s") % self.name
+        ).job_check_sync_state()
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"type": "info",
+                       "message": _("Verificación de DNS encolada."),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def job_check_sync_state(self):
+        """Job: relee el registro real y actualiza synced/divergent."""
+        self.ensure_one()
+        self._finalize_dns_sync(self._service())
+        return self.sync_state
+
+    def _poll_and_finalize(self, service, change_id, timeout=None, interval=None,
+                           _sleep=time.sleep):
+        """Espera acotada a que el cambio propague (INSYNC) y finaliza el estado.
+
+        Si se agota el tiempo con el cambio aún ``PENDING``, NO miente: deja el
+        registro en ``pending`` y el cron lo reintenta. Nunca ``synced`` con
+        ``PENDING``.
+        """
+        self.ensure_one()
+        timeout = DNS_PROPAGATION_TIMEOUT if timeout is None else timeout
+        interval = DNS_PROPAGATION_INTERVAL if interval is None else interval
+        waited = 0
+        while waited < timeout:
+            try:
+                status = service.get_change_status(change_id)
+            except Exception:  # noqa: BLE001 - transitorio: se reintenta
+                status = None
+            if status == "INSYNC":
+                self._finalize_dns_sync(service)
+                return "INSYNC"
+            _sleep(interval)
+            waited += interval
+        self.message_post(body=_(
+            "Propagación DNS demorada (aún PENDING tras %ss); se reintenta "
+            "por el cron.") % timeout)
+        return "PENDING"
+
+    def _read_aws_record(self, service):
+        """Relee el RRSet real de Route 53 para este registro, o None."""
+        self.ensure_one()
+        target = self._normalize_dns_name(self.name)
+        for record in service.list_records(self.hosted_zone_id):
+            if self._normalize_dns_name(record.get("name")) == target \
+                    and record.get("record_type") == self.record_type:
+                return record
+        return None
+
+    def _finalize_dns_sync(self, service):
+        """Fija synced/divergent releyendo la REALIDAD de Route 53 (fuente de
+        verdad), no asumiendo el resultado del cambio."""
+        self.ensure_one()
+        aws = self._read_aws_record(service)
+        if self.state == "deleted":
+            # Se esperaba que desapareciera.
+            if aws is None:
+                self.write({"sync_state": "synced", "record_value_aws": False,
+                            "last_sync_date": fields.Datetime.now()})
+            else:
+                self.write({"sync_state": "divergent",
+                            "record_value_aws": aws.get("record_value"),
+                            "last_sync_date": fields.Datetime.now()})
+            return self.sync_state
+        if aws is None:
+            # Debería existir y no está: alguien lo borró por fuera.
+            self.write({"sync_state": "divergent", "record_value_aws": False,
+                        "last_sync_date": fields.Datetime.now()})
+        elif self._dns_values_differ(self.record_value, aws.get("record_value")) \
+                or self.ttl != (aws.get("ttl") or 300):
+            self.write({"sync_state": "divergent",
+                        "record_value_aws": aws.get("record_value"),
+                        "last_sync_date": fields.Datetime.now()})
+        else:
+            self.write({"sync_state": "synced", "record_value_aws": False,
+                        "last_sync_date": fields.Datetime.now()})
+        return self.sync_state
+
+    @api.model
+    def _cron_resync_pending(self):
+        """Cron anti-zombi: reintenta los registros en ``pending``.
+
+        Reconsulta ``get_change``: si ya está ``INSYNC``, finaliza el estado; si
+        sigue ``PENDING`` más de :data:`DNS_PENDING_STUCK_HOURS` (anómalo en
+        Route 53, típicamente resuelve en minutos), lo marca ``error`` — ni
+        pending eterno ni falso synced.
+        """
+        now = fields.Datetime.now()
+        pending = self.search([("sync_state", "=", "pending"),
+                               ("last_change_id", "!=", False)])
+        resolved = stuck = 0
+        for record in pending:
+            try:
+                service = record._service()
+                status = service.get_change_status(record.last_change_id)
+            except Exception:  # noqa: BLE001 - transitorio: la próxima corrida
+                continue
+            if status == "INSYNC":
+                record._finalize_dns_sync(service)
+                resolved += 1
+            elif record.write_date and (now - record.write_date).total_seconds() \
+                    > DNS_PENDING_STUCK_HOURS * 3600:
+                record.write({"sync_state": "error"})
+                record.message_post(body=_(
+                    "No se pudo confirmar la propagación DNS tras %sh; marcado "
+                    "como error.") % DNS_PENDING_STUCK_HOURS)
+                stuck += 1
+        if pending:
+            _logger.info("DNS pending resueltos: %s, marcados error: %s.",
+                         resolved, stuck)
