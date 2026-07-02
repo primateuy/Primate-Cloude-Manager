@@ -392,6 +392,29 @@ class PrimateCloudEnvironment(models.Model):
                   result="success", record=instance)
         return instance
 
+    def _upsert_provisioned_database(self, vals):
+        """Reusa el registro de BD del entorno por nombre, o lo crea (F5).
+
+        El re-provision de un entorno NO debe duplicar el registro
+        ``primate.cloud.database``: un registro viejo apuntando a una instancia
+        ya terminada, sin backups, produce un falso "No cumple" en el validador.
+        Se busca por (entorno, nombre) y se actualiza (reapuntando la instancia
+        nueva); si no existe, se crea.
+
+        Returns:
+            recordset: el registro de BD (reusado o nuevo).
+        """
+        self.ensure_one()
+        Database = self.env["primate.cloud.database"]
+        existing = Database.search([
+            ("environment_id", "=", self.id),
+            ("name", "=", vals.get("name")),
+        ], limit=1)
+        if existing:
+            existing.write(vals)
+            return existing
+        return Database.create(vals)
+
     def _provision_database(self, base, account, instance, params, region):
         """Crea la base (RDS o local) y devuelve el host de conexión para Odoo."""
         db_mode = params.get("db_mode") or "none"
@@ -412,7 +435,7 @@ class PrimateCloudEnvironment(models.Model):
                 backup_retention_days=params.get("backup_retention_days") or 7,
                 region=region,
             )
-            database = self.env["primate.cloud.database"].create({
+            database = self._upsert_provisioned_database({
                 "name": params["rds_identifier"],
                 "account_id": account.id,
                 "environment_id": self.id,
@@ -432,7 +455,7 @@ class PrimateCloudEnvironment(models.Model):
             return data.get("endpoint") or "localhost"
 
         if db_mode == "local_pg":
-            self.env["primate.cloud.database"].create({
+            self._upsert_provisioned_database({
                 "name": params.get("db_name") or self.name,
                 "account_id": account.id,
                 "environment_id": self.id,
@@ -1017,6 +1040,18 @@ class PrimateCloudEnvironment(models.Model):
                 )
         return state
 
+    @staticmethod
+    def _database_on_terminated_instance(database):
+        """True si la BD apunta a una instancia EC2 terminada (huérfana, F5).
+
+        Una BD cuya instancia está ``terminated`` es un registro sin infra viva
+        detrás: no es un "incumplimiento" de respaldo, es "no aplica". El
+        validador y el ejecutor la omiten para no generar falsos "No cumple" ni
+        registros de backup fallidos perpetuos.
+        """
+        instance = database.ec2_instance_id
+        return bool(instance) and instance.instance_state == "terminated"
+
     def _collect_backup_evidence(self):
         """Junta la evidencia real de respaldo, base por base.
 
@@ -1039,6 +1074,16 @@ class PrimateCloudEnvironment(models.Model):
         services_by_account = {}
         evidence = []
         for database in self.database_ids:
+            # F5: una BD sobre instancia terminada es un registro huérfano
+            # (típicamente de un re-provision viejo); se omite del cumplimiento
+            # en vez de arrastrar el entorno a un falso "No cumple".
+            if self._database_on_terminated_instance(database):
+                evidence.append({
+                    "name": database.name, "db_type": database.db_type,
+                    "skipped": "instance_terminated",
+                    "as_of": fields.Datetime.now(),
+                })
+                continue
             entry = {"name": database.name, "db_type": database.db_type,
                      "last_backup": False, "retention_days": None, "error": None,
                      "as_of": fields.Datetime.now()}
@@ -1100,6 +1145,12 @@ class PrimateCloudEnvironment(models.Model):
         window_hours = BACKUP_FREQUENCY_WINDOW_HOURS.get(policy.expected_frequency)
         lines, states = [], []
         for entry in evidence:
+            # F5: BD omitida (instancia terminada). Se muestra por transparencia
+            # pero NO cuenta para el estado: no es cumple ni incumple.
+            if entry.get("skipped"):
+                lines.append(_("↷ %(db)s: instancia terminada, se omite del "
+                               "cumplimiento", db=entry["name"]))
+                continue
             if entry.get("error"):
                 states.append("unverifiable")
                 lines.append(_("? %(db)s: no verificable (%(error)s)",
@@ -1287,7 +1338,13 @@ class PrimateCloudEnvironment(models.Model):
                 body=_("Backup fallido preparando S3: %s") % error)
             return False
 
-        databases = self.database_ids.filtered(lambda d: d.db_type == "local_pg")
+        # F5: se respaldan solo las BD locales con infra viva; las que apuntan a
+        # una instancia terminada (huérfanas) se omiten en vez de generar un
+        # registro de backup fallido en cada corrida.
+        databases = self.database_ids.filtered(
+            lambda d: d.db_type == "local_pg"
+            and not self._database_on_terminated_instance(d)
+        )
         results = [
             self._run_database_backup(
                 database, policy, bucket, prefix, region,

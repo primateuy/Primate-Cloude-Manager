@@ -543,6 +543,128 @@ class TestBackupCompliance(TransactionCase):
             self.environment.action_check_backup_compliance()
             with_delay.assert_called_once()
 
+    # ------------------------------------------------------------------
+    # F5: integridad del validador — BD huérfana (instancia terminada)
+    # ------------------------------------------------------------------
+    def _instance(self, name, state="running"):
+        return self.env["primate.cloud.ec2.instance"].create({
+            "name": name, "account_id": self.account.id,
+            "environment_id": self.environment.id,
+            "aws_instance_id": "i-%s" % name, "instance_state": state,
+            "region": "us-east-1",
+        })
+
+    def test_f5_bd_huerfana_no_arrastra_a_no_cumple(self):
+        """Caso del backlog: una BD viva con backup fresco + una BD sobre
+        instancia terminada → 'Cumple', NO 'No cumple'."""
+        live_inst = self._instance("live")
+        dead_inst = self._instance("dead", state="terminated")
+        live_db = self.env["primate.cloud.database"].create({
+            "name": "forum", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "local_pg",
+            "ec2_instance_id": live_inst.id,
+        })
+        self.env["primate.cloud.database"].create({
+            "name": "forum_viejo", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "local_pg",
+            "ec2_instance_id": dead_inst.id,
+        })
+        self.env["primate.cloud.backup"].create({
+            "name": "b", "environment_id": self.environment.id,
+            "database_id": live_db.id, "backup_type": "pcm_dump",
+            "state": "completed",
+            "backup_date": fields.Datetime.now() - timedelta(hours=2),
+        })
+        state = self.environment.job_check_backup_compliance()
+        self.assertEqual(state, "ok")
+        # La huérfana se muestra por transparencia, pero omitida.
+        self.assertIn("se omite", self.environment.backup_compliance_detail)
+        self.assertIn("forum_viejo", self.environment.backup_compliance_detail)
+
+    def test_f5_evaluate_omite_skipped(self):
+        """La regla pura excluye las entradas skipped del estado."""
+        evidence = [
+            {"name": "viva", "db_type": "local_pg",
+             "last_backup": fields.Datetime.now() - timedelta(hours=2),
+             "retention_days": 7, "error": None, "as_of": fields.Datetime.now()},
+            {"name": "muerta", "db_type": "local_pg",
+             "skipped": "instance_terminated", "as_of": fields.Datetime.now()},
+        ]
+        state, detail = self.Env._evaluate_backup_compliance(self.policy, evidence)
+        self.assertEqual(state, "ok")
+        self.assertIn("muerta", detail)
+
+    def test_f5_ejecutor_omite_bd_terminada(self):
+        """El ejecutor no genera un backup fallido para la BD huérfana."""
+        dead_inst = self._instance("dead", state="terminated")
+        self.env["primate.cloud.database"].create({
+            "name": "forum_viejo", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "local_pg",
+            "ec2_instance_id": dead_inst.id,
+        })
+        with mock.patch.object(aws_s3.AwsS3Service, "ensure_bucket"), \
+                mock.patch.object(aws_s3.AwsS3Service, "put_lifecycle_rule"):
+            ok = self.environment.job_run_backup()
+        # Sin bases vivas: éxito vacío, y NINGÚN registro de backup creado.
+        self.assertTrue(ok)
+        self.assertFalse(self.env["primate.cloud.backup"].search(
+            [("environment_id", "=", self.environment.id)]))
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestProvisionUpsertDatabase(TransactionCase):
+    """F5 causa raíz: el re-provision reusa el registro de BD, no lo duplica."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Forum", "account_id": self.account.id}
+        )
+        self.environment = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active",
+        })
+
+    def test_upsert_reusa_por_nombre(self):
+        Db = self.env["primate.cloud.database"]
+        inst1 = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv1", "account_id": self.account.id,
+            "environment_id": self.environment.id, "aws_instance_id": "i-1",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        first = self.environment._upsert_provisioned_database({
+            "name": "forum", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "local_pg",
+            "ec2_instance_id": inst1.id, "state": "available",
+        })
+        # Re-provision: misma BD por nombre → reusa y reapunta la instancia.
+        inst2 = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv2", "account_id": self.account.id,
+            "environment_id": self.environment.id, "aws_instance_id": "i-2",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        second = self.environment._upsert_provisioned_database({
+            "name": "forum", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "local_pg",
+            "ec2_instance_id": inst2.id, "state": "available",
+        })
+        self.assertEqual(first, second)
+        self.assertEqual(Db.search_count(
+            [("environment_id", "=", self.environment.id), ("name", "=", "forum")]), 1)
+        self.assertEqual(second.ec2_instance_id, inst2)
+
+    def test_upsert_crea_si_no_existe(self):
+        rec = self.environment._upsert_provisioned_database({
+            "name": "nueva", "account_id": self.account.id,
+            "environment_id": self.environment.id, "db_type": "local_pg",
+        })
+        self.assertTrue(rec)
+        self.assertEqual(rec.name, "nueva")
+
 
 @tagged("post_install", "-at_install", "primate_cloud")
 class TestManagedBackups(TransactionCase):
