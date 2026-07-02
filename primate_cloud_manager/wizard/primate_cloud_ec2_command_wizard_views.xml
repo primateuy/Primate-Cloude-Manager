@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_ec2_command_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.ec2.command.wizard.form</field>
+        <field name="model">primate.cloud.ec2.command.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Ejecutar comando">
+                <group>
+                    <field name="instance_id" readonly="1"/>
+                    <field name="command" placeholder="Ej.: sudo systemctl restart odoo"/>
+                </group>
+                <footer>
+                    <button name="action_run" type="object" string="Ejecutar"
+                            class="btn-primary"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_provision_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.provision.wizard.form</field>
+        <field name="model">primate.cloud.provision.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Aprovisionar entorno">
+                <div class="alert alert-info" role="alert">
+                    Se creará la infraestructura en AWS (EC2, base de datos y DNS) y
+                    se instalará Odoo vía SSM. El flujo corre en segundo plano; el
+                    entorno pasará a <strong>Activo</strong> al terminar.
+                </div>
+                <group>
+                    <group>
+                        <field name="environment_id" readonly="1"/>
+                        <field name="account_id"/>
+                        <field name="region"/>
+                    </group>
+                    <group>
+                        <field name="domain" placeholder="forum.primate.cloud"/>
+                        <field name="admin_password" password="True"/>
+                    </group>
+                </group>
+                <notebook>
+                    <page string="Cómputo" name="compute">
+                        <group>
+                            <group>
+                                <field name="instance_name"/>
+                                <field name="instance_type"/>
+                                <field name="os_type"/>
+                                <label for="image_id"/>
+                                <div class="o_row">
+                                    <field name="image_id" nolabel="1"
+                                           placeholder="(vacío = se resuelve Ubuntu 24.04 de la región)"/>
+                                    <button name="action_resolve_ami" type="object"
+                                            string="Resolver AMI" class="btn-secondary"/>
+                                </div>
+                                <field name="disk_size_gb"/>
+                            </group>
+                            <group string="Red y acceso (opcional)">
+                                <field name="key_name"/>
+                                <field name="security_group_ids" placeholder="sg-aaa, sg-bbb"/>
+                                <field name="subnet_id"/>
+                                <field name="instance_profile"/>
+                            </group>
+                        </group>
+                    </page>
+                    <page string="Base de datos" name="database">
+                        <group>
+                            <field name="db_mode"/>
+                            <field name="db_name" invisible="db_mode == 'none'"/>
+                            <field name="db_user" invisible="db_mode == 'none'"/>
+                            <field name="db_password" password="True"
+                                   invisible="db_mode == 'none'"
+                                   required="db_mode == 'rds'"/>
+                            <field name="pg_version" invisible="db_mode == 'none'"/>
+                        </group>
+                        <group string="RDS" invisible="db_mode != 'rds'">
+                            <field name="rds_identifier" required="db_mode == 'rds'"/>
+                            <field name="rds_instance_class"/>
+                            <field name="rds_storage_gb"/>
+                            <field name="rds_multi_az"/>
+                            <field name="backup_retention_days"/>
+                        </group>
+                    </page>
+                    <page string="DNS" name="dns">
+                        <group>
+                            <field name="create_dns"/>
+                            <field name="hosted_zone_id" invisible="not create_dns"
+                                   required="create_dns"/>
+                            <field name="ttl" invisible="not create_dns"/>
+                        </group>
+                    </page>
+                </notebook>
+                <footer>
+                    <button name="action_provision" type="object"
+                            string="Aprovisionar" class="btn-primary"
+                            confirm="Esto creará recursos facturables en AWS. ¿Continuar?"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

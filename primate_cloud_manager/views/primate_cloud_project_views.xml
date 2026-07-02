@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_project_list" model="ir.ui.view">
+        <field name="name">primate.cloud.project.list</field>
+        <field name="model">primate.cloud.project</field>
+        <field name="arch" type="xml">
+            <list string="Proyectos">
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="account_id"/>
+                <field name="environment_count" string="Entornos"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_project_form" model="ir.ui.view">
+        <field name="name">primate.cloud.project.form</field>
+        <field name="model">primate.cloud.project</field>
+        <field name="arch" type="xml">
+            <form string="Proyecto">
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_environments" type="object"
+                                class="oe_stat_button" icon="fa-server">
+                            <field name="environment_count" widget="statinfo" string="Entornos"/>
+                        </button>
+                    </div>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1><field name="name" placeholder="Ej.: Forum"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="partner_id"/>
+                            <field name="account_id"/>
+                        </group>
+                        <group>
+                            <field name="active"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Entornos" name="environments">
+                            <field name="environment_ids">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="env_type"/>
+                                    <field name="odoo_version"/>
+                                    <field name="state"/>
+                                    <field name="main_url" widget="url"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Notas" name="notes">
+                            <field name="notes"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_project" model="ir.actions.act_window">
+        <field name="name">Proyectos</field>
+        <field name="res_model">primate.cloud.project</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Creá tu primer proyecto.</p>
+            <p>Un proyecto agrupa los entornos de un cliente o iniciativa.</p>
+        </field>
+    </record>
+
+</odoo>

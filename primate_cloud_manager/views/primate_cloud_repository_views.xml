@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_repository_list" model="ir.ui.view">
+        <field name="name">primate.cloud.repository.list</field>
+        <field name="model">primate.cloud.repository</field>
+        <field name="arch" type="xml">
+            <list string="Repositorios" class="o_pcm">
+                <field name="name"/>
+                <field name="environment_id"/>
+                <field name="repo_type" widget="pcm_category_chip"/>
+                <field name="configured_branch"/>
+                <field name="current_commit" class="o_pcm_mono"/>
+                <field name="latest_commit" class="o_pcm_mono"/>
+                <field name="sync_state" widget="pcm_status_badge"/>
+                <field name="last_sync_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_repository_form" model="ir.ui.view">
+        <field name="name">primate.cloud.repository.form</field>
+        <field name="model">primate.cloud.repository</field>
+        <field name="arch" type="xml">
+            <form string="Repositorio" class="o_pcm">
+                <header>
+                    <button name="action_sync_commits" type="object"
+                            string="Sincronizar commits" class="btn-primary"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_check_sync_state" type="object"
+                            string="Verificar estado"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_detect_modules" type="object"
+                            string="Detectar módulos"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <field name="sync_state" widget="statusbar"
+                           statusbar_visible="updated,outdated,divergent"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1><field name="name" placeholder="Ej.: Odoo Core 19"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="environment_id"/>
+                            <field name="repo_type"/>
+                            <field name="github_url" widget="url"/>
+                            <field name="organization"/>
+                        </group>
+                        <group>
+                            <field name="configured_branch"/>
+                            <field name="local_path"/>
+                            <field name="current_commit" class="o_pcm_mono"/>
+                            <field name="latest_commit" class="o_pcm_mono"/>
+                            <field name="github_token" password="True"
+                                   groups="primate_cloud_manager.group_cloud_admin"/>
+                            <field name="last_sync_date"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Commits" name="commits">
+                            <field name="commit_ids">
+                                <list decoration-bf="is_current == True">
+                                    <field name="commit_hash" class="o_pcm_mono"/>
+                                    <field name="message"/>
+                                    <field name="author"/>
+                                    <field name="commit_date"/>
+                                    <field name="branch"/>
+                                    <field name="is_current" string="Actual"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Módulos" name="modules">
+                            <div class="text-muted mb-2">
+                                Compara los módulos del repositorio (versión) contra la base
+                                remota (versión instalada + estado).
+                            </div>
+                            <field name="module_ids">
+                                <list>
+                                    <field name="technical_name" class="o_pcm_mono"/>
+                                    <field name="functional_name"/>
+                                    <field name="version" string="Versión (repo)"/>
+                                    <field name="db_version" string="Versión (base)"/>
+                                    <field name="db_state" widget="pcm_status_badge"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_repository_kanban" model="ir.ui.view">
+        <field name="name">primate.cloud.repository.kanban</field>
+        <field name="model">primate.cloud.repository</field>
+        <field name="arch" type="xml">
+            <kanban class="o_pcm">
+                <templates>
+                    <t t-name="card">
+                        <div class="o_pcm o_pcm_kcard">
+                            <div class="o_pcm_kcard_head">
+                                <span class="o_pcm_kcard_title"><field name="name"/></span>
+                                <field name="sync_state" widget="pcm_status_badge"/>
+                            </div>
+                            <div class="o_pcm_kcard_sub">
+                                <field name="environment_id"/>
+                            </div>
+                            <div class="o_pcm_kcard_meta">
+                                <span><field name="repo_type" widget="pcm_category_chip"/></span>
+                                <span t-if="record.configured_branch.value">
+                                    <i class="fa fa-code-fork" title="Rama"/><field name="configured_branch"/>
+                                </span>
+                            </div>
+                            <div class="o_pcm_kcard_mono" t-if="record.current_commit.value">
+                                <i class="fa fa-hashtag" title="Commit actual"/><field name="current_commit"/>
+                            </div>
+                            <div class="o_pcm_kcard_foot">
+                                Último sync: <field name="last_sync_date"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="view_repository_search" model="ir.ui.view">
+        <field name="name">primate.cloud.repository.search</field>
+        <field name="model">primate.cloud.repository</field>
+        <field name="arch" type="xml">
+            <search string="Buscar repositorios">
+                <field name="name"/>
+                <field name="environment_id"/>
+                <field name="github_url"/>
+                <filter name="divergent" string="Divergentes"
+                        domain="[('sync_state', '=', 'divergent')]"/>
+                <filter name="outdated" string="Desactualizados"
+                        domain="[('sync_state', '=', 'outdated')]"/>
+                <group>
+                    <filter name="group_env" string="Entorno" context="{'group_by': 'environment_id'}"/>
+                    <filter name="group_type" string="Tipo" context="{'group_by': 'repo_type'}"/>
+                    <filter name="group_state" string="Estado" context="{'group_by': 'sync_state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_repository" model="ir.actions.act_window">
+        <field name="name">Repositorios</field>
+        <field name="res_model">primate.cloud.repository</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="search_view_id" ref="view_repository_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No hay repositorios todavía.</p>
+            <p>Registrá un repositorio Git para trazar sus commits y módulos.</p>
+        </field>
+    </record>
+
+</odoo>

@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_ec2_instance_list" model="ir.ui.view">
+        <field name="name">primate.cloud.ec2.instance.list</field>
+        <field name="model">primate.cloud.ec2.instance</field>
+        <field name="arch" type="xml">
+            <list string="Instancias EC2" class="o_pcm" create="false"
+                  decoration-muted="instance_state in ('stopped','terminated')">
+                <field name="name"/>
+                <field name="aws_instance_id"/>
+                <field name="environment_id"/>
+                <field name="instance_state" widget="pcm_status_badge"/>
+                <field name="instance_type"/>
+                <field name="public_ip"/>
+                <field name="private_ip"/>
+                <field name="region"/>
+                <field name="last_sync_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_ec2_instance_form" model="ir.ui.view">
+        <field name="name">primate.cloud.ec2.instance.form</field>
+        <field name="model">primate.cloud.ec2.instance</field>
+        <field name="arch" type="xml">
+            <form string="Instancia EC2" class="o_pcm">
+                <header>
+                    <button name="action_start" type="object" string="Iniciar"
+                            invisible="instance_state not in ('stopped',)"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_stop" type="object" string="Detener"
+                            confirm="¿Detener esta instancia?"
+                            invisible="instance_state != 'running'"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_restart" type="object" string="Reiniciar"
+                            confirm="¿Reiniciar esta instancia?"
+                            invisible="instance_state != 'running'"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_execute_command" type="object" string="Ejecutar comando"
+                            invisible="instance_state != 'running'"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_sync_from_aws" type="object" string="Sincronizar"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_open_terminate_wizard" type="object" string="Terminar"
+                            class="btn-danger"
+                            invisible="instance_state == 'terminated'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <field name="instance_state" widget="statusbar"
+                           statusbar_visible="pending,running,stopping,stopped"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+                    <group>
+                        <group string="AWS">
+                            <field name="aws_instance_id" readonly="1"/>
+                            <field name="instance_state" widget="pcm_status_badge" readonly="1"/>
+                            <field name="instance_type" readonly="1"/>
+                            <field name="region" readonly="1"/>
+                            <field name="os_type"/>
+                            <field name="disk_size_gb" readonly="1"/>
+                        </group>
+                        <group string="Red y asociación">
+                            <field name="public_ip" readonly="1"/>
+                            <field name="private_ip" readonly="1"/>
+                            <field name="account_id" readonly="1"/>
+                            <field name="environment_id"/>
+                            <field name="aws_created_at" readonly="1"/>
+                            <field name="last_sync_date" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Tags AWS" name="tags">
+                            <field name="aws_tags" readonly="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_ec2_instance_kanban" model="ir.ui.view">
+        <field name="name">primate.cloud.ec2.instance.kanban</field>
+        <field name="model">primate.cloud.ec2.instance</field>
+        <field name="arch" type="xml">
+            <kanban class="o_pcm" create="false">
+                <templates>
+                    <t t-name="card">
+                        <div class="o_pcm o_pcm_kcard">
+                            <div class="o_pcm_kcard_head">
+                                <span class="o_pcm_kcard_title"><field name="name"/></span>
+                                <field name="instance_state" widget="pcm_status_badge"/>
+                            </div>
+                            <div class="o_pcm_kcard_sub">
+                                <field name="environment_id"/>
+                            </div>
+                            <div class="o_pcm_kcard_meta">
+                                <span><i class="fa fa-microchip" title="Tipo de instancia"/><field name="instance_type"/></span>
+                                <span><i class="fa fa-globe" title="Región"/><field name="region"/></span>
+                            </div>
+                            <div class="o_pcm_kcard_mono">
+                                <i class="fa fa-server" title="Instance ID"/><field name="aws_instance_id"/>
+                            </div>
+                            <div class="o_pcm_kcard_mono" t-if="record.public_ip.value">
+                                <i class="fa fa-wifi" title="IP pública"/><field name="public_ip"/>
+                            </div>
+                            <div class="o_pcm_kcard_foot">
+                                Último sync: <field name="last_sync_date"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="view_ec2_instance_search" model="ir.ui.view">
+        <field name="name">primate.cloud.ec2.instance.search</field>
+        <field name="model">primate.cloud.ec2.instance</field>
+        <field name="arch" type="xml">
+            <search string="Buscar instancias">
+                <field name="name"/>
+                <field name="aws_instance_id"/>
+                <field name="public_ip"/>
+                <field name="environment_id"/>
+                <filter name="running" string="En ejecución" domain="[('instance_state', '=', 'running')]"/>
+                <filter name="no_env" string="Sin entorno" domain="[('environment_id', '=', False)]"/>
+                <group>
+                    <filter name="group_account" string="Cuenta" context="{'group_by': 'account_id'}"/>
+                    <filter name="group_env" string="Entorno" context="{'group_by': 'environment_id'}"/>
+                    <filter name="group_state" string="Estado" context="{'group_by': 'instance_state'}"/>
+                    <filter name="group_region" string="Región" context="{'group_by': 'region'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_ec2_instance" model="ir.actions.act_window">
+        <field name="name">Instancias EC2</field>
+        <field name="res_model">primate.cloud.ec2.instance</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="search_view_id" ref="view_ec2_instance_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No hay instancias sincronizadas.</p>
+            <p>Validá una cuenta AWS y ejecutá "Sincronizar recursos" para importarlas.</p>
+        </field>
+    </record>
+
+</odoo>

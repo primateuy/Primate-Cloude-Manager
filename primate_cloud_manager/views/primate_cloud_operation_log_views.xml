@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_operation_log_list" model="ir.ui.view">
+        <field name="name">primate.cloud.operation.log.list</field>
+        <field name="model">primate.cloud.operation.log</field>
+        <field name="arch" type="xml">
+            <list string="Bitácora de Operaciones" create="false" edit="false" delete="false"
+                  decoration-danger="result == 'failed'" decoration-warning="result == 'partial'">
+                <field name="execution_date"/>
+                <field name="user_id"/>
+                <field name="action_type"/>
+                <field name="name"/>
+                <field name="resource_model" optional="hide"/>
+                <field name="resource_name"/>
+                <field name="result" widget="badge"
+                       decoration-success="result == 'success'"
+                       decoration-danger="result == 'failed'"
+                       decoration-warning="result == 'partial'"/>
+                <field name="aws_request_id" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_operation_log_form" model="ir.ui.view">
+        <field name="name">primate.cloud.operation.log.form</field>
+        <field name="model">primate.cloud.operation.log</field>
+        <field name="arch" type="xml">
+            <form string="Operación" create="false" edit="false" delete="false">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="action_type"/>
+                            <field name="result"/>
+                            <field name="aws_request_id"/>
+                        </group>
+                        <group>
+                            <field name="user_id"/>
+                            <field name="execution_date"/>
+                            <field name="resource_model"/>
+                            <field name="resource_name"/>
+                        </group>
+                    </group>
+                    <group string="Error" invisible="result != 'failed'">
+                        <field name="error_message" nolabel="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_operation_log_search" model="ir.ui.view">
+        <field name="name">primate.cloud.operation.log.search</field>
+        <field name="model">primate.cloud.operation.log</field>
+        <field name="arch" type="xml">
+            <search string="Buscar operaciones">
+                <field name="name"/>
+                <field name="resource_name"/>
+                <field name="user_id"/>
+                <field name="aws_request_id"/>
+                <filter name="failed" string="Fallidas" domain="[('result', '=', 'failed')]"/>
+                <filter name="success" string="Exitosas" domain="[('result', '=', 'success')]"/>
+                <separator/>
+                <filter name="today" string="Hoy"
+                        domain="[('execution_date', '>=', datetime.datetime.combine(context_today(), datetime.time(0,0,0)))]"/>
+                <group>
+                    <filter name="group_action" string="Tipo de acción" context="{'group_by': 'action_type'}"/>
+                    <filter name="group_user" string="Usuario" context="{'group_by': 'user_id'}"/>
+                    <filter name="group_result" string="Resultado" context="{'group_by': 'result'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_operation_log" model="ir.actions.act_window">
+        <field name="name">Bitácora de Operaciones</field>
+        <field name="res_model">primate.cloud.operation.log</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_operation_log_search"/>
+        <field name="context">{'search_default_today': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No hay operaciones registradas todavía.</p>
+            <p>Cada acción ejecutada sobre AWS quedará asentada acá de forma inmutable.</p>
+        </field>
+    </record>
+
+</odoo>

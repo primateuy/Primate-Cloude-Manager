@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.Dashboard">
+        <div class="o_pcm_dashboard">
+            <div class="o_pcm_dash_header">
+                <h1><i class="fa fa-cloud me-2"/>Primate Cloud Manager</h1>
+                <button class="btn btn-sm btn-secondary" t-on-click="() => this.load()">
+                    <i class="fa fa-refresh me-1"/>Actualizar
+                </button>
+            </div>
+
+            <div t-if="state.loading" class="o_pcm_dash_loading">
+                <span class="spinner-border"/> Cargando panel…
+            </div>
+
+            <t t-else="">
+                <!-- KPIs -->
+                <div class="o_pcm_kpis">
+                    <div t-foreach="state.kpis" t-as="kpi" t-key="kpi.key"
+                         t-attf-class="o_pcm_kpi o_pcm_kpi_{{kpi.color}}"
+                         t-on-click="() => this.openList(kpi.model, kpi.domain, kpi.label)">
+                        <div class="o_pcm_kpi_icon"><i t-attf-class="fa {{kpi.icon}}"/></div>
+                        <div class="o_pcm_kpi_body">
+                            <div class="o_pcm_kpi_value" t-out="kpi.value"/>
+                            <div class="o_pcm_kpi_label" t-out="kpi.label"/>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="o_pcm_dash_cols">
+                    <!-- Últimos deploys -->
+                    <div class="o_pcm_panel">
+                        <h3><i class="fa fa-rocket me-2"/>Últimos despliegues</h3>
+                        <div t-if="!state.recent_deploys.length" class="o_pcm_empty">
+                            Sin despliegues todavía.
+                        </div>
+                        <table t-else="" class="table table-sm o_pcm_table">
+                            <tbody>
+                                <tr t-foreach="state.recent_deploys" t-as="dep" t-key="dep.id"
+                                    t-on-click="() => this.openRecord('primate.cloud.deployment', dep.id)">
+                                    <td>
+                                        <t t-if="dep.state === 'success'"><i class="fa fa-check-circle text-success me-1"/></t>
+                                        <t t-elif="dep.state === 'failed'"><i class="fa fa-times-circle text-danger me-1"/></t>
+                                        <t t-elif="dep.state === 'reverted'"><i class="fa fa-undo text-muted me-1"/></t>
+                                        <t t-else=""><i class="fa fa-circle-o text-muted me-1"/></t>
+                                        <span t-out="dep.name"/>
+                                    </td>
+                                    <td class="text-muted" t-out="dep.env"/>
+                                    <td class="text-muted text-end" t-out="dep.date"/>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Alertas -->
+                    <div class="o_pcm_panel">
+                        <h3><i class="fa fa-bell me-2"/>Alertas</h3>
+                        <div t-if="!state.alerts.length" class="o_pcm_empty o_pcm_ok">
+                            <i class="fa fa-check-circle me-1"/>Todo en orden.
+                        </div>
+                        <div t-else="">
+                            <div t-foreach="state.alerts" t-as="al" t-key="al_index"
+                                 t-attf-class="o_pcm_alert o_pcm_alert_{{al.type}}"
+                                 t-on-click="() => this.openRecord(al.model, al.res_id)">
+                                <i t-attf-class="fa {{al.icon}} me-2"/><span t-out="al.text"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

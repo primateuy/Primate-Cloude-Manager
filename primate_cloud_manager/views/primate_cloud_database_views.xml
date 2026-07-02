@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_database_list" model="ir.ui.view">
+        <field name="name">primate.cloud.database.list</field>
+        <field name="model">primate.cloud.database</field>
+        <field name="arch" type="xml">
+            <list string="Bases de datos" class="o_pcm" create="false">
+                <field name="name"/>
+                <field name="db_type" widget="pcm_category_chip"/>
+                <field name="environment_id"/>
+                <field name="pg_version"/>
+                <field name="rds_instance_class"/>
+                <field name="rds_storage_gb"/>
+                <field name="rds_multi_az" widget="boolean_toggle"/>
+                <field name="state" widget="pcm_status_badge"/>
+                <field name="last_sync_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_database_form" model="ir.ui.view">
+        <field name="name">primate.cloud.database.form</field>
+        <field name="model">primate.cloud.database</field>
+        <field name="arch" type="xml">
+            <form string="Base de datos" class="o_pcm">
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name"/></h1>
+                    </div>
+                    <group>
+                        <group string="General">
+                            <field name="db_type"/>
+                            <field name="account_id" readonly="1"/>
+                            <field name="environment_id"/>
+                            <field name="ec2_instance_id" invisible="db_type != 'local_pg'"/>
+                            <field name="state" widget="pcm_status_badge" readonly="1"/>
+                            <field name="last_sync_date" readonly="1"/>
+                        </group>
+                        <group string="RDS" invisible="db_type != 'rds'">
+                            <field name="rds_identifier" readonly="1"/>
+                            <field name="rds_endpoint" readonly="1"/>
+                            <field name="pg_version"/>
+                            <field name="rds_instance_class" readonly="1"/>
+                            <field name="rds_storage_gb" readonly="1"/>
+                            <field name="rds_multi_az" readonly="1"/>
+                            <field name="backup_retention_days" readonly="1"/>
+                        </group>
+                    </group>
+                    <group string="Métricas">
+                        <field name="storage_used_gb" readonly="1"/>
+                        <field name="active_connections" readonly="1"/>
+                        <field name="last_backup_date" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_database_kanban" model="ir.ui.view">
+        <field name="name">primate.cloud.database.kanban</field>
+        <field name="model">primate.cloud.database</field>
+        <field name="arch" type="xml">
+            <kanban class="o_pcm" create="false">
+                <templates>
+                    <t t-name="card">
+                        <div class="o_pcm o_pcm_kcard">
+                            <div class="o_pcm_kcard_head">
+                                <span class="o_pcm_kcard_title"><field name="name"/></span>
+                                <field name="state" widget="pcm_status_badge"/>
+                            </div>
+                            <div class="o_pcm_kcard_sub">
+                                <field name="environment_id"/>
+                            </div>
+                            <div class="o_pcm_kcard_meta">
+                                <span><field name="db_type" widget="pcm_category_chip"/></span>
+                                <span t-if="record.pg_version.value"><i class="fa fa-database" title="Versión PostgreSQL"/>PostgreSQL <field name="pg_version"/></span>
+                            </div>
+                            <div class="o_pcm_kcard_mono" t-if="record.rds_endpoint.value">
+                                <i class="fa fa-plug" title="Endpoint RDS"/><field name="rds_endpoint"/>
+                            </div>
+                            <div class="o_pcm_kcard_foot">
+                                Último sync: <field name="last_sync_date"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="action_database" model="ir.actions.act_window">
+        <field name="name">Bases de datos</field>
+        <field name="res_model">primate.cloud.database</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No hay bases sincronizadas.</p>
+            <p>Las bases RDS se importan al sincronizar la cuenta AWS.</p>
+        </field>
+    </record>
+
+</odoo>

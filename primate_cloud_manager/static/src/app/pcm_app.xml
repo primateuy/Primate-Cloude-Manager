@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.App">
+        <div class="o_pcm_app" t-att-style="rootStyle">
+            <!-- Sidebar navy -->
+            <div class="o_pcm_sidebar">
+                <div class="o_pcm_brand">
+                    <span class="o_pcm_brand_dot"/>Primate Cloud
+                </div>
+                <div class="o_pcm_nav">
+                    <div t-foreach="navGroups" t-as="group" t-key="group.key" class="o_pcm_nav_group">
+                        <div t-if="group.label" class="o_pcm_nav_group_head"
+                             t-on-click="() => this.toggleGroup(group.key)">
+                            <span t-out="group.label"/>
+                            <i t-attf-class="fa {{ isGroupCollapsed(group.key) ? 'fa-angle-right' : 'fa-angle-down' }}"/>
+                        </div>
+                        <div t-if="!isGroupCollapsed(group.key)" class="o_pcm_nav_items">
+                            <div t-foreach="group.items" t-as="item" t-key="item.key"
+                                 t-attf-class="o_pcm_nav_item {{ isNavActive(item) ? 'o_pcm_active' : '' }}"
+                                 t-on-click="() => this.onNav(item)">
+                                <i t-attf-class="fa {{ item.icon }}"/>
+                                <span t-out="item.label"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="o_pcm_foot">PCM · by PrimateUy</div>
+            </div>
+
+            <!-- Contenido -->
+            <div class="o_pcm_content">
+                <div class="o_pcm_topbar">
+                    <!-- Breadcrumb: refleja la pila; cada nivel vuelve a ese punto. -->
+                    <div class="o_pcm_breadcrumb">
+                        <t t-foreach="breadcrumb" t-as="crumb" t-key="crumb_index">
+                            <span t-if="crumb_index > 0" class="o_pcm_crumb_sep">/</span>
+                            <span t-attf-class="o_pcm_crumb {{ crumb_index === breadcrumb.length - 1 ? 'o_pcm_crumb_active' : '' }}"
+                                  t-on-click="() => this.goTo(crumb_index)"
+                                  t-out="crumb.title"/>
+                        </t>
+                    </div>
+                    <div class="o_pcm_accent_picker">
+                        <span class="o_pcm_muted">Acento</span>
+                        <span t-foreach="accentList" t-as="a" t-key="a.name"
+                              t-attf-class="o_pcm_swatch {{ isAccentActive(a.name) ? 'o_pcm_swatch_active' : '' }}"
+                              t-attf-style="background: {{ a.color }};"
+                              t-att-title="a.name"
+                              t-on-click="() => this.setAccent(a.name)"/>
+                    </div>
+                </div>
+
+                <div t-attf-class="o_pcm_screen {{ isNativeScreen ? 'o_pcm_native' : '' }}">
+                    <Inicio t-if="current.type === 'inicio'"
+                            userName="userName"
+                            onOpenEnv="(id, name) => this.openEnvDetail(id, name)"/>
+                    <Entornos t-elif="current.type === 'entornos'"
+                              onOpenEnv="(id, name) => this.openEnvDetail(id, name)"
+                              onManage="(id, name) => this.manageEnv(id, name)"/>
+                    <EntornoDetalle t-elif="current.type === 'envDetail'"
+                                    envId="current.resId"
+                                    onBack="() => this.pop()"
+                                    onManage="(id, name) => this.manageEnv(id, name)"
+                                    onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <ServidorDetalle t-elif="current.type === 'serverDetail'"
+                                     serverId="current.resId"
+                                     onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <BaseDatosDetalle t-elif="current.type === 'dbDetail'"
+                                      recordId="current.resId"
+                                      onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <RepositorioDetalle t-elif="current.type === 'repoDetail'"
+                                        recordId="current.resId"
+                                        onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <DespliegueDetalle t-elif="current.type === 'depDetail'"
+                                       recordId="current.resId"
+                                       onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <DnsDetalle t-elif="current.type === 'dnsDetail'"
+                                recordId="current.resId"
+                                onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <CuentaDetalle t-elif="current.type === 'accountDetail'"
+                                   recordId="current.resId"
+                                   onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <ProyectoDetalle t-elif="current.type === 'projectDetail'"
+                                     recordId="current.resId"
+                                     onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                    <!-- Vistas nativas embebidas: la navegación (volver) va por el breadcrumb. -->
+                    <View t-elif="current.type === 'nativeList'"
+                          t-props="nativeListProps" t-key="'list-' + current.model"/>
+                    <View t-elif="current.type === 'nativeForm'"
+                          t-props="nativeFormProps"
+                          t-key="'form-' + current.model + '-' + (current.resId or 'new')"/>
+                    <div t-else="" class="o_pcm_card o_pcm_muted">
+                        Seleccioná una sección del menú.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Drawer de wizard (panel lateral, dentro de la app; no modal stock). -->
+            <PcmWizardDrawer t-if="state.wizard"
+                             model="state.wizard.model"
+                             context="state.wizard.context"
+                             title="state.wizard.title"
+                             onClose="() => this.closeWizardDrawer()"/>
+        </div>
+    </t>
+
+</templates>

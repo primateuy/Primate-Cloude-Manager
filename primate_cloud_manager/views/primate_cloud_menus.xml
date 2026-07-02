@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <menuitem id="menu_primate_cloud_root"
+              name="Cloud Manager"
+              sequence="20"
+              groups="primate_cloud_manager.group_cloud_viewer"/>
+
+    <!-- La app PCM (página completa) es el primer hijo => landing del módulo.
+         Al no tener acción el menú raíz, los menús padres (Inventario, Operaciones,
+         Configuración) siguen apareciendo dentro de Cloud Manager. -->
+    <menuitem id="menu_dashboard"
+              name="Inicio"
+              parent="menu_primate_cloud_root"
+              action="action_pcm_app"
+              sequence="1"/>
+
+    <!-- Inventario -->
+    <menuitem id="menu_primate_cloud_inventory"
+              name="Inventario"
+              parent="menu_primate_cloud_root"
+              sequence="10"/>
+
+    <menuitem id="menu_environment"
+              name="Entornos"
+              parent="menu_primate_cloud_inventory"
+              action="action_environment"
+              sequence="10"/>
+
+    <menuitem id="menu_ec2_instance"
+              name="Instancias EC2"
+              parent="menu_primate_cloud_inventory"
+              action="action_ec2_instance"
+              sequence="20"/>
+
+    <menuitem id="menu_ec2_create_wizard"
+              name="Crear instancia EC2"
+              parent="menu_primate_cloud_inventory"
+              action="action_ec2_create_wizard"
+              groups="primate_cloud_manager.group_cloud_admin"
+              sequence="25"/>
+
+    <menuitem id="menu_database"
+              name="Bases de datos"
+              parent="menu_primate_cloud_inventory"
+              action="action_database"
+              sequence="30"/>
+
+    <menuitem id="menu_repository"
+              name="Repositorios"
+              parent="menu_primate_cloud_inventory"
+              action="action_repository"
+              sequence="35"/>
+
+    <menuitem id="menu_dns_record"
+              name="Registros DNS"
+              parent="menu_primate_cloud_inventory"
+              action="action_dns_record"
+              sequence="40"/>
+
+    <!-- Operaciones -->
+    <menuitem id="menu_primate_cloud_operations"
+              name="Operaciones"
+              parent="menu_primate_cloud_root"
+              sequence="20"/>
+
+    <menuitem id="menu_deployment"
+              name="Despliegues"
+              parent="menu_primate_cloud_operations"
+              action="action_deployment"
+              groups="primate_cloud_manager.group_cloud_operator"
+              sequence="10"/>
+
+    <menuitem id="menu_operation_log"
+              name="Bitácora"
+              parent="menu_primate_cloud_operations"
+              action="action_operation_log"
+              sequence="90"/>
+
+    <!-- Configuración -->
+    <menuitem id="menu_primate_cloud_config"
+              name="Configuración"
+              parent="menu_primate_cloud_root"
+              sequence="90"
+              groups="primate_cloud_manager.group_cloud_admin"/>
+
+    <menuitem id="menu_account"
+              name="Cuentas AWS"
+              parent="menu_primate_cloud_config"
+              action="action_account"
+              sequence="10"/>
+
+    <menuitem id="menu_project"
+              name="Proyectos"
+              parent="menu_primate_cloud_config"
+              action="action_project"
+              sequence="20"/>
+
+</odoo>

@@ -1,0 +1,31 @@
+# Entorno virtual del proyecto
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# macOS / IDE
+.DS_Store
+.idea/
+
+# Logs y temporales
+*.log
+scratch_*
+
+# Config local del proyecto (no versionar)
+PrimateCloudeManager.conf
+forum.conf
+
+# Specs (no versionadas, se piden aparte)
+*.docx
+
+# Ajustes locales de Claude Code
+.claude/
+
+# Evidencia de smoke-tests de UI
+tools/smoke_ui/screenshots/
+
+# Documentos markdown (no versionar)
+*.md

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.AppStatusBadge">
+        <span t-attf-class="o_pcm o_pcm_badge o_pcm_badge_{{ bucket }}">
+            <span class="o_pcm_dot"/>
+            <t t-out="text"/>
+        </span>
+    </t>
+
+</templates>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <record id="seq_primate_cloud_deployment" model="ir.sequence">
+        <field name="name">Deployment Primate Cloud</field>
+        <field name="code">primate.cloud.deployment</field>
+        <field name="prefix"></field>
+        <field name="padding">4</field>
+        <field name="number_increment">1</field>
+    </record>
+
+</odoo>

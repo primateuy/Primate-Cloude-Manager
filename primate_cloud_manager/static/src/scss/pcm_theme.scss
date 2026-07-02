@@ -1,0 +1,133 @@
+// ============================================================================
+// pcm_theme.scss — Identidad visual de Primate Cloud (paleta Sagui).
+// TODO scopeado bajo .o_pcm: no pisa variables ni estilos globales de Odoo.
+// Aplicá class="o_pcm" en la raíz de cada <list>/<form>/<kanban> del módulo.
+// ============================================================================
+
+.o_pcm {
+    // --- Paleta Sagui (hex exactos) ---
+    --pcm-navy: #0F2B33;
+    --pcm-navy-2: #173B45;
+    --pcm-teal: #48B3A6;
+    --pcm-teal-ink: #0F5E4E;
+    --pcm-teal-tint: #E3F3EF;
+    --pcm-surface: #F4F6F6;
+    --pcm-line: #E4E9E9;
+    --pcm-ink: #16292F;
+    --pcm-soft: #617277;
+    --pcm-orange: #FF8A00;
+
+    // Buckets de estado (punto / fondo / texto). Paleta FIJA, independiente del
+    // acento de la app (para no confundir "color elegido" con "estado").
+    --pcm-ok-dot: #2E9E5B;      --pcm-ok-bg: #E7F4EC;      --pcm-ok-ink: #1E6B45;
+    --pcm-warn-dot: #EF9F27;    --pcm-warn-bg: #FAEEDA;    --pcm-warn-ink: #854F0B;
+    --pcm-neutral-dot: #8A97A0; --pcm-neutral-bg: #EEF0F1; --pcm-neutral-ink: #4A5560;
+    --pcm-error-dot: #E24B4A;   --pcm-error-bg: #FCEBEB;   --pcm-error-ink: #A32D2D;
+}
+
+// ---------------------------------------------------------------------------
+// Todo lo demás va anidado bajo .o_pcm (las variables viven ahí).
+// ---------------------------------------------------------------------------
+.o_pcm {
+    // Badge de estado (widget pcm_status_badge). El badge lleva la clase .o_pcm
+    // en su propio elemento, así las variables resuelven sin depender de ningún
+    // ancestro (robusto en list/form/kanban/dashboard). Selector compuesto
+    // .o_pcm.o_pcm_badge (mismo elemento) vía &.
+    &.o_pcm_badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 10px;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 500;
+        line-height: 1.4;
+        white-space: nowrap;
+
+        .o_pcm_dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex: 0 0 auto;
+        }
+
+        &.o_pcm_badge_ok      { background: var(--pcm-ok-bg);      color: var(--pcm-ok-ink);      .o_pcm_dot { background: var(--pcm-ok-dot); } }
+        &.o_pcm_badge_warn    { background: var(--pcm-warn-bg);    color: var(--pcm-warn-ink);    .o_pcm_dot { background: var(--pcm-warn-dot); } }
+        &.o_pcm_badge_neutral { background: var(--pcm-neutral-bg); color: var(--pcm-neutral-ink); .o_pcm_dot { background: var(--pcm-neutral-dot); } }
+        &.o_pcm_badge_error   { background: var(--pcm-error-bg);   color: var(--pcm-error-ink);   .o_pcm_dot { background: var(--pcm-error-dot); } }
+    }
+
+    // Chip de categoría (env_type, record_type, repo_type, db_type): navy/teal
+    // tenue, distinto del badge de "salud".
+    &.o_pcm_chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 1px 9px;
+        border-radius: 6px;
+        font-size: 0.78rem;
+        font-weight: 500;
+        background: var(--pcm-teal-tint);
+        color: var(--pcm-teal-ink);
+        border: 1px solid rgba(72, 179, 166, 0.35);
+    }
+
+    // Utilidad monospace para hashes de commit, IDs, endpoints.
+    .o_pcm_mono {
+        font-family: var(--o-mono-font-family, ui-monospace, monospace);
+        font-size: 0.82rem;
+        color: var(--pcm-ink);
+    }
+
+    // Anatomía de card kanban (self-scoped: el div lleva .o_pcm).
+    &.o_pcm_kcard {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 2px;
+
+        .o_pcm_kcard_head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .o_pcm_kcard_title {
+            font-weight: 600;
+            color: var(--pcm-ink);
+            font-size: 0.98rem;
+        }
+        .o_pcm_kcard_sub {
+            color: var(--pcm-soft);
+            font-size: 0.84rem;
+        }
+        .o_pcm_kcard_meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin-top: 6px;
+            font-size: 0.84rem;
+            color: var(--pcm-soft);
+
+            i { color: var(--pcm-teal); margin-right: 3px; }
+        }
+        .o_pcm_kcard_mono {
+            font-family: var(--o-mono-font-family, monospace);
+            font-size: 0.8rem;
+            color: var(--pcm-ink);
+            margin-top: 4px;
+
+            i { color: var(--pcm-soft); margin-right: 3px; }
+        }
+        .o_pcm_kcard_foot {
+            margin-top: 8px;
+            padding-top: 6px;
+            border-top: 1px solid var(--pcm-line);
+            font-size: 0.76rem;
+            color: var(--pcm-soft);
+        }
+    }
+}
+
+// Contraste en dark mode nativo de Odoo 19.
+.o_dark_mode .o_pcm.o_pcm_badge { filter: saturate(1.05); }
+.o_dark_mode .o_pcm.o_pcm_chip { background: rgba(72, 179, 166, 0.18); }

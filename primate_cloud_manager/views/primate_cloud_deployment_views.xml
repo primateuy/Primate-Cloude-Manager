@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_deployment_list" model="ir.ui.view">
+        <field name="name">primate.cloud.deployment.list</field>
+        <field name="model">primate.cloud.deployment</field>
+        <field name="arch" type="xml">
+            <list string="Despliegues" class="o_pcm"
+                  decoration-muted="state == 'reverted'">
+                <field name="name"/>
+                <field name="environment_id"/>
+                <field name="deployment_type" widget="pcm_category_chip"/>
+                <field name="repository_id"/>
+                <field name="target_commit" class="o_pcm_mono"/>
+                <field name="execution_date"/>
+                <field name="triggered_by"/>
+                <field name="state" widget="pcm_status_badge"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_deployment_form" model="ir.ui.view">
+        <field name="name">primate.cloud.deployment.form</field>
+        <field name="model">primate.cloud.deployment</field>
+        <field name="arch" type="xml">
+            <form string="Deployment" class="o_pcm">
+                <header>
+                    <button name="action_run" type="object" string="Ejecutar"
+                            class="btn-primary"
+                            invisible="state not in ('draft', 'failed')"
+                            groups="primate_cloud_manager.group_cloud_operator"
+                            confirm="¿Ejecutar este deploy sobre el entorno?"/>
+                    <button name="action_revert" type="object" string="Revertir"
+                            invisible="state != 'success' or deployment_type not in ('pull', 'checkout_branch', 'checkout_commit')"
+                            groups="primate_cloud_manager.group_cloud_operator"
+                            confirm="Esto creará un deploy que vuelve al commit origen. ¿Continuar?"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,running,success"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="environment_id"/>
+                            <field name="deployment_type"/>
+                            <field name="repository_id"
+                                   invisible="deployment_type not in ('pull', 'checkout_branch', 'checkout_commit')"
+                                   required="deployment_type in ('pull', 'checkout_branch', 'checkout_commit')"/>
+                            <field name="target_branch"
+                                   invisible="deployment_type != 'checkout_branch'"
+                                   required="deployment_type == 'checkout_branch'"/>
+                            <field name="target_commit" class="o_pcm_mono"
+                                   invisible="deployment_type not in ('checkout_commit',)"
+                                   required="deployment_type == 'checkout_commit'"/>
+                            <field name="module_names"
+                                   invisible="deployment_type != 'module_update'"/>
+                        </group>
+                        <group>
+                            <field name="triggered_by"/>
+                            <field name="execution_date"/>
+                            <field name="origin_commit" class="o_pcm_mono"/>
+                            <field name="is_revert"/>
+                            <field name="reverts_deployment_id" invisible="not is_revert"/>
+                            <field name="revert_deployment_id" invisible="not revert_deployment_id"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Log de ejecución" name="log">
+                            <field name="execution_log" readonly="1" class="o_pcm_mono"
+                                   placeholder="El log aparece tras ejecutar el deploy."/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_deployment_kanban" model="ir.ui.view">
+        <field name="name">primate.cloud.deployment.kanban</field>
+        <field name="model">primate.cloud.deployment</field>
+        <field name="arch" type="xml">
+            <kanban class="o_pcm" create="false">
+                <templates>
+                    <t t-name="card">
+                        <div class="o_pcm o_pcm_kcard">
+                            <div class="o_pcm_kcard_head">
+                                <span class="o_pcm_kcard_title"><field name="name"/></span>
+                                <field name="state" widget="pcm_status_badge"/>
+                            </div>
+                            <div class="o_pcm_kcard_sub">
+                                <field name="environment_id"/>
+                            </div>
+                            <div class="o_pcm_kcard_meta">
+                                <span><field name="deployment_type" widget="pcm_category_chip"/></span>
+                                <span t-if="record.triggered_by.value">
+                                    <i class="fa fa-user" title="Ejecutado por"/><field name="triggered_by"/>
+                                </span>
+                            </div>
+                            <div class="o_pcm_kcard_mono" t-if="record.target_commit.value">
+                                <i class="fa fa-hashtag" title="Commit destino"/><field name="target_commit"/>
+                            </div>
+                            <div class="o_pcm_kcard_foot">
+                                <field name="execution_date"/>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="view_deployment_search" model="ir.ui.view">
+        <field name="name">primate.cloud.deployment.search</field>
+        <field name="model">primate.cloud.deployment</field>
+        <field name="arch" type="xml">
+            <search string="Buscar despliegues">
+                <field name="name"/>
+                <field name="environment_id"/>
+                <field name="repository_id"/>
+                <filter name="success" string="Exitosos" domain="[('state', '=', 'success')]"/>
+                <filter name="failed" string="Fallidos" domain="[('state', '=', 'failed')]"/>
+                <group>
+                    <filter name="group_env" string="Entorno" context="{'group_by': 'environment_id'}"/>
+                    <filter name="group_type" string="Tipo" context="{'group_by': 'deployment_type'}"/>
+                    <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_deployment" model="ir.actions.act_window">
+        <field name="name">Despliegues</field>
+        <field name="res_model">primate.cloud.deployment</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="search_view_id" ref="view_deployment_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No hay despliegues todavía.</p>
+            <p>Un deploy actualiza el código (git) o los módulos de un entorno.</p>
+        </field>
+    </record>
+
+</odoo>

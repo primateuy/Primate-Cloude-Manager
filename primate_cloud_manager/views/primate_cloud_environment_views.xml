@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_environment_list" model="ir.ui.view">
+        <field name="name">primate.cloud.environment.list</field>
+        <field name="model">primate.cloud.environment</field>
+        <field name="arch" type="xml">
+            <list string="Entornos" class="o_pcm"
+                  decoration-muted="state == 'archived'">
+                <field name="name"/>
+                <field name="project_id"/>
+                <field name="env_type"/>
+                <field name="odoo_version"/>
+                <field name="odoo_edition"/>
+                <field name="main_url" widget="url"/>
+                <field name="state" widget="pcm_status_badge"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_environment_form" model="ir.ui.view">
+        <field name="name">primate.cloud.environment.form</field>
+        <field name="model">primate.cloud.environment</field>
+        <field name="arch" type="xml">
+            <form string="Entorno" class="o_pcm">
+                <header>
+                    <button name="action_provision" type="object"
+                            string="Aprovisionar" class="btn-primary"
+                            invisible="state not in ('draft', 'error')"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <button name="action_create_staging" type="object"
+                            string="Crear staging"
+                            invisible="state != 'active' or env_type == 'staging'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <button name="action_refresh_staging" type="object"
+                            string="Refrescar staging"
+                            invisible="env_type != 'staging' or state != 'active'"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,provisioning,active"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1><field name="name" placeholder="Ej.: Forum Producción"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="project_id"/>
+                            <field name="account_id"/>
+                            <field name="env_type"/>
+                            <field name="main_url" widget="url"/>
+                        </group>
+                        <group>
+                            <field name="odoo_version"/>
+                            <field name="odoo_edition"/>
+                            <field name="creation_date"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Infraestructura" name="infra">
+                            <field name="ec2_instance_ids">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="aws_instance_id"/>
+                                    <field name="instance_state" widget="pcm_status_badge"/>
+                                    <field name="public_ip"/>
+                                    <field name="instance_type"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Bases de datos" name="databases">
+                            <field name="database_ids">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="db_type"/>
+                                    <field name="pg_version"/>
+                                    <field name="state" widget="pcm_status_badge"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Repositorios" name="repositories">
+                            <field name="repository_ids">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="repo_type"/>
+                                    <field name="configured_branch"/>
+                                    <field name="current_commit"/>
+                                    <field name="sync_state" widget="pcm_status_badge"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Despliegues" name="deployments">
+                            <field name="deployment_ids">
+                                <list decoration-success="state == 'success'"
+                                      decoration-danger="state == 'failed'"
+                                      decoration-muted="state == 'reverted'">
+                                    <field name="name"/>
+                                    <field name="deployment_type"/>
+                                    <field name="repository_id"/>
+                                    <field name="origin_commit"/>
+                                    <field name="target_commit"/>
+                                    <field name="execution_date"/>
+                                    <field name="triggered_by"/>
+                                    <field name="state" widget="pcm_status_badge"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="DNS" name="dns">
+                            <field name="dns_record_ids">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="record_type"/>
+                                    <field name="record_value"/>
+                                    <field name="ttl"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Staging" name="staging">
+                            <group>
+                                <group string="Este entorno (si es staging)">
+                                    <field name="origin_environment_id" readonly="1"/>
+                                    <field name="staging_creation_date"/>
+                                    <field name="staging_created_by"/>
+                                    <field name="staging_origin_backup"/>
+                                </group>
+                                <group string="Stagings derivados de este entorno">
+                                    <field name="staging_ids" nolabel="1" colspan="2">
+                                        <list>
+                                            <field name="name"/>
+                                            <field name="main_url" widget="url"/>
+                                            <field name="staging_creation_date"/>
+                                            <field name="state" widget="pcm_status_badge"/>
+                                        </list>
+                                    </field>
+                                </group>
+                            </group>
+                            <separator string="Log de neutralización"/>
+                            <field name="staging_neutralization_log" readonly="1"/>
+                        </page>
+                        <page string="Notas" name="notes">
+                            <field name="notes"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_environment_search" model="ir.ui.view">
+        <field name="name">primate.cloud.environment.search</field>
+        <field name="model">primate.cloud.environment</field>
+        <field name="arch" type="xml">
+            <search string="Buscar entornos">
+                <field name="name"/>
+                <field name="project_id"/>
+                <field name="main_url"/>
+                <filter name="production" string="Producción" domain="[('env_type', '=', 'production')]"/>
+                <filter name="staging" string="Staging" domain="[('env_type', '=', 'staging')]"/>
+                <separator/>
+                <filter name="active_env" string="Activos" domain="[('state', '=', 'active')]"/>
+                <group>
+                    <filter name="group_project" string="Proyecto" context="{'group_by': 'project_id'}"/>
+                    <filter name="group_type" string="Tipo" context="{'group_by': 'env_type'}"/>
+                    <filter name="group_state" string="Estado" context="{'group_by': 'state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_environment" model="ir.actions.act_window">
+        <field name="name">Entornos</field>
+        <field name="res_model">primate.cloud.environment</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_environment_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No hay entornos todavía.</p>
+            <p>Un entorno representa una instalación de Odoo (infra + base + repos).</p>
+        </field>
+    </record>
+
+</odoo>

@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_account_list" model="ir.ui.view">
+        <field name="name">primate.cloud.account.list</field>
+        <field name="model">primate.cloud.account</field>
+        <field name="arch" type="xml">
+            <list string="Cuentas AWS" decoration-success="connection_state == 'connected'"
+                  decoration-danger="connection_state == 'error'">
+                <field name="name"/>
+                <field name="aws_account_id"/>
+                <field name="default_region"/>
+                <field name="auth_method"/>
+                <field name="connection_state" widget="badge"
+                       decoration-success="connection_state == 'connected'"
+                       decoration-danger="connection_state == 'error'"
+                       decoration-muted="connection_state == 'draft'"/>
+                <field name="last_sync_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_account_form" model="ir.ui.view">
+        <field name="name">primate.cloud.account.form</field>
+        <field name="model">primate.cloud.account</field>
+        <field name="arch" type="xml">
+            <form string="Cuenta AWS">
+                <header>
+                    <button name="action_validate_connection" type="object"
+                            string="Validar conexión" class="btn-primary"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <button name="action_sync_resources" type="object"
+                            string="Sincronizar recursos"
+                            invisible="connection_state != 'connected'"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
+                    <field name="connection_state" widget="statusbar"
+                           statusbar_visible="draft,connected,error"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name"/>
+                        <h1><field name="name" placeholder="Ej.: Primate Producción"/></h1>
+                    </div>
+                    <group>
+                        <group string="Cuenta">
+                            <field name="aws_account_id"/>
+                            <field name="default_region"/>
+                            <field name="last_sync_date"/>
+                        </group>
+                        <group string="Autenticación" groups="primate_cloud_manager.group_cloud_admin">
+                            <field name="auth_method"/>
+                            <field name="iam_access_key_id"
+                                   invisible="auth_method != 'access_key'"/>
+                            <field name="iam_secret_access_key"
+                                   invisible="auth_method != 'access_key'"
+                                   password="True"
+                                   placeholder="Dejar vacío para no cambiar"/>
+                            <field name="role_arn" invisible="auth_method != 'assume_role'"
+                                   required="auth_method == 'assume_role'"/>
+                            <field name="external_id" invisible="auth_method != 'assume_role'"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Notas" name="notes">
+                            <field name="notes" placeholder="Observaciones internas..."/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_account_search" model="ir.ui.view">
+        <field name="name">primate.cloud.account.search</field>
+        <field name="model">primate.cloud.account</field>
+        <field name="arch" type="xml">
+            <search string="Buscar cuentas">
+                <field name="name"/>
+                <field name="aws_account_id"/>
+                <filter name="connected" string="Conectadas" domain="[('connection_state', '=', 'connected')]"/>
+                <filter name="error" string="Con error" domain="[('connection_state', '=', 'error')]"/>
+                <group>
+                    <filter name="group_region" string="Región" context="{'group_by': 'default_region'}"/>
+                    <filter name="group_state" string="Estado" context="{'group_by': 'connection_state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_account" model="ir.actions.act_window">
+        <field name="name">Cuentas AWS</field>
+        <field name="res_model">primate.cloud.account</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_account_search"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Registra tu primera cuenta AWS.</p>
+            <p>Cargá las credenciales IAM (cifradas) y validá la conexión.</p>
+        </field>
+    </record>
+
+</odoo>

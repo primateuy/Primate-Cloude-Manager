@@ -1,0 +1,135 @@
+# -*- coding: utf-8 -*-
+"""Base de datos PostgreSQL (local o RDS) asociada a un entorno."""
+import logging
+
+from odoo import fields, models
+
+_logger = logging.getLogger(__name__)
+
+# Mapeo de estados de RDS (DBInstanceStatus) a la selección del modelo.
+# Lo no reconocido (backing-up, modifying, etc.) se marca como 'error' para
+# que se note que no está en estado nominal.
+RDS_STATE_MAP = {
+    "available": "available",
+    "creating": "creating",
+    "stopped": "stopped",
+}
+
+# Versiones PostgreSQL soportadas en la selección. Otras quedan en False.
+SUPPORTED_PG_VERSIONS = {"13", "14", "15", "16"}
+
+
+class PrimateCloudDatabase(models.Model):
+    """Base PostgreSQL local (en EC2) o administrada (RDS)."""
+
+    _name = "primate.cloud.database"
+    _description = "Base de Datos Cloud"
+    _order = "name"
+
+    name = fields.Char(string="Nombre", required=True)
+    account_id = fields.Many2one(
+        "primate.cloud.account",
+        string="Cuenta AWS",
+        required=True,
+        ondelete="cascade",
+        index=True,
+    )
+    environment_id = fields.Many2one(
+        "primate.cloud.environment",
+        string="Entorno",
+        ondelete="set null",
+        index=True,
+    )
+    db_type = fields.Selection(
+        [("local_pg", "PostgreSQL local"), ("rds", "Amazon RDS")],
+        string="Modalidad",
+        required=True,
+        default="rds",
+    )
+    ec2_instance_id = fields.Many2one(
+        "primate.cloud.ec2.instance",
+        string="Instancia EC2",
+        ondelete="set null",
+        help="EC2 donde reside (si la modalidad es PostgreSQL local).",
+    )
+    rds_identifier = fields.Char(string="Identificador RDS", index=True)
+    rds_endpoint = fields.Char(string="Endpoint RDS")
+    pg_version = fields.Selection(
+        [("13", "13"), ("14", "14"), ("15", "15"), ("16", "16")],
+        string="Versión PostgreSQL",
+    )
+    rds_instance_class = fields.Char(string="Clase RDS")
+    rds_storage_gb = fields.Integer(string="Almacenamiento (GB)")
+    rds_multi_az = fields.Boolean(string="Multi-AZ")
+    backup_retention_days = fields.Integer(string="Retención de backup (días)")
+    last_backup_date = fields.Datetime(string="Último backup", readonly=True)
+    storage_used_gb = fields.Float(string="Almacenamiento usado (GB)", readonly=True)
+    active_connections = fields.Integer(string="Conexiones activas", readonly=True)
+    state = fields.Selection(
+        [
+            ("available", "Disponible"),
+            ("creating", "Creando"),
+            ("stopped", "Detenida"),
+            ("error", "Error"),
+        ],
+        string="Estado",
+    )
+    last_sync_date = fields.Datetime(string="Última sincronización", readonly=True)
+
+    _rds_identifier_uniq = models.Constraint(
+        "UNIQUE(account_id, rds_identifier)",
+        "Esa base RDS ya existe para la cuenta.",
+    )
+
+    def _sync_rds_from_aws(self, account, databases):
+        """Crea/actualiza bases RDS PostgreSQL desde datos normalizados de AWS.
+
+        Solo sincroniza motores PostgreSQL (el módulo gobierna Odoo). Hace upsert
+        por (cuenta, identificador RDS).
+
+        Args:
+            account (recordset): cuenta AWS de origen.
+            databases (list[dict]): salida de ``AwsRdsService.list_instances``.
+
+        Returns:
+            dict: ``{"created": int, "updated": int, "skipped": int}``.
+        """
+        now = fields.Datetime.now()
+        created = updated = skipped = 0
+        for data in databases:
+            if not (data.get("engine") or "").startswith("postgres"):
+                skipped += 1
+                continue
+            major = (data.get("engine_version") or "").split(".")[0]
+            vals = {
+                "name": data.get("name"),
+                "db_type": "rds",
+                "rds_instance_class": data.get("rds_instance_class"),
+                "rds_storage_gb": data.get("rds_storage_gb") or 0,
+                "rds_multi_az": data.get("rds_multi_az") or False,
+                "rds_endpoint": data.get("endpoint") or False,
+                "backup_retention_days": data.get("backup_retention_days") or 0,
+                "pg_version": major if major in SUPPORTED_PG_VERSIONS else False,
+                "state": RDS_STATE_MAP.get(data.get("status"), "error"),
+                "last_sync_date": now,
+            }
+            existing = self.search(
+                [
+                    ("account_id", "=", account.id),
+                    ("rds_identifier", "=", data["rds_identifier"]),
+                ],
+                limit=1,
+            )
+            if existing:
+                existing.write(vals)
+                updated += 1
+            else:
+                vals.update(
+                    {
+                        "account_id": account.id,
+                        "rds_identifier": data["rds_identifier"],
+                    }
+                )
+                self.create(vals)
+                created += 1
+        return {"created": created, "updated": updated, "skipped": skipped}

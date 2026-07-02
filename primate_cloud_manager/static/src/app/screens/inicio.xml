@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.Inicio">
+        <div class="o_pcm_inicio">
+            <div class="o_pcm_greeting">
+                <h1>Hola<t t-if="props.userName">, <t t-out="props.userName"/></t></h1>
+                <p class="o_pcm_muted">Estado general de tu infraestructura cloud.</p>
+            </div>
+
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-else="">
+                <!-- KPIs -->
+                <div class="o_pcm_kpis">
+                    <div t-foreach="state.kpis" t-as="kpi" t-key="kpi.key" class="o_pcm_kpi">
+                        <div class="o_pcm_kpi_icon"><i t-attf-class="fa {{ kpi.icon }}"/></div>
+                        <div>
+                            <div class="o_pcm_kpi_value" t-out="kpi.value"/>
+                            <div class="o_pcm_kpi_label" t-out="kpi.label"/>
+                            <div t-if="kpi.hint" class="o_pcm_kpi_hint" t-out="kpi.hint"/>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Entornos recientes -->
+                <div class="o_pcm_section_head">
+                    <h2>Entornos recientes</h2>
+                </div>
+                <div class="o_pcm_card o_pcm_recent">
+                    <div t-if="!state.recent.length" class="o_pcm_muted p-2">
+                        Todavía no hay entornos.
+                    </div>
+                    <div t-foreach="state.recent" t-as="env" t-key="env.id"
+                         class="o_pcm_recent_row" t-on-click="() => this.openEnv(env.id, env.name)">
+                        <div class="o_pcm_recent_main">
+                            <span class="o_pcm_recent_name" t-out="env.name"/>
+                            <span class="o_pcm_muted" t-if="env.project"> · <t t-out="env.project"/></span>
+                        </div>
+                        <div class="o_pcm_recent_meta o_pcm_muted">
+                            <span t-if="env.odoo_version">Odoo <t t-out="env.odoo_version"/></span>
+                            <span t-if="env.main_url" class="o_pcm_mono"><t t-out="env.main_url"/></span>
+                        </div>
+                        <PcmStatusBadge value="env.state"
+                                        model="'primate.cloud.environment'"
+                                        field="'state'"
+                                        label="env.state_label"/>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

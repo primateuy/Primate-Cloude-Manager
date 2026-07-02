@@ -1,0 +1,56 @@
+// Overlay bloqueante de aprovisionamiento de Primate Cloud Manager.
+.o_pcm_overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000; // por encima de las vistas; debajo de los toasts del sistema
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+
+    .o_pcm_card {
+        background: #fff;
+        border-radius: 8px;
+        padding: 24px 28px;
+        width: 460px;
+        max-width: 92vw;
+        max-height: 80vh;
+        overflow: auto;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+
+        .o_pcm_header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.15rem;
+            font-weight: 600;
+            margin-bottom: 14px;
+
+            .o_pcm_spinner {
+                width: 1.2rem;
+                height: 1.2rem;
+            }
+            .o_pcm_ok { color: var(--success, #28a745); }
+            .o_pcm_err { color: var(--danger, #dc3545); }
+        }
+
+        .o_pcm_steps {
+            .o_pcm_step {
+                padding: 3px 0;
+                font-size: 0.95rem;
+                color: #444;
+            }
+        }
+
+        .o_pcm_wait {
+            margin-top: 14px;
+            font-size: 0.85rem;
+            font-style: italic;
+        }
+
+        .o_pcm_footer {
+            margin-top: 18px;
+            text-align: right;
+        }
+    }
+}

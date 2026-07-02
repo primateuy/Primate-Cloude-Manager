@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <!-- Categoría de la aplicación -->
+    <record id="module_category_primate_cloud" model="ir.module.category">
+        <field name="name">Primate Cloud</field>
+        <field name="description">Gobierno de infraestructura cloud desde Odoo.</field>
+        <field name="sequence">20</field>
+    </record>
+
+    <!-- Privilegio (Odoo 19): vincula los grupos con la categoría en Ajustes -->
+    <record id="privilege_primate_cloud" model="res.groups.privilege">
+        <field name="name">Primate Cloud Manager</field>
+        <field name="category_id" ref="module_category_primate_cloud"/>
+        <field name="sequence">20</field>
+    </record>
+
+    <!-- Cloud Viewer: solo lectura -->
+    <record id="group_cloud_viewer" model="res.groups">
+        <field name="name">Cloud Viewer</field>
+        <field name="privilege_id" ref="privilege_primate_cloud"/>
+        <field name="comment">Consulta de entornos, métricas, costos y logs. Sin acciones.</field>
+    </record>
+
+    <!-- Cloud Operator: operar (implica Viewer) -->
+    <record id="group_cloud_operator" model="res.groups">
+        <field name="name">Cloud Operator</field>
+        <field name="privilege_id" ref="privilege_primate_cloud"/>
+        <field name="implied_ids" eval="[Command.link(ref('group_cloud_viewer'))]"/>
+        <field name="comment">Operar instancias, ejecutar deploys y sincronizar recursos.</field>
+    </record>
+
+    <!-- Cloud Admin: gestión total (implica Operator). El admin del sistema arranca acá. -->
+    <record id="group_cloud_admin" model="res.groups">
+        <field name="name">Cloud Admin</field>
+        <field name="privilege_id" ref="privilege_primate_cloud"/>
+        <field name="implied_ids" eval="[Command.link(ref('group_cloud_operator'))]"/>
+        <field name="comment">Crear/eliminar recursos, gestionar cuentas AWS y credenciales IAM.</field>
+        <field name="user_ids" eval="[Command.link(ref('base.user_admin'))]"/>
+    </record>
+
+</odoo>

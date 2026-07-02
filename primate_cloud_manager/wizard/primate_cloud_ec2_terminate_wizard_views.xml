@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_ec2_terminate_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.ec2.terminate.wizard.form</field>
+        <field name="model">primate.cloud.ec2.terminate.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Terminar instancia">
+                <div class="alert alert-danger" role="alert">
+                    <strong>Acción destructiva e irreversible.</strong>
+                    La instancia se eliminará permanentemente de AWS.
+                </div>
+                <group>
+                    <field name="instance_name"/>
+                    <field name="instance_id" invisible="1"/>
+                    <field name="confirm_name"
+                           placeholder="Escribí el nombre exacto de la instancia"/>
+                    <field name="acknowledge"/>
+                </group>
+                <footer>
+                    <button name="action_confirm" type="object" string="Terminar instancia"
+                            class="btn-danger"
+                            confirm="¿Confirmás la terminación permanente de esta instancia?"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

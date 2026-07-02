@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.Entornos">
+        <div class="o_pcm_entornos">
+            <!-- Barra de búsqueda + nuevo entorno -->
+            <div class="o_pcm_toolbar">
+                <div class="o_pcm_search">
+                    <i class="fa fa-search"/>
+                    <input type="text" placeholder="Buscar entorno, proyecto o URL…"
+                           t-att-value="state.search" t-on-input="(ev) => this.onSearch(ev)"/>
+                </div>
+                <span class="o_pcm_spacer"/>
+                <button class="o_pcm_btn o_pcm_btn_accent" t-on-click="() => this.newEnv()">
+                    <i class="fa fa-plus"/> Nuevo entorno
+                </button>
+            </div>
+            <div class="o_pcm_filters">
+                <span class="o_pcm_filters_label">Estado</span>
+                <span t-foreach="stateFilters" t-as="f" t-key="f.key"
+                      t-attf-class="o_pcm_chip_btn {{ state.filterState === f.key ? 'o_pcm_chip_on' : '' }}"
+                      t-on-click="() => (state.filterState = f.key)"
+                      t-out="f.label"/>
+                <span class="o_pcm_filters_sep"/>
+                <span class="o_pcm_filters_label">Tipo</span>
+                <span t-foreach="typeFilters" t-as="f" t-key="f.key"
+                      t-attf-class="o_pcm_chip_btn {{ state.filterType === f.key ? 'o_pcm_chip_on' : '' }}"
+                      t-on-click="() => (state.filterType = f.key)"
+                      t-out="f.label"/>
+            </div>
+
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-else="">
+                <div t-if="!filtered.length" class="o_pcm_card o_pcm_muted">
+                    No hay entornos que coincidan con el filtro.
+                </div>
+                <div t-else="" class="o_pcm_env_grid">
+                    <div t-foreach="filtered" t-as="env" t-key="env.id"
+                         class="o_pcm_env_card" t-on-click="() => this.openEnv(env.id, env.name)">
+                        <div class="o_pcm_env_head">
+                            <span class="o_pcm_env_name" t-out="env.name"/>
+                            <PcmStatusBadge value="env.state"
+                                            model="'primate.cloud.environment'"
+                                            field="'state'"
+                                            label="env.state_label"/>
+                        </div>
+                        <div class="o_pcm_env_sub o_pcm_muted">
+                            <t t-if="env.project" t-out="env.project"/>
+                            <span t-if="env.env_type_label" class="o_pcm o_pcm_chip" t-out="env.env_type_label"/>
+                        </div>
+                        <div t-if="env.main_url" class="o_pcm_mono o_pcm_env_url" t-out="env.main_url"/>
+                        <div class="o_pcm_env_foot">
+                            <span t-if="env.odoo_version">Odoo <t t-out="env.odoo_version"/>
+                                <t t-if="env.odoo_edition"> · <t t-out="env.odoo_edition"/></t>
+                            </span>
+                            <span class="o_pcm_env_counts">
+                                <span title="Servidores"><i class="fa fa-server"/> <t t-out="env.ec2_count"/></span>
+                                <span title="Bases"><i class="fa fa-database"/> <t t-out="env.db_count"/></span>
+                                <span title="Repositorios"><i class="fa fa-code-fork"/> <t t-out="env.repo_count"/></span>
+                            </span>
+                        </div>
+                        <div class="o_pcm_env_actions">
+                            <button class="o_pcm_btn" t-on-click.stop="() => this.manage(env.id, env.name)">
+                                <i class="fa fa-sliders"/> Gestionar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

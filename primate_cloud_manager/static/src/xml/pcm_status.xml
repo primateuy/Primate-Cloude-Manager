@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.StatusBadge">
+        <span t-attf-class="o_pcm o_pcm_badge o_pcm_badge_{{bucket}}">
+            <span class="o_pcm_dot"/>
+            <t t-out="label"/>
+        </span>
+    </t>
+
+    <t t-name="primate_cloud_manager.CategoryChip">
+        <span class="o_pcm o_pcm_chip"><t t-out="label"/></span>
+    </t>
+
+</templates>

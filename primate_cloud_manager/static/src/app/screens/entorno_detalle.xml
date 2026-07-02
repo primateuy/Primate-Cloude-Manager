@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.EntornoDetalle">
+        <div class="o_pcm_detalle">
+            <div class="o_pcm_back" t-on-click="() => this.back()">
+                <i class="fa fa-arrow-left"/> Atrás
+            </div>
+
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!state.data.id" class="o_pcm_card o_pcm_muted">
+                No se encontró el entorno.
+            </div>
+
+            <t t-else="">
+                <!-- `d` resuelve al getter del componente (state.data). -->
+
+                <!-- Hero + barra de acciones -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <PcmStatusBadge value="d.state"
+                                        model="'primate.cloud.environment'"
+                                        field="'state'" label="d.state_label"/>
+                        <span class="o_pcm_spacer"/>
+                        <button class="o_pcm_btn" t-on-click="() => this.manage()">
+                            <i class="fa fa-sliders"/> Gestionar
+                        </button>
+                    </div>
+                    <div class="o_pcm_hero_meta">
+                        <span t-if="d.env_type_label" class="o_pcm o_pcm_chip" t-out="d.env_type_label"/>
+                        <span t-if="d.odoo_version">Odoo <t t-out="d.odoo_version"/>
+                            <t t-if="d.odoo_edition"> · <t t-out="d.odoo_edition"/></t>
+                        </span>
+                        <span t-if="d.project" class="o_pcm_link"
+                              t-on-click="() => this.openRecord('primate.cloud.project', d.project_id, d.project)">
+                            <i class="fa fa-folder-o"/> <t t-out="d.project"/>
+                        </span>
+                        <span t-if="d.account" class="o_pcm_link"
+                              t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account)">
+                            <i class="fa fa-key"/> <t t-out="d.account"/>
+                        </span>
+                        <span t-if="d.origin" class="o_pcm_link"
+                              t-on-click="() => this.openRecord('primate.cloud.environment', d.origin_id, d.origin)">
+                            <i class="fa fa-code-fork"/> Origen: <t t-out="d.origin"/>
+                        </span>
+                        <span t-if="d.main_url" class="o_pcm_mono"><i class="fa fa-link"/> <t t-out="d.main_url"/></span>
+                    </div>
+                    <div class="o_pcm_actions">
+                        <button t-if="d.state === 'draft' or d.state === 'error'"
+                                class="o_pcm_btn o_pcm_btn_accent"
+                                t-on-click="() => this.runEnvMethod('action_provision')">
+                            <i class="fa fa-magic"/> Aprovisionar
+                        </button>
+                        <button t-if="d.state === 'active'" class="o_pcm_btn"
+                                t-on-click="() => this.runEnvMethod('action_create_staging')">
+                            <i class="fa fa-clone"/> Crear staging
+                        </button>
+                        <button t-if="d.env_type === 'staging'" class="o_pcm_btn"
+                                t-on-click="() => this.runEnvMethod('action_refresh_staging', { confirm: '¿Refrescar el staging desde su origen? Se sobrescribe la base actual.' })">
+                            <i class="fa fa-refresh"/> Refrescar staging
+                        </button>
+                        <button t-if="d.servers.length" class="o_pcm_btn"
+                                t-on-click="() => this.syncServers()">
+                            <i class="fa fa-cloud-download"/> Sincronizar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Instancias: servidor + sus bases -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Instancias</h2>
+                    <button class="o_pcm_btn o_pcm_btn_accent" t-on-click="() => this.newInstance()">
+                        <i class="fa fa-plus"/> Nueva instancia
+                    </button>
+                </div>
+                <div t-if="!instances.length and !looseDatabases.length"
+                     class="o_pcm_card o_pcm_empty">
+                    <i class="fa fa-server o_pcm_empty_icon"/>
+                    <div>Este entorno todavía no tiene instancias.</div>
+                    <button class="o_pcm_btn o_pcm_btn_accent" t-on-click="() => this.newInstance()">
+                        <i class="fa fa-plus"/> Crear la primera instancia
+                    </button>
+                </div>
+                <div t-foreach="instances" t-as="inst" t-key="inst.server.id" class="o_pcm_card o_pcm_instance">
+                    <div class="o_pcm_instance_head o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.ec2.instance', inst.server.id, inst.server.name)">
+                        <i class="fa fa-server o_pcm_instance_icon"/>
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="inst.server.name"/>
+                            <span class="o_pcm_muted o_pcm_mono" t-if="inst.server.public_ip"> · <t t-out="inst.server.public_ip"/></span>
+                        </div>
+                        <span class="o_pcm_muted" t-if="inst.server.instance_type" t-out="inst.server.instance_type"/>
+                        <PcmStatusBadge value="inst.server.state"
+                                        model="'primate.cloud.ec2.instance'"
+                                        field="'instance_state'" label="inst.server.state_label"/>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                    <div class="o_pcm_instance_dbs">
+                        <div t-if="!inst.databases.length" class="o_pcm_muted o_pcm_instance_nodb">
+                            Sin base de datos asociada.
+                        </div>
+                        <div t-foreach="inst.databases" t-as="db" t-key="db.id"
+                             class="o_pcm_line o_pcm_line_click o_pcm_subline"
+                             t-on-click="() => this.openRecord('primate.cloud.database', db.id, db.name)">
+                            <i class="fa fa-database o_pcm_muted"/>
+                            <div class="o_pcm_line_main">
+                                <span class="o_pcm_line_name" t-out="db.name"/>
+                                <span t-if="db.pg_version" class="o_pcm_muted"> · PostgreSQL <t t-out="db.pg_version"/></span>
+                            </div>
+                            <span class="o_pcm o_pcm_chip" t-out="db.db_type_label"/>
+                            <PcmStatusBadge value="db.state" model="'primate.cloud.database'"
+                                            field="'state'" label="db.state_label"/>
+                            <i class="fa fa-angle-right o_pcm_muted"/>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bases sin servidor asociado (RDS / sueltas) -->
+                <div t-if="looseDatabases.length" class="o_pcm_card">
+                    <h2>Bases sin servidor asociado</h2>
+                    <div t-foreach="looseDatabases" t-as="db" t-key="db.id"
+                         class="o_pcm_line o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.database', db.id, db.name)">
+                        <i class="fa fa-database o_pcm_muted"/>
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="db.name"/>
+                        </div>
+                        <span class="o_pcm o_pcm_chip" t-out="db.db_type_label"/>
+                        <PcmStatusBadge value="db.state" model="'primate.cloud.database'"
+                                        field="'state'" label="db.state_label"/>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                </div>
+
+                <!-- DNS -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Registros DNS</h2>
+                    <button class="o_pcm_btn" t-on-click="() => this.addDns()">
+                        <i class="fa fa-plus"/> Agregar registro
+                    </button>
+                </div>
+                <div t-if="!d.dns_records.length" class="o_pcm_card o_pcm_muted">
+                    Sin registros DNS.
+                </div>
+                <div t-else="" class="o_pcm_card">
+                    <div t-foreach="d.dns_records" t-as="rec" t-key="rec.id"
+                         class="o_pcm_line o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.dns.record', rec.id, rec.name)">
+                        <span class="o_pcm o_pcm_chip" t-out="rec.record_type"/>
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="rec.name"/>
+                            <span class="o_pcm_muted o_pcm_mono" t-if="rec.record_value"> → <t t-out="rec.record_value"/></span>
+                        </div>
+                        <PcmStatusBadge value="rec.state" model="'primate.cloud.dns.record'"
+                                        field="'state'" label="rec.state_label"/>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                </div>
+
+                <!-- Despliegues -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Despliegues</h2>
+                    <button class="o_pcm_btn" t-on-click="() => this.newDeployment()">
+                        <i class="fa fa-plus"/> Nuevo despliegue
+                    </button>
+                </div>
+                <div t-if="!d.deployments.length" class="o_pcm_card o_pcm_muted">
+                    Sin despliegues registrados.
+                </div>
+                <div t-else="" class="o_pcm_card">
+                    <div t-foreach="d.deployments" t-as="dep" t-key="dep.id" class="o_pcm_line">
+                        <div class="o_pcm_line_main o_pcm_link"
+                             t-on-click="() => this.openRecord('primate.cloud.deployment', dep.id, dep.name)">
+                            <span class="o_pcm_line_name" t-out="dep.name"/>
+                            <span class="o_pcm_muted"> · <t t-out="dep.deployment_type_label"/></span>
+                            <span class="o_pcm_muted" t-if="dep.date"> · <t t-out="dep.date"/></span>
+                        </div>
+                        <PcmStatusBadge value="dep.state" model="'primate.cloud.deployment'"
+                                        field="'state'" label="dep.state_label"/>
+                        <button t-if="dep.state === 'draft'" class="o_pcm_btn"
+                                t-on-click="() => this.runDeploymentMethod(dep.id, 'action_run')">
+                            <i class="fa fa-play"/> Ejecutar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Trazabilidad: repositorios -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Repositorios y trazabilidad</h2>
+                    <button class="o_pcm_btn" t-on-click="() => this.addRepo()">
+                        <i class="fa fa-plus"/> Agregar repositorio
+                    </button>
+                </div>
+                <div t-if="!d.repositories.length" class="o_pcm_card o_pcm_muted">
+                    Este entorno no tiene repositorios registrados.
+                </div>
+                <div t-foreach="d.repositories" t-as="repo" t-key="repo.id" class="o_pcm_card o_pcm_repo">
+                    <div class="o_pcm_repo_head">
+                        <span class="o_pcm_repo_name o_pcm_link"
+                              t-on-click="() => this.openRecord('primate.cloud.repository', repo.id, repo.name)"
+                              t-out="repo.name"/>
+                        <span t-if="repo.repo_type_label" class="o_pcm o_pcm_chip" t-out="repo.repo_type_label"/>
+                        <span t-if="repo.branch" class="o_pcm_muted"><i class="fa fa-code-fork"/> <t t-out="repo.branch"/></span>
+                        <span class="o_pcm_spacer"/>
+                        <PcmStatusBadge value="repo.sync_state"
+                                        model="'primate.cloud.repository'"
+                                        field="'sync_state'" label="repo.sync_state_label"/>
+                    </div>
+                    <div class="o_pcm_repo_actions">
+                        <button class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_check_sync_state')">
+                            <i class="fa fa-refresh"/> Verificar estado
+                        </button>
+                        <button class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_sync_commits')">
+                            <i class="fa fa-download"/> Sincronizar commits
+                        </button>
+                        <button class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_detect_modules')">
+                            <i class="fa fa-cubes"/> Detectar módulos
+                        </button>
+                    </div>
+                    <div class="o_pcm_repo_commits o_pcm_muted">
+                        <span>Desplegado: <span class="o_pcm_mono" t-out="repo.current_commit or '—'"/></span>
+                        <span>Último remoto: <span class="o_pcm_mono" t-out="repo.latest_commit or '—'"/></span>
+                    </div>
+
+                    <div class="o_pcm_repo_grid">
+                        <!-- Módulos: disponibles (repo) vs instalados (base) -->
+                        <div class="o_pcm_repo_panel">
+                            <h3>Módulos <span class="o_pcm_muted">(<t t-out="repo.module_count"/>)</span></h3>
+                            <div t-if="!repo.modules.length" class="o_pcm_muted">Sin módulos detectados.</div>
+                            <table t-else="" class="o_pcm_mod_table">
+                                <thead>
+                                    <tr>
+                                        <th>Módulo</th><th>Repo</th><th>Base</th><th>Estado</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr t-foreach="repo.modules" t-as="m" t-key="m.technical_name">
+                                        <td>
+                                            <span class="o_pcm_mono" t-out="m.technical_name"/>
+                                            <div class="o_pcm_muted o_pcm_mod_fn" t-if="m.functional_name" t-out="m.functional_name"/>
+                                        </td>
+                                        <td class="o_pcm_mono" t-out="m.version or '—'"/>
+                                        <td class="o_pcm_mono" t-out="m.db_version or '—'"/>
+                                        <td>
+                                            <PcmStatusBadge value="m.db_state"
+                                                            model="'primate.cloud.module'"
+                                                            field="'db_state'" label="m.db_state_label"/>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- Historial de commits -->
+                        <div class="o_pcm_repo_panel">
+                            <h3>Commits <span class="o_pcm_muted">(<t t-out="repo.commit_count"/>)</span></h3>
+                            <div t-if="!repo.commits.length" class="o_pcm_muted">Sin commits sincronizados.</div>
+                            <div t-foreach="repo.commits" t-as="c" t-key="c_index"
+                                 t-attf-class="o_pcm_commit {{ c.is_current ? 'o_pcm_commit_current' : '' }}">
+                                <span class="o_pcm_mono o_pcm_commit_hash" t-out="c.short"/>
+                                <span class="o_pcm_commit_msg" t-out="c.message"/>
+                                <span class="o_pcm_muted o_pcm_commit_meta">
+                                    <t t-if="c.author" t-out="c.author"/>
+                                    <t t-if="c.is_current"> · actual</t>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

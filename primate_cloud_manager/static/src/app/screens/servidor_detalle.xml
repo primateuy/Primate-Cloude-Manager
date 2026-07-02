@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.ServidorDetalle">
+        <div class="o_pcm_detalle">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró el servidor.</div>
+
+            <t t-else="">
+                <!-- Hero + acciones -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <PcmStatusBadge value="d.state"
+                                        model="'primate.cloud.ec2.instance'"
+                                        field="'instance_state'" label="d.state_label"/>
+                        <span class="o_pcm_spacer"/>
+                    </div>
+                    <div class="o_pcm_actions">
+                        <button t-if="d.state === 'stopped'" class="o_pcm_btn o_pcm_btn_accent"
+                                t-on-click="() => this.runMethod('action_start')">
+                            <i class="fa fa-play"/> Iniciar
+                        </button>
+                        <button t-if="d.state === 'running'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_stop', { confirm: '¿Detener esta instancia?' })">
+                            <i class="fa fa-stop"/> Detener
+                        </button>
+                        <button t-if="d.state === 'running'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_restart', { confirm: '¿Reiniciar esta instancia?' })">
+                            <i class="fa fa-refresh"/> Reiniciar
+                        </button>
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_sync_from_aws')">
+                            <i class="fa fa-cloud-download"/> Sincronizar
+                        </button>
+                        <button t-if="d.state === 'running'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_execute_command')">
+                            <i class="fa fa-terminal"/> Ejecutar comando
+                        </button>
+                        <button t-if="d.state !== 'terminated'" class="o_pcm_btn o_pcm_btn_danger"
+                                t-on-click="() => this.runMethod('action_open_terminate_wizard')">
+                            <i class="fa fa-trash"/> Terminar
+                        </button>
+                    </div>
+                </div>
+
+                <div class="o_pcm_cols2">
+                    <div class="o_pcm_card">
+                        <h2>AWS</h2>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Instance ID</span><span class="o_pcm_mono" t-out="d.aws_instance_id"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span><span t-out="d.instance_type or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Región</span><span t-out="d.region or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">SO</span><span t-out="d.os_type or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Disco</span><span t-out="d.disk_size_gb ? d.disk_size_gb + ' GB' : '—'"/></div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <h2>Red y asociación</h2>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">IP pública</span><span class="o_pcm_mono" t-out="d.public_ip or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">IP privada</span><span class="o_pcm_mono" t-out="d.private_ip or '—'"/></div>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Entorno</span>
+                            <span t-if="d.environment_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.environment', d.environment_id, d.environment_name)"
+                                  t-out="d.environment_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                        <div class="o_pcm_kv">
+                            <span class="o_pcm_muted">Cuenta</span>
+                            <span t-if="d.account_id" class="o_pcm_link"
+                                  t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account_name)"
+                                  t-out="d.account_name"/>
+                            <span t-else="">—</span>
+                        </div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
+                    </div>
+                </div>
+
+                <!-- Bases de datos que corren en este servidor -->
+                <div class="o_pcm_card" t-if="d.databases and d.databases.length">
+                    <h2>Bases de datos</h2>
+                    <div t-foreach="d.databases" t-as="db" t-key="db.id"
+                         class="o_pcm_line o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.database', db.id, db.name)">
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="db.name"/>
+                        </div>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

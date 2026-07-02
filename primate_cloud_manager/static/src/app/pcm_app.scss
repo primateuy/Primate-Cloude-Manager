@@ -1,0 +1,765 @@
+// ============================================================================
+// pcm_app.scss — Shell de la app PCM (página completa). Todo bajo .o_pcm_app.
+// Navy fijo como base; el acento vive en variables CSS que setea pcm_app.js
+// según la preferencia del usuario (--pcm-accent y derivados).
+// ============================================================================
+
+.o_pcm_app {
+    // Base navy (fija).
+    --pcm-navy: #0F2B33;
+    --pcm-navy-2: #173B45;
+    --pcm-surface: #F4F6F6;
+    --pcm-line: #E7ECEC;
+    --pcm-ink-text: #16292F;
+    --pcm-soft: #647579;
+
+    // Acento (default teal; pcm_app.js lo sobrescribe con la preferencia).
+    --pcm-accent: #48B3A6;
+    --pcm-accent-ink: #0F5E4E;
+    --pcm-accent-tint: #E3F3EF;
+
+    // Ocupa SOLO el área de acción de Odoo (debajo de la barra superior), sin
+    // taparla: así Odoo sigue funcionando y se entra/sale de la app libremente.
+    display: flex;
+    height: 100%;
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
+    position: relative; // ancla el drawer de wizard (overlay absoluto interno).
+    background: var(--pcm-surface);
+    color: var(--pcm-ink-text);
+    font-size: 14px;
+
+    // ---------------------------------------------------------------- Sidebar
+    .o_pcm_sidebar {
+        flex: 0 0 232px;
+        background: var(--pcm-navy);
+        color: #DCE6E6;
+        display: flex;
+        flex-direction: column;
+        padding: 18px 12px;
+
+        .o_pcm_brand {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 6px 10px 18px;
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #fff;
+
+            .o_pcm_brand_dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                background: var(--pcm-accent);
+                flex: 0 0 auto;
+            }
+        }
+
+        .o_pcm_nav {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1 1 auto;
+            overflow-y: auto;
+
+            .o_pcm_nav_group + .o_pcm_nav_group { margin-top: 10px; }
+
+            .o_pcm_nav_group_head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 11px 4px;
+                font-size: 0.72rem;
+                font-weight: 600;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+                color: #708888;
+                cursor: pointer;
+                user-select: none;
+
+                i { font-size: 0.75rem; }
+                &:hover { color: #B9C7C7; }
+            }
+
+            .o_pcm_nav_item {
+                display: flex;
+                align-items: center;
+                gap: 11px;
+                padding: 9px 11px;
+                border-radius: 9px;
+                color: #B9C7C7;
+                cursor: pointer;
+                user-select: none;
+                white-space: nowrap;
+
+                i { width: 16px; text-align: center; font-size: 0.95rem; }
+
+                &:hover { background: var(--pcm-navy-2); color: #fff; }
+
+                &.o_pcm_active {
+                    background: var(--pcm-accent);
+                    color: #fff;
+                    font-weight: 600;
+                }
+            }
+        }
+
+        .o_pcm_foot {
+            padding: 12px 11px 2px;
+            font-size: 0.75rem;
+            color: #6E8484;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            margin-top: 8px;
+        }
+    }
+
+    // ---------------------------------------------------------------- Contenido
+    .o_pcm_content {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+
+        .o_pcm_topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--pcm-line);
+            background: #fff;
+
+            .o_pcm_topbar_title {
+                font-size: 1.1rem;
+                font-weight: 600;
+            }
+
+            // Breadcrumb (pila de navegación).
+            .o_pcm_breadcrumb {
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 6px;
+                font-size: 1.02rem;
+                min-width: 0;
+
+                .o_pcm_crumb {
+                    color: var(--pcm-soft);
+                    cursor: pointer;
+                    white-space: nowrap;
+                    &:hover { color: var(--pcm-accent-ink); }
+
+                    &.o_pcm_crumb_active {
+                        color: var(--pcm-ink-text);
+                        font-weight: 600;
+                        cursor: default;
+                    }
+                }
+                .o_pcm_crumb_sep { color: var(--pcm-line); }
+            }
+
+            // Selector de acento.
+            .o_pcm_accent_picker {
+                display: flex;
+                align-items: center;
+                gap: 7px;
+
+                .o_pcm_swatch {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 50%;
+                    cursor: pointer;
+                    border: 2px solid transparent;
+                    transition: transform 0.08s ease;
+
+                    &:hover { transform: scale(1.12); }
+                    &.o_pcm_swatch_active { border-color: var(--pcm-ink-text); }
+                }
+            }
+        }
+
+        .o_pcm_screen {
+            flex: 1 1 auto;
+            overflow: auto;
+            padding: 22px;
+
+            // El área donde se montan las vistas nativas embebidas (componente View).
+            &.o_pcm_native {
+                padding: 0;
+                display: flex;
+                flex-direction: column;
+
+                // Barra "Volver" (solo en modo form): no crece.
+                .o_pcm_native_bar {
+                    flex: 0 0 auto;
+                    padding: 8px 16px;
+                    border-bottom: 1px solid var(--pcm-line);
+                    background: #fff;
+
+                    .o_pcm_back {
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 6px;
+                        color: var(--pcm-soft);
+                        cursor: pointer;
+                        font-size: 0.9rem;
+                        &:hover { color: var(--pcm-accent-ink); }
+                    }
+                }
+                // La vista nativa embebida ocupa el alto restante.
+                .o_view_controller { flex: 1 1 auto; min-height: 0; }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ Cards
+    .o_pcm_card {
+        background: #fff;
+        border: 1px solid var(--pcm-line);
+        border-radius: 14px;
+        padding: 18px 20px;
+    }
+    .o_pcm_muted { color: var(--pcm-soft); }
+    .o_pcm_spacer { flex: 1 1 auto; }
+    .o_pcm_mono {
+        font-family: var(--o-mono-font-family, ui-monospace, monospace);
+        font-size: 0.82rem;
+    }
+
+    // Botón de la app (outline por defecto, relleno con acento con la variante).
+    .o_pcm_btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 12px;
+        border-radius: 9px;
+        font-size: 0.85rem;
+        cursor: pointer;
+        background: #fff;
+        border: 1px solid var(--pcm-line);
+        color: var(--pcm-ink-text);
+
+        &:hover { border-color: var(--pcm-accent); color: var(--pcm-accent-ink); }
+
+        &.o_pcm_btn_accent {
+            background: var(--pcm-accent);
+            border-color: var(--pcm-accent);
+            color: #fff;
+            &:hover { filter: brightness(1.05); color: #fff; }
+        }
+        &.o_pcm_btn_danger {
+            border-color: var(--pcm-error-dot);
+            color: var(--pcm-error-ink);
+            &:hover { background: var(--pcm-error-bg); border-color: var(--pcm-error-dot); }
+        }
+    }
+
+    // Fila de botones de acción (hero de detalles).
+    .o_pcm_actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+    }
+
+    // Referencia clickeable (drill-through).
+    .o_pcm_link {
+        color: var(--pcm-accent-ink);
+        cursor: pointer;
+        &:hover { text-decoration: underline; }
+    }
+
+    // Fila key-value en cards de detalle.
+    .o_pcm_kv {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 6px 0;
+        & + .o_pcm_kv { border-top: 1px solid var(--pcm-line); }
+    }
+
+    // ---------------------------------------------------------------- Inicio
+    .o_pcm_inicio {
+        max-width: 1100px;
+
+        .o_pcm_greeting {
+            margin-bottom: 20px;
+            h1 { font-size: 1.6rem; font-weight: 600; margin: 0; }
+            p { margin: 4px 0 0; }
+        }
+
+        .o_pcm_kpis {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 14px;
+            margin-bottom: 26px;
+
+            .o_pcm_kpi {
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                background: #fff;
+                border: 1px solid var(--pcm-line);
+                border-radius: 14px;
+                padding: 16px 18px;
+
+                .o_pcm_kpi_icon {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 11px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 1.3rem;
+                    background: var(--pcm-accent-tint);
+                    color: var(--pcm-accent-ink);
+                    flex: 0 0 auto;
+                }
+                .o_pcm_kpi_value { font-size: 1.7rem; font-weight: 700; line-height: 1; }
+                .o_pcm_kpi_label { color: var(--pcm-soft); font-size: 0.9rem; margin-top: 2px; }
+                .o_pcm_kpi_hint { color: var(--pcm-soft); font-size: 0.75rem; font-style: italic; }
+            }
+        }
+
+        .o_pcm_section_head h2 { font-size: 1.15rem; font-weight: 600; margin: 0 0 10px; }
+
+        .o_pcm_recent {
+            padding: 6px 8px;
+
+            .o_pcm_recent_row {
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                padding: 11px 12px;
+                border-radius: 10px;
+                cursor: pointer;
+
+                &:hover { background: var(--pcm-surface); }
+                & + .o_pcm_recent_row { border-top: 1px solid var(--pcm-line); }
+
+                .o_pcm_recent_main { flex: 1 1 auto; min-width: 0; }
+                .o_pcm_recent_name { font-weight: 600; }
+                .o_pcm_recent_meta {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: flex-end;
+                    gap: 2px;
+                    font-size: 0.82rem;
+                    text-align: right;
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------- Entornos
+    .o_pcm_entornos {
+        .o_pcm_toolbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+
+            .o_pcm_search {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                background: #fff;
+                border: 1px solid var(--pcm-line);
+                border-radius: 10px;
+                padding: 8px 12px;
+                max-width: 420px;
+
+                i { color: var(--pcm-soft); }
+                input {
+                    border: 0;
+                    outline: 0;
+                    flex: 1 1 auto;
+                    background: transparent;
+                    color: var(--pcm-ink-text);
+                    font-size: 0.92rem;
+                }
+            }
+        }
+
+        .o_pcm_filters {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 7px;
+            margin-bottom: 18px;
+
+            .o_pcm_filters_label { color: var(--pcm-soft); font-size: 0.82rem; margin-right: 2px; }
+            .o_pcm_filters_sep {
+                width: 1px;
+                height: 20px;
+                background: var(--pcm-line);
+                margin: 0 6px;
+            }
+            .o_pcm_chip_btn {
+                padding: 4px 12px;
+                border-radius: 999px;
+                font-size: 0.82rem;
+                cursor: pointer;
+                background: #fff;
+                border: 1px solid var(--pcm-line);
+                color: var(--pcm-soft);
+                user-select: none;
+
+                &:hover { border-color: var(--pcm-accent); color: var(--pcm-accent-ink); }
+                &.o_pcm_chip_on {
+                    background: var(--pcm-accent-tint);
+                    border-color: var(--pcm-accent);
+                    color: var(--pcm-accent-ink);
+                    font-weight: 600;
+                }
+            }
+        }
+
+        .o_pcm_env_grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 14px;
+        }
+
+        .o_pcm_env_card {
+            background: #fff;
+            border: 1px solid var(--pcm-line);
+            border-radius: 14px;
+            padding: 16px 18px;
+            cursor: pointer;
+            transition: border-color 0.08s ease, box-shadow 0.08s ease;
+
+            &:hover {
+                border-color: var(--pcm-accent);
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+            }
+
+            .o_pcm_env_head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                margin-bottom: 4px;
+            }
+            .o_pcm_env_name { font-weight: 600; font-size: 1.02rem; }
+            .o_pcm_env_sub {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 0.86rem;
+                margin-bottom: 8px;
+            }
+            .o_pcm_env_url { margin-bottom: 10px; }
+            .o_pcm_env_foot {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                font-size: 0.82rem;
+                color: var(--pcm-soft);
+                border-top: 1px solid var(--pcm-line);
+                padding-top: 10px;
+
+                .o_pcm_env_counts {
+                    display: flex;
+                    gap: 12px;
+                    i { color: var(--pcm-accent); }
+                }
+            }
+            .o_pcm_env_actions {
+                display: flex;
+                justify-content: flex-end;
+                margin-top: 10px;
+            }
+        }
+    }
+
+    // ------------------------------------------------------ Detalle de entorno
+    .o_pcm_detalle {
+        max-width: 1180px;
+
+        .o_pcm_back {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--pcm-soft);
+            cursor: pointer;
+            margin-bottom: 14px;
+            font-size: 0.9rem;
+
+            &:hover { color: var(--pcm-accent-ink); }
+        }
+
+        .o_pcm_card + .o_pcm_card,
+        .o_pcm_cols2 + .o_pcm_section_head,
+        .o_pcm_card + .o_pcm_section_head { margin-top: 16px; }
+
+        .o_pcm_hero {
+            .o_pcm_hero_head {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                h1 { font-size: 1.5rem; font-weight: 600; margin: 0; }
+            }
+            .o_pcm_hero_meta {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 16px;
+                margin-top: 10px;
+                color: var(--pcm-soft);
+                font-size: 0.9rem;
+                i { color: var(--pcm-accent); }
+            }
+        }
+
+        .o_pcm_cols2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 16px;
+
+            @media (max-width: 900px) { grid-template-columns: 1fr; }
+
+            h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 10px; }
+        }
+
+        .o_pcm_line {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 6px;
+            & + .o_pcm_line { border-top: 1px solid var(--pcm-line); }
+            .o_pcm_line_main { flex: 1 1 auto; min-width: 0; }
+            .o_pcm_line_name { font-weight: 500; }
+
+            &.o_pcm_line_click {
+                cursor: pointer;
+                border-radius: 8px;
+                &:hover { background: var(--pcm-surface); }
+            }
+        }
+
+        .o_pcm_section_head h2 { font-size: 1.15rem; font-weight: 600; margin: 0 0 10px; }
+
+        .o_pcm_repo {
+            & + .o_pcm_repo { margin-top: 12px; }
+
+            .o_pcm_repo_head {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                .o_pcm_repo_name { font-weight: 600; font-size: 1.02rem; }
+                .o_pcm_spacer { flex: 1 1 auto; }
+                i { color: var(--pcm-accent); }
+            }
+            .o_pcm_repo_commits {
+                display: flex;
+                gap: 22px;
+                flex-wrap: wrap;
+                margin: 8px 0 14px;
+                font-size: 0.84rem;
+            }
+
+            .o_pcm_repo_grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 20px;
+                @media (max-width: 900px) { grid-template-columns: 1fr; }
+
+                h3 { font-size: 0.95rem; font-weight: 600; margin: 0 0 8px; }
+            }
+
+            .o_pcm_mod_table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.85rem;
+
+                th {
+                    text-align: left;
+                    color: var(--pcm-soft);
+                    font-weight: 500;
+                    padding: 4px 8px;
+                    border-bottom: 1px solid var(--pcm-line);
+                }
+                td { padding: 6px 8px; border-bottom: 1px solid var(--pcm-line); vertical-align: top; }
+                .o_pcm_mod_fn { font-size: 0.78rem; }
+            }
+
+            .o_pcm_commit {
+                display: flex;
+                align-items: baseline;
+                gap: 10px;
+                padding: 5px 6px;
+                border-radius: 7px;
+                font-size: 0.85rem;
+
+                &.o_pcm_commit_current {
+                    background: var(--pcm-accent-tint);
+                    font-weight: 600;
+                }
+                .o_pcm_commit_hash { color: var(--pcm-accent-ink); flex: 0 0 auto; }
+                .o_pcm_commit_msg {
+                    flex: 1 1 auto;
+                    min-width: 0;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+                .o_pcm_commit_meta { flex: 0 0 auto; font-size: 0.78rem; }
+            }
+        }
+    }
+
+    // ------------------------------------------------- Encabezado de sección con acción
+    .o_pcm_section_bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 22px 0 10px;
+
+        h2 { font-size: 1.15rem; font-weight: 600; margin: 0; }
+    }
+    // Primer encabezado de sección tras el hero: menos margen superior.
+    .o_pcm_hero + .o_pcm_section_bar { margin-top: 18px; }
+
+    // --------------------------------------------------------------- Instancias
+    .o_pcm_instance {
+        padding: 0;
+        overflow: hidden;
+
+        & + .o_pcm_instance { margin-top: 12px; }
+
+        .o_pcm_instance_head {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+
+            .o_pcm_instance_icon { color: var(--pcm-accent); font-size: 1.05rem; }
+            &.o_pcm_line_click { cursor: pointer; border-radius: 0; }
+            &:hover { background: var(--pcm-surface); }
+        }
+        .o_pcm_instance_dbs {
+            border-top: 1px solid var(--pcm-line);
+            background: #FBFCFC;
+            padding: 6px 12px 6px 44px;
+
+            .o_pcm_instance_nodb { padding: 8px 6px; font-size: 0.86rem; }
+            .o_pcm_subline { padding: 8px 6px; }
+        }
+    }
+
+    // ------------------------------------------------------- Acciones de repositorio
+    .o_pcm_repo_actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 4px 0 4px;
+    }
+
+    // ------------------------------------------------------------- Estados vacíos
+    .o_pcm_empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        text-align: center;
+        padding: 34px 20px;
+        color: var(--pcm-soft);
+
+        .o_pcm_empty_icon {
+            font-size: 2rem;
+            color: var(--pcm-line);
+        }
+    }
+
+    // Botón-ícono (cerrar drawer, etc.).
+    .o_pcm_icon_btn {
+        border: 0;
+        background: transparent;
+        color: var(--pcm-soft);
+        cursor: pointer;
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        font-size: 1rem;
+        &:hover { background: var(--pcm-surface); color: var(--pcm-ink-text); }
+    }
+
+    // ================================================ Drawer de wizard (panel lateral)
+    .o_pcm_drawer_scrim {
+        position: absolute;
+        inset: 0;
+        z-index: 900;
+        background: rgba(15, 43, 51, 0.32);
+        display: flex;
+        justify-content: flex-end;
+        animation: o_pcm_fade_in 0.12s ease;
+    }
+
+    .o_pcm_drawer {
+        // Neutraliza los estilos Bootstrap de `.modal` (position fixed / inset /
+        // overflow): acá el drawer fluye dentro del scrim flex.
+        position: relative;
+        inset: auto;
+        z-index: auto;
+        width: 560px;
+        max-width: 92%;
+        height: 100%;
+        overflow: hidden;
+        background: #fff;
+        display: flex;
+        flex-direction: column;
+        box-shadow: -8px 0 28px rgba(0, 0, 0, 0.14);
+        animation: o_pcm_slide_in 0.16s ease;
+
+        .o_pcm_drawer_head {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--pcm-line);
+
+            h2 { font-size: 1.1rem; font-weight: 600; margin: 0; }
+        }
+
+        .o_pcm_drawer_body {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+
+            // El form embebido ocupa el alto y respira.
+            .o_form_view { padding: 8px 4px; }
+            .o_view_controller { flex: 1 1 auto; min-height: 0; }
+        }
+
+        // Footer donde se portalean los botones del wizard.
+        .o_pcm_drawer_foot {
+            flex: 0 0 auto;
+            border-top: 1px solid var(--pcm-line);
+            padding: 12px 20px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin: 0;
+
+            &:empty { display: none; }
+        }
+    }
+
+    @keyframes o_pcm_fade_in { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes o_pcm_slide_in {
+        from { transform: translateX(24px); opacity: 0.4; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+}
