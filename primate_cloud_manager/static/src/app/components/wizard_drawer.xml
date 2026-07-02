@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.WizardDrawer">
+        <!-- Scrim: click fuera cierra el drawer. -->
+        <div class="o_pcm_drawer_scrim" t-on-click="() => this.props.onClose()">
+            <!-- id = ancla del portal del footer del wizard embebido. La clase
+                 `modal` es necesaria: con env.inDialog, useViewButtons hace
+                 ref.el.closest('.modal') para deshabilitar botones durante la
+                 acción; sin ese ancestro, revienta. Estilos Bootstrap de .modal
+                 neutralizados en el SCSS del drawer. -->
+            <div class="o_pcm_drawer modal" t-att-id="id" t-on-click.stop="">
+                <div class="o_pcm_drawer_head">
+                    <h2 t-out="props.title or 'Asistente'"/>
+                    <button class="o_pcm_icon_btn" t-on-click="() => this.props.onClose()"
+                            aria-label="Cerrar">
+                        <i class="fa fa-times"/>
+                    </button>
+                </div>
+                <div class="o_pcm_drawer_body">
+                    <View t-props="viewProps"/>
+                </div>
+                <!-- Los botones del <footer> del wizard se portalean aquí. -->
+                <div class="modal-footer o_pcm_drawer_foot"/>
+            </div>
+        </div>
+    </t>
+
+</templates>
