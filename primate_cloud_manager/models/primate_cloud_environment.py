@@ -105,6 +105,37 @@ class PrimateCloudEnvironment(models.Model):
     active = fields.Boolean(string="Activo", default=True)
     notes = fields.Text(string="Notas")
 
+    # --- Respaldos (Fase 8) ---
+    backup_policy_id = fields.Many2one(
+        "primate.cloud.backup.policy",
+        string="Política de respaldo",
+        ondelete="restrict",
+        tracking=True,
+        help="Política esperada. El validador la compara contra lo detectado en AWS "
+             "y los backups ejecutados por PCM.",
+    )
+    backup_ids = fields.One2many(
+        "primate.cloud.backup", "environment_id", string="Backups"
+    )
+    backup_compliance = fields.Selection(
+        [
+            ("ok", "Cumple"),
+            ("non_compliant", "No cumple"),
+            ("unverifiable", "No verificable"),
+            ("no_policy", "Sin política definida"),
+        ],
+        string="Cumplimiento de respaldo",
+        readonly=True,
+        default="no_policy",
+        copy=False,
+    )
+    backup_compliance_detail = fields.Text(
+        string="Detalle de cumplimiento", readonly=True, copy=False
+    )
+    last_backup_check = fields.Datetime(
+        string="Última verificación de respaldo", readonly=True, copy=False
+    )
+
     # --- Staging (Fase 7) ---
     origin_environment_id = fields.Many2one(
         "primate.cloud.environment", string="Entorno origen", readonly=True,
@@ -633,7 +664,7 @@ class PrimateCloudEnvironment(models.Model):
             self._staging_restart(instance, region)
         except Exception as error:  # noqa: BLE001
             self.message_post(body=_("Refresco de staging fallido: %s") % error)
-            self._log("staging_create", name=_("Refrescar staging: %s") % self.name,
+            self._log("staging_refresh", name=_("Refrescar staging: %s") % self.name,
                       result="failed", error_message=str(error))
             bus.provision_done(self.env, self, ok=False,
                                message=_("Refresco fallido: %s") % error)
@@ -641,7 +672,7 @@ class PrimateCloudEnvironment(models.Model):
         self.write({"staging_origin_backup": dump_key,
                     "staging_creation_date": fields.Datetime.now()})
         self.message_post(body=_("Staging refrescado desde %s.") % origin.display_name)
-        self._log("staging_create", name=_("Refrescar staging: %s") % self.name)
+        self._log("staging_refresh", name=_("Refrescar staging: %s") % self.name)
         bus.provision_done(self.env, self, ok=True,
                            message=_("Staging refrescado desde %s.") % origin.display_name)
         return True

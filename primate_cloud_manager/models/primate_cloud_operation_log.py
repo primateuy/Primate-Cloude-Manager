@@ -25,6 +25,10 @@ ACTION_TYPES = [
     ("module_detect", "Detectar módulos"),
     ("deploy", "Despliegue"),
     ("staging_create", "Crear staging"),
+    ("staging_refresh", "Refrescar staging"),
+    ("backup_run", "Ejecutar backup"),
+    ("backup_restore", "Restaurar backup"),
+    ("backup_check", "Verificar cumplimiento de respaldo"),
     ("other", "Otra"),
 ]
 

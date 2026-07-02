@@ -116,6 +116,27 @@
                                 </list>
                             </field>
                         </page>
+                        <page string="Respaldos" name="backups">
+                            <group>
+                                <group string="Política">
+                                    <field name="backup_policy_id"/>
+                                    <field name="backup_compliance" widget="pcm_status_badge"/>
+                                    <field name="last_backup_check"/>
+                                </group>
+                                <group string="Detalle de cumplimiento">
+                                    <field name="backup_compliance_detail" nolabel="1" colspan="2"/>
+                                </group>
+                            </group>
+                            <field name="backup_ids">
+                                <list create="false">
+                                    <field name="backup_date"/>
+                                    <field name="database_id"/>
+                                    <field name="backup_type"/>
+                                    <field name="size_mb"/>
+                                    <field name="state" widget="pcm_status_badge"/>
+                                </list>
+                            </field>
+                        </page>
                         <page string="Staging" name="staging">
                             <group>
                                 <group string="Este entorno (si es staging)">

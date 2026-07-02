@@ -19,15 +19,17 @@ const GLOBAL = {
     // ok
     active: "ok", running: "ok", connected: "ok", available: "ok",
     success: "ok", updated: "ok", installed: "ok", compliant: "ok",
+    ok: "ok", completed: "ok",
     // warn / en progreso
     provisioning: "warn", pending: "warn", creating: "warn", installing: "warn",
     deploying: "warn", syncing: "warn", outdated: "warn", stale: "warn",
     partial: "warn", stopping: "warn", "shutting-down": "warn",
     to_upgrade: "warn", to_install: "warn", to_remove: "warn",
+    in_progress: "warn", unverifiable: "warn",
     // neutral / inactivo
     draft: "neutral", archived: "neutral", stopped: "neutral", terminated: "neutral",
     unknown: "neutral", reverted: "neutral", deleted: "neutral", disabled: "neutral",
-    uninstalled: "neutral",
+    uninstalled: "neutral", expired: "neutral", no_policy: "neutral",
     // error / alerta
     error: "error", failed: "error", divergent: "error", missing: "error",
     not_found: "error", non_compliant: "error",

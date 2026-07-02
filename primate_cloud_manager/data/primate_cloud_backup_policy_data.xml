@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Políticas estándar de la spec §10.1. noupdate: el admin puede ajustarlas
+         (p. ej. marcar "Gestionada por PCM" + bucket) sin que un -u las pise. -->
+    <data noupdate="1">
+
+        <record id="backup_policy_none" model="primate.cloud.backup.policy">
+            <field name="name">Sin respaldo gestionado</field>
+            <field name="policy_type">none</field>
+            <field name="expected_retention_days">0</field>
+            <field name="description">Entornos de desarrollo efímeros. No se realiza comparación.</field>
+        </record>
+
+        <record id="backup_policy_basic" model="primate.cloud.backup.policy">
+            <field name="name">Básica</field>
+            <field name="policy_type">basic</field>
+            <field name="expected_frequency">daily</field>
+            <field name="expected_retention_days">7</field>
+            <field name="description">Diaria, 7 días de retención. Staging, testing.</field>
+        </record>
+
+        <record id="backup_policy_standard" model="primate.cloud.backup.policy">
+            <field name="name">Estándar</field>
+            <field name="policy_type">standard</field>
+            <field name="expected_frequency">daily</field>
+            <field name="expected_retention_days">30</field>
+            <field name="description">Diaria, 30 días de retención. Producción de clientes medianos.</field>
+        </record>
+
+        <record id="backup_policy_critical" model="primate.cloud.backup.policy">
+            <field name="name">Crítica</field>
+            <field name="policy_type">critical</field>
+            <field name="expected_frequency">twice_daily</field>
+            <field name="expected_retention_days">90</field>
+            <field name="description">Dos veces al día, 90 días de retención. Producción de clientes críticos.</field>
+        </record>
+
+    </data>
+</odoo>

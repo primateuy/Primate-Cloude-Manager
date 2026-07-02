@@ -11,6 +11,23 @@ from ..services import aws_base
 class TestAwsBase(TransactionCase):
     """Construcción de tags y test_connection con boto3 mockeado."""
 
+    def test_claves_de_tags_literales(self):
+        """Fija las claves obligatorias como LITERALES (D4).
+
+        Comparar constante-vs-constante no cazaría un typo en la constante
+        (p. ej. 'primaate:environment'). Estas claves sostienen la atribución
+        de costos (Fase 9): si cambian, se rompe silenciosamente.
+        """
+        self.assertEqual(aws_base.MANAGED_BY_TAG, "primate:managed_by")
+        self.assertEqual(aws_base.MANAGED_BY_VALUE, "pcm")
+        self.assertEqual(aws_base.CLIENT_TAG, "primate:client")
+        self.assertEqual(aws_base.ENVIRONMENT_TAG, "primate:environment")
+        tags = aws_base.build_resource_tags("forum", "produccion")
+        self.assertEqual(
+            {t["Key"] for t in tags},
+            {"primate:managed_by", "primate:client", "primate:environment"},
+        )
+
     def test_build_resource_tags_minimos(self):
         tags = aws_base.build_resource_tags("forum", "produccion")
         as_dict = {t["Key"]: t["Value"] for t in tags}

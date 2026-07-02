@@ -2,6 +2,12 @@ id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_account_viewer,primate.cloud.account viewer,model_primate_cloud_account,group_cloud_viewer,1,0,0,0
 access_account_operator,primate.cloud.account operator,model_primate_cloud_account,group_cloud_operator,1,0,0,0
 access_account_admin,primate.cloud.account admin,model_primate_cloud_account,group_cloud_admin,1,1,1,1
+access_backup_policy_viewer,primate.cloud.backup.policy viewer,model_primate_cloud_backup_policy,group_cloud_viewer,1,0,0,0
+access_backup_policy_operator,primate.cloud.backup.policy operator,model_primate_cloud_backup_policy,group_cloud_operator,1,0,0,0
+access_backup_policy_admin,primate.cloud.backup.policy admin,model_primate_cloud_backup_policy,group_cloud_admin,1,1,1,1
+access_backup_viewer,primate.cloud.backup viewer,model_primate_cloud_backup,group_cloud_viewer,1,0,0,0
+access_backup_operator,primate.cloud.backup operator,model_primate_cloud_backup,group_cloud_operator,1,0,1,0
+access_backup_admin,primate.cloud.backup admin,model_primate_cloud_backup,group_cloud_admin,1,1,1,0
 access_operation_log_viewer,primate.cloud.operation.log viewer,model_primate_cloud_operation_log,group_cloud_viewer,1,0,0,0
 access_operation_log_operator,primate.cloud.operation.log operator,model_primate_cloud_operation_log,group_cloud_operator,1,0,1,0
 access_operation_log_admin,primate.cloud.operation.log admin,model_primate_cloud_operation_log,group_cloud_admin,1,0,1,0

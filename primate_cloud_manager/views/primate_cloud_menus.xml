@@ -71,6 +71,12 @@
               groups="primate_cloud_manager.group_cloud_operator"
               sequence="10"/>
 
+    <menuitem id="menu_backup"
+              name="Respaldos"
+              parent="menu_primate_cloud_operations"
+              action="action_backup"
+              sequence="20"/>
+
     <menuitem id="menu_operation_log"
               name="Bitácora"
               parent="menu_primate_cloud_operations"
@@ -95,5 +101,11 @@
               parent="menu_primate_cloud_config"
               action="action_project"
               sequence="20"/>
+
+    <menuitem id="menu_backup_policy"
+              name="Políticas de respaldo"
+              parent="menu_primate_cloud_config"
+              action="action_backup_policy"
+              sequence="30"/>
 
 </odoo>

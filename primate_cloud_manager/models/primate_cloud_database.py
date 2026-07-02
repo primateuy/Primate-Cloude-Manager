@@ -2,7 +2,8 @@
 """Base de datos PostgreSQL (local o RDS) asociada a un entorno."""
 import logging
 
-from odoo import fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -80,6 +81,51 @@ class PrimateCloudDatabase(models.Model):
         "UNIQUE(account_id, rds_identifier)",
         "Esa base RDS ya existe para la cuenta.",
     )
+
+    @api.constrains("ec2_instance_id", "environment_id")
+    def _check_instance_environment_coherence(self):
+        """La EC2 vinculada debe pertenecer al mismo entorno que la base.
+
+        Solo aplica cuando ambos entornos están definidos: el sync de AWS puede
+        traer instancias o bases todavía sin entorno asignado.
+        """
+        for database in self:
+            instance_env = database.ec2_instance_id.environment_id
+            if (
+                database.environment_id
+                and instance_env
+                and instance_env != database.environment_id
+            ):
+                raise ValidationError(
+                    _(
+                        "La base '%(db)s' pertenece al entorno '%(db_env)s' pero la "
+                        "instancia '%(instance)s' pertenece a '%(instance_env)s'.",
+                        db=database.name,
+                        db_env=database.environment_id.display_name,
+                        instance=database.ec2_instance_id.display_name,
+                        instance_env=instance_env.display_name,
+                    )
+                )
+
+    def action_assign_instance(self, instance_id):
+        """Vincula esta base a una instancia EC2 (para bases sueltas, desde el hub).
+
+        Valida la coherencia de entorno antes de escribir; si la base no tiene
+        entorno, adopta el de la instancia (así deja de estar suelta).
+
+        Args:
+            instance_id (int): id de la ``primate.cloud.ec2.instance`` destino.
+        """
+        self.ensure_one()
+        instance = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not instance:
+            raise UserError(_("La instancia EC2 indicada no existe."))
+        vals = {"ec2_instance_id": instance.id}
+        if not self.environment_id and instance.environment_id:
+            vals["environment_id"] = instance.environment_id.id
+        # El constraint _check_instance_environment_coherence valida el cruce.
+        self.write(vals)
+        return True
 
     def _sync_rds_from_aws(self, account, databases):
         """Crea/actualiza bases RDS PostgreSQL desde datos normalizados de AWS.

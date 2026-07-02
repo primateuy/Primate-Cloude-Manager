@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_backup_policy_list" model="ir.ui.view">
+        <field name="name">primate.cloud.backup.policy.list</field>
+        <field name="model">primate.cloud.backup.policy</field>
+        <field name="arch" type="xml">
+            <list string="Políticas de respaldo" class="o_pcm">
+                <field name="name"/>
+                <field name="policy_type" widget="pcm_category_chip"/>
+                <field name="expected_frequency"/>
+                <field name="expected_retention_days"/>
+                <field name="managed_by_pcm" widget="boolean_toggle"/>
+                <field name="s3_bucket" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_backup_policy_form" model="ir.ui.view">
+        <field name="name">primate.cloud.backup.policy.form</field>
+        <field name="model">primate.cloud.backup.policy</field>
+        <field name="arch" type="xml">
+            <form string="Política de respaldo" class="o_pcm">
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="Ej.: Estándar"/></h1>
+                    </div>
+                    <group>
+                        <group string="Política esperada">
+                            <field name="policy_type"/>
+                            <field name="expected_frequency"/>
+                            <field name="expected_retention_days"/>
+                            <field name="active" widget="boolean_toggle"/>
+                        </group>
+                        <group string="Ejecución por PCM">
+                            <field name="managed_by_pcm"/>
+                            <field name="s3_bucket" invisible="not managed_by_pcm"
+                                   required="managed_by_pcm"/>
+                            <field name="s3_prefix" invisible="not managed_by_pcm"/>
+                            <field name="execution_hour" widget="float_time"
+                                   invisible="not managed_by_pcm"/>
+                        </group>
+                    </group>
+                    <group string="Descripción">
+                        <field name="description" nolabel="1" colspan="2"/>
+                    </group>
+                    <group string="Entornos con esta política">
+                        <field name="environment_ids" nolabel="1" colspan="2" readonly="1">
+                            <list>
+                                <field name="name"/>
+                                <field name="env_type"/>
+                                <field name="backup_compliance" widget="pcm_status_badge"/>
+                                <field name="last_backup_check"/>
+                            </list>
+                        </field>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_backup_policy" model="ir.actions.act_window">
+        <field name="name">Políticas de respaldo</field>
+        <field name="res_model">primate.cloud.backup.policy</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Definí la primera política de respaldo.</p>
+            <p>Cada entorno tiene una política esperada; el validador la compara contra lo detectado en AWS.</p>
+        </field>
+    </record>
+
+</odoo>
