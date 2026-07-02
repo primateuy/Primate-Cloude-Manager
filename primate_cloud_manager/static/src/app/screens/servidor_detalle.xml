@@ -34,6 +34,10 @@
                             <i class="fa fa-cloud-download"/> Sincronizar
                         </button>
                         <button t-if="d.state === 'running'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_create_staging_from_instance')">
+                            <i class="fa fa-clone"/> Crear staging
+                        </button>
+                        <button t-if="d.state === 'running'" class="o_pcm_btn"
                                 t-on-click="() => this.runMethod('action_execute_command')">
                             <i class="fa fa-terminal"/> Ejecutar comando
                         </button>

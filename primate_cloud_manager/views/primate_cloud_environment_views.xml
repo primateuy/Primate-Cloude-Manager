@@ -149,6 +149,8 @@
                             <group>
                                 <group string="Este entorno (si es staging)">
                                     <field name="origin_environment_id" readonly="1"/>
+                                    <field name="staging_origin_instance_id"/>
+                                    <field name="staging_origin_database_id"/>
                                     <field name="staging_creation_date"/>
                                     <field name="staging_created_by"/>
                                     <field name="staging_origin_backup"/>

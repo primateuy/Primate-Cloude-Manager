@@ -83,16 +83,9 @@ class TestStaging(TransactionCase):
         self.assertIn("ir_mail_server", sql)
 
     # --- Constructores de scripts ---
-    def test_build_dump_y_restore_script(self):
-        Env = self.env["primate.cloud.environment"]
-        dump = Env._build_dump_script("forum", "bucket", "pcm-staging/1-forum.dump")
-        self.assertIn("pg_dump -Fc -d forum", dump)
-        self.assertIn("aws s3 cp", dump)
-        restore = Env._build_restore_script("forum_staging", "odoo", "bucket",
-                                            "pcm-staging/1-forum.dump")
-        self.assertIn("dropdb --if-exists forum_staging", restore)
-        self.assertIn("createdb -O odoo forum_staging", restore)
-        self.assertIn("pg_restore -d forum_staging", restore)
+    # NOTA (Fase 8, Bloque 5): _build_dump_script/_build_restore_script se
+    # eliminaron; la copia de staging reusa el pipeline de backups (Bloques
+    # 3-4), cuyos scripts tienen sus golden en test_phase8.
 
     def test_build_neutralize_y_clone_script(self):
         Env = self.env["primate.cloud.environment"]
@@ -183,8 +176,15 @@ class TestStaging(TransactionCase):
         staging = self._make_staging_env()
         base = _staging_base()
         fake_ssm = mock.Mock()
+        # Un solo mock para todas las llamadas SSM (install, backup del origen,
+        # restore, neutralización, clone, restart): emite los marcadores del
+        # pipeline de Bloques 3-4 que la copia de staging reusa desde Fase 8.
         fake_ssm.run_script.return_value = {
-            "status": "Success", "stdout": "NEUTRALIZED", "stderr": "",
+            "status": "Success",
+            "stdout": "PCM_DUMP_SIZE_BYTES=1048576\nPCM_FS_SIZE_BYTES=0\n"
+                      "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_RESTORE_OK\n"
+                      "NEUTRALIZED",
+            "stderr": "",
         }
         with mock.patch.object(type(self.account), "_get_aws_service", return_value=base), \
              mock.patch.object(type(self.origin_instance), "_get_ssm_service",
@@ -236,9 +236,20 @@ class TestStaging(TransactionCase):
             "name": "forum_staging", "account_id": self.account.id,
             "environment_id": staging.id, "db_type": "local_pg",
         })
+        # El refresco reusa el pipeline de backups: el origen necesita un
+        # bucket (política gestionada) para el dump fresco.
+        policy = self.env["primate.cloud.backup.policy"].create({
+            "name": "Staging bucket (test)", "policy_type": "custom",
+            "managed_by_pcm": True, "s3_bucket": "pcm-transfer",
+        })
+        self.origin.backup_policy_id = policy
         fake_ssm = mock.Mock()
         fake_ssm.run_script.return_value = {
-            "status": "Success", "stdout": "NEUTRALIZED", "stderr": "",
+            "status": "Success",
+            "stdout": "PCM_DUMP_SIZE_BYTES=1048576\nPCM_FS_SIZE_BYTES=0\n"
+                      "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_RESTORE_OK\n"
+                      "NEUTRALIZED",
+            "stderr": "",
         }
         base = _staging_base()
         with mock.patch.object(type(self.account), "_get_aws_service", return_value=base), \
@@ -247,3 +258,5 @@ class TestStaging(TransactionCase):
             ok = staging.job_refresh_staging()
         self.assertTrue(ok)
         self.assertTrue(staging.staging_neutralization_log)
+        # La fuente quedó registrada en el pipeline de backups.
+        self.assertTrue(staging.staging_origin_backup)

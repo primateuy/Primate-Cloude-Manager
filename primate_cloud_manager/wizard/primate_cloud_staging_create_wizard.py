@@ -20,7 +20,7 @@ STAGING_PERSISTED_FIELDS = [
     "instance_profile", "db_mode", "db_name", "db_user", "db_password", "pg_version",
     "rds_identifier", "rds_instance_class", "rds_storage_gb", "rds_multi_az",
     "backup_retention_days", "transfer_bucket", "create_dns", "hosted_zone_id",
-    "ttl", "admin_password",
+    "ttl", "admin_password", "use_last_backup",
 ]
 
 # Campo del entorno origen donde se guarda la config cifrada del staging.
@@ -39,6 +39,22 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
     )
     account_id = fields.Many2one(
         related="origin_environment_id.account_id", string="Cuenta AWS", readonly=True
+    )
+    # Origen EXPLÍCITO (Fase 8, Bloque 5): de qué instancia y BD sale el
+    # staging. Con un solo candidato se preseleccionan (el caso común no
+    # cambia); con varios, el usuario elige — reemplaza el [:1] de Fase 7.
+    origin_instance_id = fields.Many2one(
+        "primate.cloud.ec2.instance", string="Instancia de origen",
+        help="EC2 desde la que se ejecuta el dump (con red a la BD de origen).",
+    )
+    origin_database_id = fields.Many2one(
+        "primate.cloud.database", string="Base de datos de origen",
+        help="Base que se copia al staging (local o RDS por endpoint).",
+    )
+    use_last_backup = fields.Boolean(
+        string="Usar el último backup del origen",
+        help="Restaura el último backup completado en vez de dumpear "
+             "producción de nuevo (más rápido y sin carga sobre el origen).",
     )
     name = fields.Char(string="Nombre del staging", required=True)
     domain = fields.Char(string="Subdominio", required=True,
@@ -120,6 +136,11 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
             self.domain = "staging.%s" % origin.main_url
         if not self.db_name:
             self.db_name = ("%s_staging" % (origin.name or "")).lower().replace(" ", "_")
+        # Origen explícito: preselección solo cuando es inequívoco.
+        if not self.origin_instance_id and len(origin.ec2_instance_ids) == 1:
+            self.origin_instance_id = origin.ec2_instance_ids
+        if not self.origin_database_id and len(origin.database_ids) == 1:
+            self.origin_database_id = origin.database_ids
 
     def _prepare_params(self):
         """Construye el dict de parámetros para el flujo de staging."""
@@ -132,6 +153,10 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
             "account_id": self.account_id.id,
             "region": self.region,
             "domain": self.domain,
+            # Origen explícito (Bloque 5)
+            "origin_instance_id": self.origin_instance_id.id,
+            "origin_database_id": self.origin_database_id.id,
+            "use_last_backup": self.use_last_backup,
             # Cómputo
             "instance_name": self.instance_name or self.domain,
             "instance_type": self.instance_type,
@@ -179,6 +204,21 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
         # El AMI es opcional: vacío => se resuelve para la región al crear la EC2.
         if not (self.transfer_bucket or "").strip():
             raise UserError(_("Indicá el bucket S3 de transferencia."))
+        origin = self.origin_environment_id
+        if not self.origin_instance_id and len(origin.ec2_instance_ids) != 1:
+            raise UserError(_("El origen tiene varias (o ninguna) instancias: "
+                              "elegí la instancia de origen."))
+        if not self.origin_database_id and len(origin.database_ids) != 1:
+            raise UserError(_("El origen tiene varias (o ninguna) bases: "
+                              "elegí la base de origen."))
+        if (self.origin_instance_id
+                and self.origin_instance_id.environment_id != origin):
+            raise UserError(_("La instancia de origen no pertenece al entorno "
+                              "origen."))
+        if (self.origin_database_id
+                and self.origin_database_id.environment_id != origin):
+            raise UserError(_("La base de origen no pertenece al entorno "
+                              "origen."))
         if self.db_mode == "rds":
             if not (self.rds_identifier or "").strip():
                 raise UserError(_("RDS: indicá el identificador de la base."))

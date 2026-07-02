@@ -74,4 +74,30 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- 7. Cancelar la cola de correo pendiente heredada de produccion (Fase 8):
+--    si alguien reactiva un mail server en el staging, NO deben salir los
+--    mails encolados reales.
+DO $$ BEGIN
+    IF to_regclass('public.mail_mail') IS NOT NULL THEN
+        UPDATE mail_mail SET state = 'cancel'
+        WHERE state IN ('outgoing', 'exception');
+    END IF;
+END $$;
+
+-- 8. Invalidar tokens externos (spec 14.3, Fase 8): API keys de Odoo.
+--    No se toca totp_secret (dejaria a los usuarios sin poder entrar).
+DO $$ BEGIN
+    IF to_regclass('public.res_users_apikeys') IS NOT NULL THEN
+        DELETE FROM res_users_apikeys;
+    END IF;
+END $$;
+
+-- 9. Reapuntar el dominio de website al staging (Fase 8): evita que el sitio
+--    del staging redirija a produccion.
+DO $$ BEGIN
+    IF to_regclass('public.website') IS NOT NULL THEN
+        UPDATE website SET domain = '%%STAGING_URL%%';
+    END IF;
+END $$;
+
 COMMIT;

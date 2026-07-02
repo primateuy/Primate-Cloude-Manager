@@ -10,16 +10,14 @@ destino. Salvaguardas del diseño aprobado:
 - Pre-backup del destino activado por default; si falla, el job aborta.
 """
 import logging
-import re
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
-_logger = logging.getLogger(__name__)
+# Única fuente del patrón (también valida el job server-side).
+from ..models.primate_cloud_environment import DB_NAME_RE
 
-# Nombre de base PostgreSQL admitido (también viaja dentro de un SQL de
-# pg_terminate_backend: nada de comillas ni caracteres de shell).
-DB_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+_logger = logging.getLogger(__name__)
 
 
 class PrimateCloudBackupRestoreWizard(models.TransientModel):

@@ -5,3 +5,4 @@ from . import primate_cloud_ec2_create_wizard
 from . import primate_cloud_provision_wizard
 from . import primate_cloud_staging_create_wizard
 from . import primate_cloud_backup_restore_wizard
+from . import primate_cloud_staging_refresh_wizard

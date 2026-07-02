@@ -1125,3 +1125,280 @@ class TestBackupRestore(TransactionCase):
              ("resource_id", "=", self.staging.id)], limit=1,
         )
         self.assertIn("pre-backup", log.error_message)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestStagingInstanceAware(TransactionCase):
+    """Staging consciente de instancias (Bloque 5): origen explícito, RDS,
+    neutralización ampliada y wizards."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Forum", "account_id": self.account.id}
+        )
+        self.origin = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active",
+            "main_url": "forum.primate.cloud",
+        })
+        self.instance_1 = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv-1", "account_id": self.account.id,
+            "environment_id": self.origin.id, "aws_instance_id": "i-1",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        self.db_1 = self.env["primate.cloud.database"].create({
+            "name": "forum", "account_id": self.account.id,
+            "environment_id": self.origin.id, "db_type": "local_pg",
+            "ec2_instance_id": self.instance_1.id,
+        })
+        self.Env = self.env["primate.cloud.environment"]
+
+    def _add_second_instance_and_db(self):
+        instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv-2", "account_id": self.account.id,
+            "environment_id": self.origin.id, "aws_instance_id": "i-2",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        database = self.env["primate.cloud.database"].create({
+            "name": "forum2", "account_id": self.account.id,
+            "environment_id": self.origin.id, "db_type": "local_pg",
+            "ec2_instance_id": instance.id,
+        })
+        return instance, database
+
+    # --- Resolución explícita de origen ---
+    def test_resolve_origen_unico_fallback(self):
+        instance, database = self.origin._resolve_staging_origin()
+        self.assertEqual(instance, self.instance_1)
+        self.assertEqual(database, self.db_1)
+
+    def test_resolve_origen_multi_exige_elegir(self):
+        self._add_second_instance_and_db()
+        with self.assertRaises(UserError):
+            self.origin._resolve_staging_origin()
+
+    def test_resolve_origen_explicito_gana(self):
+        instance_2, db_2 = self._add_second_instance_and_db()
+        instance, database = self.origin._resolve_staging_origin(
+            instance_2, db_2)
+        self.assertEqual(instance, instance_2)
+        self.assertEqual(database, db_2)
+
+    def test_enqueue_staging_persiste_origen(self):
+        instance_2, db_2 = self._add_second_instance_and_db()
+        with mock.patch.object(type(self.origin), "with_delay"):
+            staging = self.origin._enqueue_staging({
+                "name": "Stg", "domain": "stg.forum.primate.cloud",
+                "origin_instance_id": instance_2.id,
+                "origin_database_id": db_2.id,
+            })
+        self.assertEqual(staging.staging_origin_instance_id, instance_2)
+        self.assertEqual(staging.staging_origin_database_id, db_2)
+
+    def test_enqueue_staging_multi_sin_eleccion_falla(self):
+        self._add_second_instance_and_db()
+        with self.assertRaises(UserError):
+            self.origin._enqueue_staging({
+                "name": "Stg", "domain": "stg.forum.primate.cloud",
+            })
+
+    # --- Script de backup con origen RDS ---
+    def test_script_rds_credenciales_in_situ(self):
+        script = self.Env._build_backup_script(
+            "forum", "bucket", "k.dump", "k-fs.tar.gz",
+            rds_endpoint="forum.abc.us-east-1.rds.amazonaws.com",
+        )
+        # El dump apunta al endpoint con credenciales leídas del odoo.conf.
+        self.assertIn("-h forum.abc.us-east-1.rds.amazonaws.com", script)
+        self.assertIn("/etc/odoo/odoo.conf", script)
+        self.assertIn('PGPASSWORD="$DB_PASSWORD" pg_dump', script)
+        # Las credenciales NUNCA se imprimen (ninguna línea echo las toca).
+        for line in script.splitlines():
+            if "echo" in line:
+                self.assertNotIn("DB_PASSWORD", line)
+                self.assertNotIn("DB_USER", line)
+        # Sigue siendo streaming.
+        self.assertIn("| aws s3 cp - s3://bucket/k.dump", script)
+
+    def test_script_local_sin_modo_rds(self):
+        script = self.Env._build_backup_script("forum", "bucket", "k", "kf")
+        self.assertIn("sudo -u postgres pg_dump", script)
+        self.assertNotIn("PGPASSWORD", script)
+
+    def test_run_database_backup_ejecutor_explicito(self):
+        """Una BD RDS sin EC2 propia se dumpea desde el ejecutor indicado."""
+        rds_db = self.env["primate.cloud.database"].create({
+            "name": "forumrds", "account_id": self.account.id,
+            "environment_id": self.origin.id, "db_type": "rds",
+            "rds_identifier": "forumrds",
+            "rds_endpoint": "forumrds.abc.rds.amazonaws.com",
+        })
+        ssm = mock.Mock()
+        ssm.run_script.return_value = {
+            "status": "Success",
+            "stdout": "PCM_DUMP_SIZE_BYTES=10\nPCM_FS_SIZE_BYTES=0\nPCM_BACKUP_OK",
+        }
+        with mock.patch.object(type(self.instance_1), "_get_ssm_service",
+                               return_value=ssm):
+            record = self.origin._run_database_backup(
+                rds_db, self.env["primate.cloud.backup.policy"],
+                "bucket", "staging", "us-east-1", instance=self.instance_1,
+            )
+        self.assertEqual(record.state, "completed")
+        script = ssm.run_script.call_args[0][1]
+        self.assertIn("forumrds.abc.rds.amazonaws.com", script)
+
+    # --- Neutralización ampliada ---
+    def test_neutralizacion_ampliada(self):
+        sql = self.Env._render_neutralization_sql("https://stg.forum")
+        self.assertIn("UPDATE mail_mail SET state = 'cancel'", sql)
+        self.assertIn("DELETE FROM res_users_apikeys", sql)
+        self.assertIn("UPDATE website SET domain = 'https://stg.forum'", sql)
+        # Lo de D5 sigue intacto.
+        self.assertIn("UPDATE ir_cron SET active = false", sql)
+        self.assertNotIn("mail.catchall.alias", sql)
+
+    # --- Restore con neutralize opcional (lo usa el refresh) ---
+    def test_restore_neutralize_false_saltea(self):
+        staging = self.env["primate.cloud.environment"].create({
+            "name": "Stg", "project_id": self.project.id,
+            "env_type": "staging", "state": "active",
+            "origin_environment_id": self.origin.id,
+        })
+        stg_instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "stg-srv", "account_id": self.account.id,
+            "environment_id": staging.id, "aws_instance_id": "i-stg",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        backup = self.env["primate.cloud.backup"].create({
+            "name": "b", "environment_id": self.origin.id,
+            "database_id": self.db_1.id, "backup_type": "pcm_dump",
+            "s3_bucket": "bucket", "s3_key": "k.dump",
+        })
+        backup.write({"state": "completed"})
+        ssm = mock.Mock()
+        ssm.run_script.return_value = {"status": "Success",
+                                       "stdout": "PCM_RESTORE_OK"}
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value={"key": "k"}), \
+                mock.patch.object(type(staging), "_staging_neutralize") \
+                as neutralize, \
+                mock.patch.object(type(stg_instance), "_get_ssm_service",
+                                  return_value=ssm):
+            ok = staging.job_restore_backup({
+                "backup_id": backup.id, "db_name": "stg_db",
+                "instance_id": stg_instance.id, "pre_backup": False,
+                "neutralize": False,
+            })
+        self.assertTrue(ok)
+        neutralize.assert_not_called()
+
+    # --- Wizards ---
+    def test_wizard_staging_preselecciona_origen_unico(self):
+        wizard = self.env["primate.cloud.staging.create.wizard"].new({
+            "origin_environment_id": self.origin.id,
+        })
+        wizard._onchange_origin()
+        self.assertEqual(wizard.origin_instance_id, self.instance_1)
+        self.assertEqual(wizard.origin_database_id, self.db_1)
+
+    def test_wizard_staging_multi_exige_eleccion(self):
+        self._add_second_instance_and_db()
+        wizard = self.env["primate.cloud.staging.create.wizard"].create({
+            "origin_environment_id": self.origin.id, "name": "Stg",
+            "domain": "stg.forum.primate.cloud", "region": "us-east-1",
+            "instance_type": "t3.small", "transfer_bucket": "pcm-transfer",
+            "db_mode": "local_pg", "create_dns": False,
+        })
+        with self.assertRaises(UserError):
+            wizard._validate()
+        wizard.origin_instance_id = self.instance_1
+        wizard.origin_database_id = self.db_1
+        wizard._validate()  # ya no falla
+
+    def test_wizard_refresh_encola_con_opciones(self):
+        staging = self.env["primate.cloud.environment"].create({
+            "name": "Stg", "project_id": self.project.id,
+            "env_type": "staging", "state": "active",
+            "origin_environment_id": self.origin.id,
+        })
+        wizard = self.env["primate.cloud.staging.refresh.wizard"].create({
+            "staging_id": staging.id, "refresh_repos": True,
+            "re_neutralize": False, "use_last_backup": True,
+        })
+        with mock.patch.object(type(staging), "with_delay") as with_delay:
+            wizard.action_refresh()
+            with_delay.assert_called_once()
+            job_args = with_delay.return_value.job_refresh_staging.call_args[0][0]
+        self.assertTrue(job_args["refresh_repos"])
+        self.assertFalse(job_args["neutralize"])
+        self.assertTrue(job_args["use_last_backup"])
+
+    def test_action_refresh_abre_wizard(self):
+        staging = self.env["primate.cloud.environment"].create({
+            "name": "Stg", "project_id": self.project.id,
+            "env_type": "staging", "state": "active",
+            "origin_environment_id": self.origin.id,
+        })
+        action = staging.action_refresh_staging()
+        self.assertEqual(action["res_model"],
+                         "primate.cloud.staging.refresh.wizard")
+
+    def test_staging_desde_instancia(self):
+        action = self.instance_1.action_create_staging_from_instance()
+        context = action["context"]
+        self.assertEqual(context["default_origin_environment_id"], self.origin.id)
+        self.assertEqual(context["default_origin_instance_id"], self.instance_1.id)
+        self.assertEqual(context["default_origin_database_id"], self.db_1.id)
+
+    def test_staging_desde_instancia_sin_entorno_activo(self):
+        self.origin.state = "error"
+        with self.assertRaises(UserError):
+            self.instance_1.action_create_staging_from_instance()
+
+    # --- Refresh end-to-end con último backup ---
+    def test_refresh_con_ultimo_backup_no_dumpea_origen(self):
+        staging = self.env["primate.cloud.environment"].create({
+            "name": "Stg", "project_id": self.project.id,
+            "env_type": "staging", "state": "active",
+            "origin_environment_id": self.origin.id,
+            "staging_origin_instance_id": self.instance_1.id,
+            "staging_origin_database_id": self.db_1.id,
+        })
+        stg_instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "stg-srv", "account_id": self.account.id,
+            "environment_id": staging.id, "aws_instance_id": "i-stg",
+            "instance_state": "running", "region": "us-east-1",
+        })
+        self.env["primate.cloud.database"].create({
+            "name": "stg_db", "account_id": self.account.id,
+            "environment_id": staging.id, "db_type": "local_pg",
+            "ec2_instance_id": stg_instance.id,
+        })
+        last = self.env["primate.cloud.backup"].create({
+            "name": "último", "environment_id": self.origin.id,
+            "database_id": self.db_1.id, "backup_type": "pcm_dump",
+            "s3_bucket": "bucket", "s3_key": "staging/k.dump",
+        })
+        last.write({"state": "completed"})
+        ssm = mock.Mock()
+        ssm.run_script.return_value = {
+            "status": "Success",
+            "stdout": "PCM_RESTORE_OK\nNEUTRALIZED",
+        }
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value={"key": "k"}), \
+                mock.patch.object(type(self.origin), "_run_database_backup") \
+                as fresh_backup, \
+                mock.patch.object(type(stg_instance), "_get_ssm_service",
+                                  return_value=ssm):
+            ok = staging.job_refresh_staging({"use_last_backup": True})
+        self.assertTrue(ok)
+        # No se dumpeó producción: se usó el último backup registrado.
+        fresh_backup.assert_not_called()
+        self.assertEqual(staging.staging_origin_backup, "staging/k.dump")

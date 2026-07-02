@@ -43,6 +43,14 @@ BACKUP_EVIDENCE_MAX_AGE_HOURS = 24
 # crea el usuario 'odoo' con home /opt/odoo y data_dir default de Odoo).
 BACKUP_FILESTORE_BASE = "/opt/odoo/.local/share/Odoo/filestore"
 
+# Config de Odoo en las instancias aprovisionadas (para leer credenciales de
+# BD in-situ cuando el origen es RDS: nunca viajan por SSM ni por logs).
+ODOO_CONF_PATH = "/etc/odoo/odoo.conf"
+
+# Nombre de base PostgreSQL admitido en flujos de backup/restore/staging
+# (viaja dentro de SQL y de comandos shell: nada de comillas ni metacaracteres).
+DB_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+
 
 class PrimateCloudEnvironment(models.Model):
     """Combinación de infraestructura, base de datos y configuración de un Odoo."""
@@ -171,6 +179,17 @@ class PrimateCloudEnvironment(models.Model):
     staging_origin_backup = fields.Char(
         string="Backup de origen", readonly=True,
         help="Referencia (key S3) del dump usado para crear/refrescar el staging.",
+    )
+    # Origen EXPLÍCITO del staging (Fase 8, Bloque 5): de qué instancia y BD
+    # del entorno origen salió. Reemplaza la convención [:1]; el refresh los
+    # reusa para resolver determinísticamente.
+    staging_origin_instance_id = fields.Many2one(
+        "primate.cloud.ec2.instance", string="Instancia de origen",
+        readonly=True, ondelete="set null",
+    )
+    staging_origin_database_id = fields.Many2one(
+        "primate.cloud.database", string="BD de origen",
+        readonly=True, ondelete="set null",
     )
     staging_neutralization_log = fields.Text(
         string="Log de neutralización", readonly=True
@@ -561,8 +580,14 @@ class PrimateCloudEnvironment(models.Model):
         self.ensure_one()
         if not self.account_id:
             raise UserError(_("El entorno origen necesita una cuenta AWS."))
-        if not self.ec2_instance_ids[:1]:
-            raise UserError(_("El entorno origen no tiene una instancia EC2 (para el dump)."))
+        # Origen explícito (Bloque 5): resuelve instancia+BD ya, con fallback
+        # solo si es inequívoco, y los persiste en el staging para el refresh.
+        origin_instance, origin_database = self._resolve_staging_origin(
+            self.env["primate.cloud.ec2.instance"].browse(
+                params.get("origin_instance_id") or []),
+            self.env["primate.cloud.database"].browse(
+                params.get("origin_database_id") or []),
+        )
         staging = self.create({
             "name": params["name"],
             "project_id": self.project_id.id,
@@ -573,6 +598,8 @@ class PrimateCloudEnvironment(models.Model):
             "odoo_edition": self.odoo_edition,
             "main_url": params.get("domain"),
             "origin_environment_id": self.id,
+            "staging_origin_instance_id": origin_instance.id,
+            "staging_origin_database_id": origin_database.id,
         })
         # Token de idempotencia (ver _enqueue_provision): evita EC2 duplicadas
         # si el job de staging se re-ejecuta tras reiniciar el server.
@@ -583,22 +610,47 @@ class PrimateCloudEnvironment(models.Model):
         return staging
 
     def action_refresh_staging(self):
-        """Encola el refresco de este staging desde su entorno origen."""
+        """Abre el wizard de refresco (opciones de la spec §14.5)."""
         self.ensure_one()
         if self.env_type != "staging":
             raise UserError(_("Refrescar solo aplica a entornos de tipo staging."))
         if not self.origin_environment_id:
             raise UserError(_("Este staging no tiene entorno origen registrado."))
-        self.with_delay(
-            description=_("Refrescar staging: %s") % self.name
-        ).job_refresh_staging()
         return {
-            "type": "ir.actions.client",
-            "tag": "display_notification",
-            "params": {"type": "info",
-                       "message": _("Refresco de staging encolado."),
-                       "next": {"type": "ir.actions.act_window_close"}},
+            "type": "ir.actions.act_window",
+            "name": _("Refrescar staging"),
+            "res_model": "primate.cloud.staging.refresh.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_staging_id": self.id},
         }
+
+    def _resolve_staging_origin(self, instance=None, database=None):
+        """Resuelve (instancia, BD) de este entorno para staging/refresh.
+
+        Preferencia: los argumentos explícitos (elegidos en el wizard o
+        persistidos en ``staging_origin_*``). Fallback SOLO si es inequívoco
+        (exactamente una instancia y una base); con varias se exige elegir —
+        se terminó el ``[:1]`` a ciegas del Bloque 7.
+
+        Returns:
+            tuple: (ec2.instance, database), ambos con exactamente 1 registro.
+        """
+        self.ensure_one()
+        Instance = self.env["primate.cloud.ec2.instance"]
+        Database = self.env["primate.cloud.database"]
+        instance = (instance or Instance).exists()
+        database = (database or Database).exists()
+        if not instance and len(self.ec2_instance_ids) == 1:
+            instance = self.ec2_instance_ids
+        if not database and len(self.database_ids) == 1:
+            database = self.database_ids
+        if not instance or not database:
+            raise UserError(_(
+                "El entorno '%s' tiene varias (o ninguna) instancias/bases: "
+                "indicá explícitamente cuál usar (elegilas en el wizard)."
+            ) % self.name)
+        return instance[:1], database[:1]
 
     # ------------------------------------------------------------------
     # Jobs de staging
@@ -626,10 +678,14 @@ class PrimateCloudEnvironment(models.Model):
             db_host = self._provision_database(base, account, instance, params, region)
             bus.provision_step(self.env, self, _("Instalando Odoo por SSM…"))
             self._provision_run_install(base, instance, params, region, db_host, domain)
-            bus.provision_step(self.env, self, _("Copiando la base desde el origen…"))
-            dump_key = self._staging_copy_database(origin, instance, params, region)
-            bus.provision_step(self.env, self, _("Neutralizando la base…"))
-            self._staging_neutralize(instance, params, region, staging_url)
+            bus.provision_step(self.env, self,
+                               _("Copiando la base desde el origen…"))
+            # Pipeline de Bloques 3-4 (camino único): backup del origen +
+            # restore estándar acá, que además neutraliza (destino no-prod).
+            source_backup = self._staging_copy_via_backup(
+                origin, instance, params, region
+            )
+            dump_key = source_backup.s3_key
             bus.provision_step(self.env, self, _("Clonando repositorios…"))
             self._staging_clone_repos(account, origin, instance, params, region)
             bus.provision_step(self.env, self, _("Configurando DNS…"))
@@ -657,30 +713,50 @@ class PrimateCloudEnvironment(models.Model):
                            message=_("Staging activo en %s.") % domain)
         return True
 
-    def job_refresh_staging(self):
-        """Job: refresca la base del staging desde el origen y la re-neutraliza."""
+    def job_refresh_staging(self, params=None):
+        """Job: refresca el staging desde su origen (pipeline de Bloques 3-4).
+
+        Opciones (wizard de refresco, spec §14.5) en ``params``:
+        ``use_last_backup`` (no recargar producción), ``neutralize``
+        (re-neutralizar, default True), ``refresh_repos`` (base+repos).
+        Sin pre-backup del staging (v1): es descartable y el origen ya tiene
+        su backup registrado.
+        """
         self.ensure_one()
+        params = params or {}
         origin = self.origin_environment_id
-        instance = self.ec2_instance_ids[:1]
-        if not instance:
-            raise UserError(_("El staging no tiene una instancia EC2 asociada."))
-        params = {
-            "db_name": self.database_ids[:1].name or self.name,
-            "db_user": "odoo",
-            "transfer_bucket": self.staging_origin_backup and
-                               self.staging_origin_backup.split("/")[0] or "pcm-staging",
-            "db_host": "localhost",
-        }
-        bus.provision_start(self.env, self, title=_("Refrescando staging: %s") % self.name)
+        if not origin:
+            raise UserError(_("Este staging no tiene entorno origen registrado."))
+        bus.provision_start(self.env, self,
+                            title=_("Refrescando staging: %s") % self.name)
         try:
-            region = self.account_id.default_region
-            staging_url = "https://%s" % (self.main_url or self.name)
-            bus.provision_step(self.env, self, _("Copiando la base desde el origen…"))
-            dump_key = self._staging_copy_database(origin, instance, params, region)
-            bus.provision_step(self.env, self, _("Neutralizando la base…"))
-            self._staging_neutralize(instance, params, region, staging_url)
-            bus.provision_step(self.env, self, _("Reiniciando servicios…"))
-            self._staging_restart(instance, region)
+            region = origin.account_id.default_region
+            origin_instance, origin_db = origin._resolve_staging_origin(
+                self.staging_origin_instance_id, self.staging_origin_database_id,
+            )
+            # Destino: la instancia/BD propias del staging (vínculo explícito).
+            target_instance, target_db = self._resolve_staging_origin()
+            bus.provision_step(self.env, self,
+                               _("Copiando la base desde el origen…"))
+            source = self._staging_source_backup(
+                origin, origin_instance, origin_db, region,
+                use_last_backup=params.get("use_last_backup"),
+                bucket=params.get("transfer_bucket"),
+            )
+            ok = self.job_restore_backup({
+                "backup_id": source.id,
+                "db_name": target_db.name,
+                "instance_id": target_instance.id,
+                "pre_backup": False,
+                "neutralize": params.get("neutralize", True),
+            })
+            if not ok:
+                raise UserError(_("Falló la restauración en el staging "
+                                  "(ver bitácora)."))
+            if params.get("refresh_repos"):
+                bus.provision_step(self.env, self,
+                                   _("Actualizando repositorios…"))
+                self._staging_refresh_repos(origin, target_instance, region)
         except Exception as error:  # noqa: BLE001
             self.message_post(body=_("Refresco de staging fallido: %s") % error)
             self._log("staging_refresh", name=_("Refrescar staging: %s") % self.name,
@@ -688,7 +764,7 @@ class PrimateCloudEnvironment(models.Model):
             bus.provision_done(self.env, self, ok=False,
                                message=_("Refresco fallido: %s") % error)
             return False
-        self.write({"staging_origin_backup": dump_key,
+        self.write({"staging_origin_backup": source.s3_key,
                     "staging_creation_date": fields.Datetime.now()})
         self.message_post(body=_("Staging refrescado desde %s.") % origin.display_name)
         self._log("staging_refresh", name=_("Refrescar staging: %s") % self.name)
@@ -699,55 +775,110 @@ class PrimateCloudEnvironment(models.Model):
     # ------------------------------------------------------------------
     # Pasos específicos de staging
     # ------------------------------------------------------------------
-    def _staging_copy_database(self, origin, dest_instance, params, region):
-        """Copia la base de origen al staging vía pg_dump → S3 → pg_restore.
+    def _staging_source_backup(self, origin, origin_instance, origin_db,
+                               region, use_last_backup=False, bucket=None):
+        """Obtiene el backup fuente para crear/refrescar un staging.
 
-        Devuelve la key del dump en S3 (referencia de trazabilidad).
+        Con ``use_last_backup``: el último backup completado de la BD de
+        origen (no recarga producción). Si no (o no hay ninguno): ejecuta un
+        backup gestionado ad-hoc (Bloque 3, prefix ``staging``) en la
+        instancia origen elegida — con soporte RDS por endpoint.
+        """
+        Backup = self.env["primate.cloud.backup"]
+        if use_last_backup:
+            last = Backup.search(
+                [("database_id", "=", origin_db.id), ("state", "=", "completed")],
+                order="backup_date desc", limit=1,
+            )
+            if last:
+                return last
+        bucket = bucket or origin.backup_policy_id.s3_bucket
+        if not bucket:
+            raise UserError(_(
+                "No hay bucket S3 para el dump: indicá el bucket de "
+                "transferencia o asigná al origen una política con bucket."))
+        s3 = aws_s3.AwsS3Service(origin.account_id._get_aws_service())
+        s3.ensure_bucket(bucket, region=region)
+        source = origin._run_database_backup(
+            origin_db, origin.backup_policy_id, bucket, "staging", region,
+            instance=origin_instance,
+        )
+        if source.state != "completed":
+            raise UserError(_("Falló el backup del origen: %s")
+                            % (source.error_message or "?"))
+        return source
+
+    def _staging_copy_via_backup(self, origin, dest_instance, params, region):
+        """Copia origen→staging reusando el pipeline de Bloques 3-4.
+
+        Un solo camino testeado: backup gestionado del origen (streaming, con
+        filestore — el camino propio de Fase 7 no lo copiaba) + restore
+        estándar en el destino, que además neutraliza (destino no-prod) y crea
+        el registro de la BD del staging vinculado a su instancia.
+
+        Devuelve el registro de backup usado como fuente (trazabilidad §14.4).
         """
         if not origin:
             raise UserError(_("El staging no tiene entorno origen para copiar la base."))
-        origin_instance = origin.ec2_instance_ids[:1]
-        if not origin_instance:
-            raise UserError(_("El entorno origen no tiene una instancia EC2."))
-        bucket = params.get("transfer_bucket")
-        if not bucket:
-            raise UserError(_("Indicá el bucket S3 de transferencia para el dump."))
-
-        # Asegurar que el bucket exista (idempotente).
-        s3 = aws_s3.AwsS3Service(dest_instance.account_id._get_aws_service())
-        s3.ensure_bucket(bucket, region=region)
-
-        origin_db = origin.database_ids[:1].name
-        if not origin_db:
-            raise UserError(_("El entorno origen no tiene una base de datos asociada."))
-        staging_db = params.get("db_name") or self.name
-        db_user = params.get("db_user") or "odoo"
-        dump_key = "pcm-staging/%s-%s.dump" % (self.id, staging_db)
-
-        # 1. Dump en el origen + subida a S3.
-        dump_out = origin_instance._get_ssm_service().run_script(
-            origin_instance.aws_instance_id,
-            self._build_dump_script(origin_db, bucket, dump_key),
-            region=origin_instance.region, comment="pcm staging dump: %s" % self.name,
-            timeout=1800,
+        origin_instance, origin_db = origin._resolve_staging_origin(
+            self.staging_origin_instance_id, self.staging_origin_database_id,
         )
-        if dump_out.get("status") != "Success":
-            raise UserError(_("Falló el pg_dump del origen: %s")
-                            % (dump_out.get("stderr") or dump_out.get("status")))
-
-        # 2. Descarga desde S3 + restore en el destino.
-        restore_out = dest_instance._get_ssm_service().run_script(
-            dest_instance.aws_instance_id,
-            self._build_restore_script(staging_db, db_user, bucket, dump_key),
-            region=region, comment="pcm staging restore: %s" % self.name, timeout=1800,
+        source = self._staging_source_backup(
+            origin, origin_instance, origin_db, region,
+            use_last_backup=params.get("use_last_backup"),
+            bucket=params.get("transfer_bucket"),
         )
-        if restore_out.get("status") != "Success":
-            raise UserError(_("Falló el pg_restore en el staging: %s")
-                            % (restore_out.get("stderr") or restore_out.get("status")))
+        ok = self.job_restore_backup({
+            "backup_id": source.id,
+            "db_name": params.get("db_name") or self.name,
+            "instance_id": dest_instance.id,
+            # El destino es nuevo/descartable; el origen ya quedó respaldado.
+            "pre_backup": False,
+            "neutralize": True,
+        })
+        if not ok:
+            raise UserError(_("Falló la restauración en el staging (ver bitácora)."))
+        self.message_post(body=_("Base copiada desde %(origin)s (backup %(key)s).",
+                                 origin=origin.display_name, key=source.s3_key))
+        return source
 
-        self.message_post(body=_("Base copiada desde %s (dump %s).")
-                          % (origin.display_name, dump_key))
-        return dump_key
+    def _staging_refresh_repos(self, origin, instance, region):
+        """Actualiza los repos del staging al commit actual del origen.
+
+        A diferencia del clon inicial, acá los repos ya existen en el disco
+        del staging: fetch + checkout, y se actualiza el registro espejo.
+        """
+        ssm = instance._get_ssm_service()
+        for source_repo in origin.repository_ids:
+            if not source_repo.github_url or not source_repo.local_path:
+                continue
+            ref = (source_repo.current_commit
+                   or source_repo.configured_branch or "")
+            output = ssm.run_script(
+                instance.aws_instance_id,
+                self._build_repo_update_script(source_repo.local_path, ref),
+                region=instance.region or region,
+                comment="pcm staging repo refresh: %s" % source_repo.name,
+                timeout=900,
+            )
+            ok = output.get("status") == "Success"
+            mirror = self.repository_ids.filtered(
+                lambda r: r.github_url == source_repo.github_url
+            )[:1]
+            if mirror:
+                mirror.current_commit = source_repo.current_commit if ok else False
+        self.message_post(body=_("Repositorios actualizados desde el origen."))
+
+    @staticmethod
+    def _build_repo_update_script(path, ref):
+        """fetch + checkout de un repo ya clonado en el staging."""
+        quoted_path = shlex.quote(path)
+        return "\n".join([
+            "set -e",
+            "cd %s" % quoted_path,
+            "git fetch --all --tags --prune",
+            "git checkout %s" % shlex.quote(ref),
+        ])
 
     def _staging_neutralize(self, instance, params, region, staging_url):
         """Corre el SQL de neutralización en la base del staging (vía SSM)."""
@@ -1179,12 +1310,17 @@ class PrimateCloudEnvironment(models.Model):
             self.message_post(body=_("Backup gestionado: %s") % summary)
         return result == "success"
 
-    def _run_database_backup(self, database, policy, bucket, prefix, region):
-        """Respalda UNA base local. Devuelve el registro del backup.
+    def _run_database_backup(self, database, policy, bucket, prefix, region,
+                             instance=None):
+        """Respalda UNA base. Devuelve el registro del backup.
 
         Decisiones del Bloque 3: chequeo barato del estado de la instancia
         ANTES de tocar SSM; nunca se enciende una instancia por un backup;
         todo intento (incluso fallido) queda registrado.
+
+        Bloque 5: acepta un ejecutor explícito (``instance``) y bases RDS —
+        el dump corre en esa EC2 apuntando al endpoint, con credenciales
+        leídas in-situ del odoo.conf (nunca viajan por SSM ni logs).
         """
         Backup = self.env["primate.cloud.backup"].sudo()
         now = fields.Datetime.now()
@@ -1207,11 +1343,12 @@ class PrimateCloudEnvironment(models.Model):
             "s3_filestore_key": key_base + "-filestore.tar.gz",
             "expiry_date": expiry,
         })
-        instance = database.ec2_instance_id
+        instance = instance or database.ec2_instance_id
         if not instance:
             record.write({"state": "failed",
                           "error_message": _("La base no tiene una instancia "
-                                             "EC2 asociada.")})
+                                             "EC2 asociada (ni se indicó un "
+                                             "ejecutor).")})
             return record
         if instance.instance_state != "running":
             record.write({"state": "failed",
@@ -1227,6 +1364,8 @@ class PrimateCloudEnvironment(models.Model):
                 self._build_backup_script(
                     database.name, bucket,
                     record.s3_key, record.s3_filestore_key,
+                    rds_endpoint=(database.rds_endpoint
+                                  if database.db_type == "rds" else None),
                 ),
                 region=instance.region or region,
                 comment="pcm backup: %s" % database.name,
@@ -1250,7 +1389,8 @@ class PrimateCloudEnvironment(models.Model):
         return record
 
     @api.model
-    def _build_backup_script(self, db_name, bucket, dump_key, filestore_key):
+    def _build_backup_script(self, db_name, bucket, dump_key, filestore_key,
+                             rds_endpoint=None):
         """Script SSM del backup gestionado (decisiones del Bloque 3).
 
         - **Streaming a S3**: el dump nunca toca el disco de la instancia
@@ -1260,11 +1400,30 @@ class PrimateCloudEnvironment(models.Model):
           aws-cli usan /tmp) + ``trap`` de limpieza en éxito o error.
         - **Cero credenciales**: peer auth local (``sudo -u postgres``) e
           instance profile para S3. El stdout solo lleva marcadores y tamaños.
+        - **RDS** (Bloque 5, ``rds_endpoint``): el dump corre en la EC2
+          ejecutora apuntando al endpoint; las credenciales se leen IN-SITU
+          del odoo.conf de esa instancia (``PGPASSWORD`` en el mismo proceso,
+          jamás en el input de SSM, el stdout ni la bitácora).
         """
         db = shlex.quote(db_name)
         bkt = shlex.quote(bucket)
         dump = shlex.quote(dump_key)
         filestore = shlex.quote(filestore_key)
+        if rds_endpoint:
+            dump_lines = [
+                "DB_USER=$(awk -F' *= *' '/^db_user/ {print $2; exit}' %s)"
+                % ODOO_CONF_PATH,
+                "DB_PASSWORD=$(awk -F' *= *' '/^db_password/ {print $2; exit}' %s)"
+                % ODOO_CONF_PATH,
+                'PGPASSWORD="$DB_PASSWORD" pg_dump -h %s -U "$DB_USER" '
+                "-Fc -d %s | aws s3 cp - s3://%s/%s --only-show-errors"
+                % (shlex.quote(rds_endpoint), db, bkt, dump),
+            ]
+        else:
+            dump_lines = [
+                "sudo -u postgres pg_dump -Fc -d %s | "
+                "aws s3 cp - s3://%s/%s --only-show-errors" % (db, bkt, dump),
+            ]
         return "\n".join([
             "set -euo pipefail",
             "FREE_MB=$(df -Pm /tmp | awk 'NR==2 {print $4}')",
@@ -1272,8 +1431,7 @@ class PrimateCloudEnvironment(models.Model):
             'echo "PCM_ERROR: menos de 1 GB libre en /tmp (${FREE_MB} MB)" >&2; '
             "exit 1; fi",
             "trap 'rm -f /tmp/pcm_backup_* 2>/dev/null || true' EXIT",
-            "sudo -u postgres pg_dump -Fc -d %s | "
-            "aws s3 cp - s3://%s/%s --only-show-errors" % (db, bkt, dump),
+            *dump_lines,
             'echo "PCM_DUMP_SIZE_BYTES=$(aws s3api head-object --bucket %s '
             '--key %s --query ContentLength --output text)"' % (bkt, dump),
             'FS_DIR=%s/%s' % (BACKUP_FILESTORE_BASE, db),
@@ -1345,6 +1503,8 @@ class PrimateCloudEnvironment(models.Model):
         if not backup or backup.state != "completed":
             return fail(_("El backup no está disponible (estado: %s).")
                         % (backup.state if backup else "?"))
+        if not DB_NAME_RE.match(db_name or ""):
+            return fail(_("Nombre de base destino inválido: '%s'.") % db_name)
         # Fallback explícito para registros previos al campo s3_bucket
         # (decisión Bloque 4): el bucket de la política del entorno de origen.
         bucket = backup._resolve_bucket()
@@ -1434,8 +1594,13 @@ class PrimateCloudEnvironment(models.Model):
                         "Error: %(error)s", db=db_name, error=error_text)
             return fail(error_text)
 
-        # 6. Neutralización: siempre que el destino NO sea producción.
-        if self.env_type != "production":
+        # 6. Neutralización: por default siempre que el destino NO sea
+        # producción; el refresh de staging puede saltearla explícitamente
+        # (spec §14.5). Sobre producción JAMÁS se neutraliza, pida lo que pida.
+        neutralize = params.get("neutralize")
+        if neutralize is None:
+            neutralize = True
+        if neutralize and self.env_type != "production":
             url = "https://%s" % (self.main_url or self.name)
             try:
                 self._staging_neutralize(
@@ -1546,33 +1711,10 @@ class PrimateCloudEnvironment(models.Model):
     # ------------------------------------------------------------------
     # Constructores de scripts SSM (puros, testeables por contenido)
     # ------------------------------------------------------------------
-    @staticmethod
-    def _dump_filename(key):
-        """Nombre de archivo temporal a partir de la key S3."""
-        return shlex.quote("/tmp/%s" % key.split("/")[-1])
-
-    def _build_dump_script(self, origin_db, bucket, key):
-        """pg_dump en el origen + subida a S3."""
-        fname = self._dump_filename(key)
-        return "\n".join([
-            "set -e",
-            "sudo -u postgres pg_dump -Fc -d %s -f %s" % (shlex.quote(origin_db), fname),
-            "aws s3 cp %s s3://%s/%s" % (fname, shlex.quote(bucket), shlex.quote(key)),
-            "rm -f %s" % fname,
-        ])
-
-    def _build_restore_script(self, staging_db, db_user, bucket, key):
-        """Descarga desde S3 + recreación de la base + pg_restore en el destino."""
-        fname = self._dump_filename(key)
-        db = shlex.quote(staging_db)
-        return "\n".join([
-            "set -e",
-            "aws s3 cp s3://%s/%s %s" % (shlex.quote(bucket), shlex.quote(key), fname),
-            "sudo -u postgres dropdb --if-exists %s" % db,
-            "sudo -u postgres createdb -O %s %s" % (shlex.quote(db_user), db),
-            "sudo -u postgres pg_restore -d %s %s || true" % (db, fname),
-            "rm -f %s" % fname,
-        ])
+    # NOTA (Bloque 5): los constructores propios de dump/restore de la Fase 7
+    # (_build_dump_script / _build_restore_script) se eliminaron — la copia de
+    # staging reusa el pipeline de backups (Bloques 3-4): un solo camino,
+    # streaming en el origen y filestore incluido.
 
     @staticmethod
     def _build_neutralize_script(staging_db, sql):

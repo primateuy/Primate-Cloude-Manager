@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_staging_refresh_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.staging.refresh.wizard.form</field>
+        <field name="model">primate.cloud.staging.refresh.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Refrescar staging">
+                <div class="alert alert-warning" role="alert">
+                    Se reemplazará la base del staging con datos frescos del
+                    origen. La infraestructura no se toca.
+                </div>
+                <group>
+                    <field name="staging_id"/>
+                    <field name="origin_environment_id"/>
+                    <field name="use_last_backup"/>
+                    <field name="refresh_repos"/>
+                    <field name="re_neutralize"/>
+                </group>
+                <div class="alert alert-danger" role="alert"
+                     invisible="re_neutralize">
+                    <strong>Sin re-neutralización:</strong> la base restaurada
+                    quedará con la configuración de producción (correo, crons,
+                    pagos). Solo para casos muy conscientes.
+                </div>
+                <footer>
+                    <button name="action_refresh" type="object"
+                            string="Refrescar" class="btn-primary"
+                            confirm="Se reemplazará la base actual del staging. ¿Continuar?"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

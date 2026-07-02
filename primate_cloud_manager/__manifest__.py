@@ -50,6 +50,7 @@ Arquitectura extensible para Azure y GCP en fases futuras.
         "wizard/primate_cloud_provision_wizard_views.xml",
         "wizard/primate_cloud_staging_create_wizard_views.xml",
         "wizard/primate_cloud_backup_restore_wizard_views.xml",
+        "wizard/primate_cloud_staging_refresh_wizard_views.xml",
         # Menús (último: referencia acciones de las vistas anteriores)
         "views/primate_cloud_menus.xml",
     ],

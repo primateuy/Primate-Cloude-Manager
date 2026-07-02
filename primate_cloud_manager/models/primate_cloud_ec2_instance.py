@@ -270,6 +270,36 @@ class PrimateCloudEc2Instance(models.Model):
             "context": {"default_instance_id": self.id},
         }
 
+    def action_create_staging_from_instance(self):
+        """Abre el wizard de staging con esta instancia como origen (Bloque 5).
+
+        Preselecciona el entorno, esta instancia y su BD si es única: el flujo
+        "staging desde la instancia" del hub.
+        """
+        self.ensure_one()
+        environment = self.environment_id
+        if not environment:
+            raise UserError(_("La instancia no pertenece a ningún entorno."))
+        if environment.state != "active":
+            raise UserError(_("Solo se puede crear un staging desde un "
+                              "entorno activo."))
+        context = {
+            "default_origin_environment_id": environment.id,
+            "default_origin_instance_id": self.id,
+        }
+        databases = (environment.database_ids.filtered(
+            lambda d: d.ec2_instance_id == self) or environment.database_ids)
+        if len(databases) == 1:
+            context["default_origin_database_id"] = databases.id
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Crear staging desde esta instancia"),
+            "res_model": "primate.cloud.staging.create.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": context,
+        }
+
     def action_sync_from_aws(self):
         """Encola la sincronización puntual de esta instancia desde AWS."""
         for instance in self:

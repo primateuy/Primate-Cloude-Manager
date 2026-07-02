@@ -14,12 +14,17 @@
                 <group>
                     <group>
                         <field name="origin_environment_id" readonly="1"/>
+                        <field name="origin_instance_id"
+                               domain="[('environment_id', '=', origin_environment_id)]"/>
+                        <field name="origin_database_id"
+                               domain="[('environment_id', '=', origin_environment_id)]"/>
                         <field name="account_id"/>
                         <field name="region"/>
                         <field name="name"/>
                         <field name="domain" placeholder="staging.forum.primate.cloud"/>
                     </group>
                     <group>
+                        <field name="use_last_backup"/>
                         <field name="transfer_bucket" placeholder="pcm-transfer-bucket"/>
                         <field name="admin_password" password="True"/>
                     </group>
