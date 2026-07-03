@@ -244,6 +244,32 @@ def s06_respaldos_y_wizards_fase8(pg):
 
 
 @scenario
+def s08_costos_y_logs(pg):
+    """Fase 9: pantalla de Costos (con 'datos al') y el visor de logs del
+    detalle de servidor renderizan (aunque con datos vacíos/mock)."""
+    open_app(pg)
+    # Costos: se abre desde el sidebar y renderiza sus KPIs.
+    pg.click(".o_pcm_nav_item:has-text('Costos')")
+    pg.wait_for_selector(".o_pcm_costos", timeout=10000)
+    assert pg.locator(".o_pcm_costos h1:has-text('Costos')").count() == 1, \
+        "la pantalla de costos no renderizó"
+    # La sección tiene los tres KPIs (mes en curso / anterior / proyección).
+    assert pg.locator(".o_pcm_costos .o_pcm_kpi_value").count() >= 3, \
+        "faltan los KPIs de costos"
+    pg.screenshot(path=f"{SHOT}/s08_costos.png")
+    # Visor de logs: drill a un servidor con infra y verificar la sección Logs.
+    open_env(pg, INFRA_ENV)
+    pg.locator(".o_pcm_instance_head").first.click()
+    pg.wait_for_selector(".o_pcm_detalle", timeout=10000)
+    pg.wait_for_selector(".o_pcm_section_head:has-text('Métricas')", timeout=8000)
+    assert pg.locator(":text('requiere agente CloudWatch')").count() >= 1, \
+        "RAM/disco deberían mostrar 'requiere agente', no gráfico vacío"
+    assert pg.locator(".o_pcm_section_head:has-text('Logs')").count() == 1, \
+        "falta la sección de logs"
+    pg.screenshot(path=f"{SHOT}/s08_metricas_logs.png")
+
+
+@scenario
 def s07_dns_crud(pg):
     """Fase 8.5: sección DNS del hub — crear registro (wizard en drawer) y la
     fricción ALTA al intentar borrar un registro de producción (alerta roja)."""
@@ -310,7 +336,7 @@ def main():
         pg.wait_for_timeout(1500)
         for fn in (s01_app_y_sidebar, s02_hub_y_drill, s03_drawer_cancelar,
                    s04_drawer_error_correccion_exito,
-                   s06_respaldos_y_wizards_fase8, s07_dns_crud,
+                   s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos_y_logs,
                    s05_salir_y_volver):
             fn(pg)
         br.close()

@@ -9,6 +9,7 @@ import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_d
 import { View } from "@web/views/view";
 import { PcmWizardDrawer } from "./components/wizard_drawer";
 import { Inicio } from "./screens/inicio";
+import { Costos } from "./screens/costos";
 import { Entornos } from "./screens/entornos";
 import { EntornoDetalle } from "./screens/entorno_detalle";
 import { ServidorDetalle } from "./screens/servidor_detalle";
@@ -89,6 +90,8 @@ const NAV_GROUPS = [
     { key: "operaciones", label: "Operaciones", items: [
         { key: "deploys", label: "Despliegues", icon: "fa-rocket",
           route: { type: "nativeList", model: "primate.cloud.deployment" } },
+        { key: "costos", label: "Costos", icon: "fa-dollar",
+          route: { type: "costos" } },
         { key: "log", label: "Bitácora", icon: "fa-list",
           route: { type: "nativeList", model: "primate.cloud.operation.log" } },
     ] },
@@ -103,9 +106,9 @@ const NAV_GROUPS = [
 export class PcmApp extends Component {
     static template = "primate_cloud_manager.App";
     static components = {
-        Inicio, Entornos, EntornoDetalle, ServidorDetalle, BaseDatosDetalle,
-        RepositorioDetalle, DespliegueDetalle, DnsDetalle, CuentaDetalle,
-        ProyectoDetalle, View, PcmWizardDrawer,
+        Inicio, Costos, Entornos, EntornoDetalle, ServidorDetalle,
+        BaseDatosDetalle, RepositorioDetalle, DespliegueDetalle, DnsDetalle,
+        CuentaDetalle, ProyectoDetalle, View, PcmWizardDrawer,
     };
     static props = ["*"];
 
@@ -199,6 +202,8 @@ export class PcmApp extends Component {
         let title = "";
         if (route.type === "inicio") {
             title = "Inicio";
+        } else if (route.type === "costos") {
+            title = "Costos";
         } else if (route.type === "entornos") {
             title = "Entornos";
         } else if (route.type === "nativeList") {

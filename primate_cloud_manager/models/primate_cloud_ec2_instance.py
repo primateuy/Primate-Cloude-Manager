@@ -2,6 +2,7 @@
 """Instancia EC2: inventario (Fase 2) y acciones de operación (Fase 3)."""
 import json
 import logging
+import shlex
 
 from odoo import _, SUPERUSER_ID, fields, models
 from odoo.exceptions import UserError
@@ -189,6 +190,58 @@ class PrimateCloudEc2Instance(models.Model):
         """Devuelve el adaptador SSM autenticado con la cuenta de la instancia."""
         self.ensure_one()
         return aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+
+    # Fuentes de log (spec §11.1) → comando de lectura. NINGUNO vuelca
+    # credenciales ni el odoo.conf: solo se leen archivos/journal de log.
+    _LOG_SOURCES = {
+        "odoo": "journalctl -u odoo --no-pager",
+        "nginx": "tail -n %(lines)s /var/log/nginx/error.log "
+                 "/var/log/nginx/access.log 2>/dev/null",
+        "postgres": "journalctl -u postgresql --no-pager 2>/dev/null || "
+                    "tail -n %(lines)s /var/log/postgresql/*.log 2>/dev/null",
+        "os": "journalctl --no-pager",
+    }
+
+    def fetch_logs(self, source, lines=200, since=None, until=None, grep=None):
+        """Trae logs en vivo por SSM (on-demand, NO se persisten).
+
+        Los comandos solo LEEN archivos/journal de log — nunca el odoo.conf ni
+        variables con credenciales. El texto se devuelve para mostrar/descargar,
+        no se guarda en BD.
+
+        Args:
+            source (str): ``odoo`` / ``nginx`` / ``postgres`` / ``os``.
+            lines (int): cantidad de líneas (100/500/1000...).
+            since/until (str, optional): rango para journalctl (``YYYY-MM-DD``).
+            grep (str, optional): filtro de texto libre.
+
+        Returns:
+            dict: ``{"status": str, "text": str}``.
+        """
+        self.ensure_one()
+        if source not in self._LOG_SOURCES:
+            raise UserError(_("Fuente de log no soportada: %s.") % source)
+        try:
+            lines = int(lines)
+        except (TypeError, ValueError):
+            lines = 200
+        base = self._LOG_SOURCES[source] % {"lines": lines}
+        # journalctl acepta rango y --lines; los archivos ya traen -n arriba.
+        if base.startswith("journalctl"):
+            if since:
+                base += " --since %s" % shlex.quote(since)
+            if until:
+                base += " --until %s" % shlex.quote(until)
+            base += " -n %d" % lines
+        if grep:
+            base += " | grep -a -i -- %s" % shlex.quote(grep)
+        # Cota dura de salida para no traer megabytes a la UI.
+        command = "%s | tail -n %d" % (base, lines)
+        output = self._get_ssm_service().run_script(
+            self.aws_instance_id, command, region=self.region,
+            comment="pcm logs: %s" % source, timeout=120)
+        text = (output.get("stdout") or "") or (output.get("stderr") or "")
+        return {"status": output.get("status") or "Unknown", "text": text}
 
     def _log(self, action_type, result="success", error_message=None, aws_request_id=None, name=None):
         """Atajo para registrar en la bitácora sobre esta instancia."""

@@ -4,6 +4,8 @@
 Modelo abstracto que agrega los datos que consume el componente OWL del panel:
 KPIs, últimos despliegues y alertas. No persiste nada; solo lee el inventario.
 """
+from datetime import timedelta
+
 from odoo import _, api, fields, models
 
 
@@ -379,6 +381,83 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "db_type": db.db_type,
             } for db in self.env["primate.cloud.database"].search(
                 [("ec2_instance_id", "=", inst.id)])],
+            # Métricas (Fase 9): las que PCM tiene sin agente + marca de las
+            # que REQUIEREN agente (RAM/disco), para que la UI no muestre 0.
+            "metrics": {
+                "cpu": inst.last_cpu,
+                "status_check_failed": inst.last_status_check_failed,
+                "at": fields.Datetime.to_string(inst.last_metric_date) or "",
+                "has_data": bool(inst.last_metric_date),
+                # RAM/disco no se relevan sin agente CloudWatch.
+                "ram_available": False,
+                "disk_available": False,
+            },
+        }
+
+    @api.model
+    def get_instance_logs(self, instance_id, source, lines=200, grep=None,
+                          since=None, until=None):
+        """Trae logs de una instancia por SSM (on-demand, sin persistir).
+
+        Wrapper del ``fetch_logs`` para la app: devuelve texto para
+        mostrar/descargar o un error legible; nada se guarda en BD.
+        """
+        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not inst:
+            return {"status": "error", "text": _("Instancia no encontrada.")}
+        if inst.instance_state != "running":
+            return {"status": "error",
+                    "text": _("La instancia no está corriendo.")}
+        try:
+            return inst.fetch_logs(source, lines=lines, grep=grep,
+                                   since=since, until=until)
+        except Exception as error:  # noqa: BLE001 - se muestra el error, no rompe
+            return {"status": "error", "text": str(error)}
+
+    @api.model
+    def get_cost_overview(self, account_id=None):
+        """Resumen de costos para la pantalla de Costos (lee cost.entry).
+
+        Siempre incluye ``pulled_at`` (leyenda 'datos al'): el dato de Cost
+        Explorer tiene retardo, NO es tiempo real.
+        """
+        Entry = self.env["primate.cloud.cost.entry"]
+        Account = self.env["primate.cloud.account"]
+        domain = []
+        if account_id:
+            domain.append(("account_id", "=", account_id))
+        today = fields.Date.context_today(self)
+        month_start = today.replace(day=1)
+        prev_start = (month_start - timedelta(days=1)).replace(day=1)
+
+        def _agg(entries, key_field, label_field):
+            out = {}
+            for e in entries:
+                k = e[key_field] or _("Sin atribuir")
+                out.setdefault(k, 0.0)
+                out[k] += e.amount
+            return [{"label": k, "amount": round(v, 2)}
+                    for k, v in sorted(out.items(), key=lambda x: -x[1])]
+
+        current = Entry.search(domain + [("period_start", "=", month_start),
+                                         ("is_forecast", "=", False)])
+        previous = Entry.search(domain + [("period_start", "=", prev_start),
+                                          ("is_forecast", "=", False)])
+        forecast = Entry.search(domain + [("is_forecast", "=", True),
+                                          ("period_start", "=", month_start)])
+        accounts = Account.search(
+            [("id", "=", account_id)] if account_id else [])
+        pulled = max(accounts.mapped("cost_pulled_at") or [False])
+        currency = (current[:1].currency or "USD")
+        return {
+            "pulled_at": fields.Datetime.to_string(pulled) if pulled else "",
+            "currency": currency,
+            "current_total": round(sum(current.mapped("amount")), 2),
+            "prev_total": round(sum(previous.mapped("amount")), 2),
+            "forecast_total": round(sum(forecast.mapped("amount")), 2),
+            "by_environment": _agg(current, "environment_name", None),
+            "by_service": _agg(current, "service", None),
+            "by_client": _agg(current, "client_name", None),
         }
 
     @api.model

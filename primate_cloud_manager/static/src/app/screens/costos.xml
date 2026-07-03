@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.Costos">
+        <div class="o_pcm_detalle o_pcm_costos">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <t t-else="">
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h1>Costos</h1>
+                    <span class="o_pcm_muted" t-if="d.pulled_at">
+                        <i class="fa fa-clock-o"/> datos al <t t-out="d.pulled_at"/>
+                        (Cost Explorer tiene retardo; no es tiempo real)
+                    </span>
+                    <span class="o_pcm_muted" t-else="">Sin datos de costos aún. Actualizá desde la cuenta AWS.</span>
+                </div>
+
+                <div class="o_pcm_cols3">
+                    <div class="o_pcm_card">
+                        <div class="o_pcm_muted">Mes en curso</div>
+                        <div class="o_pcm_kpi_value"><t t-out="d.current_total"/> <t t-out="d.currency"/></div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <div class="o_pcm_muted">Mes anterior</div>
+                        <div class="o_pcm_kpi_value"><t t-out="d.prev_total"/> <t t-out="d.currency"/></div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <div class="o_pcm_muted">Proyección fin de mes</div>
+                        <div class="o_pcm_kpi_value"><t t-out="d.forecast_total"/> <t t-out="d.currency"/></div>
+                    </div>
+                </div>
+
+                <div class="o_pcm_cols2">
+                    <div class="o_pcm_card">
+                        <h2>Por entorno</h2>
+                        <div t-if="!d.by_environment.length" class="o_pcm_muted">Sin datos.</div>
+                        <div t-foreach="d.by_environment" t-as="row" t-key="row_index" class="o_pcm_line">
+                            <div class="o_pcm_line_main"><span class="o_pcm_line_name" t-out="row.label"/></div>
+                            <span class="o_pcm_mono"><t t-out="row.amount"/> <t t-out="d.currency"/></span>
+                        </div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <h2>Por servicio</h2>
+                        <div t-if="!d.by_service.length" class="o_pcm_muted">Sin datos.</div>
+                        <div t-foreach="d.by_service" t-as="row" t-key="row_index" class="o_pcm_line">
+                            <div class="o_pcm_line_main"><span class="o_pcm_line_name" t-out="row.label"/></div>
+                            <span class="o_pcm_mono"><t t-out="row.amount"/> <t t-out="d.currency"/></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="o_pcm_card">
+                    <h2>Por cliente</h2>
+                    <div t-if="!d.by_client.length" class="o_pcm_muted">Sin datos.</div>
+                    <div t-foreach="d.by_client" t-as="row" t-key="row_index" class="o_pcm_line">
+                        <div class="o_pcm_line_main"><span class="o_pcm_line_name" t-out="row.label"/></div>
+                        <span class="o_pcm_mono"><t t-out="row.amount"/> <t t-out="d.currency"/></span>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

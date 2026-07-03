@@ -24,6 +24,10 @@ export class ServidorDetalle extends Component {
         this.orm = useService("orm");
         this.model = "primate.cloud.ec2.instance";
         this.state = useState({ loading: true, data: {} });
+        // Visor de logs on-demand (no persiste; se trae por SSM al pedirlo).
+        this.logs = useState({
+            source: "odoo", lines: 200, grep: "", text: "", loading: false,
+        });
         onWillStart(() => this.load(this.props.serverId));
         onWillUpdateProps((next) => {
             if (next.serverId !== this.props.serverId) {
@@ -58,5 +62,32 @@ export class ServidorDetalle extends Component {
         if (this.props.onOpenRecord && id) {
             this.props.onOpenRecord(model, id, name);
         }
+    }
+
+    async refreshMetrics() {
+        await this.runMethod("action_refresh_metrics");
+    }
+
+    // Trae logs por SSM (no persiste). El texto se muestra y se puede descargar.
+    async fetchLogs() {
+        this.logs.loading = true;
+        this.logs.text = "";
+        const res = await this.orm.call(
+            "primate.cloud.dashboard", "get_instance_logs",
+            [this.props.serverId, this.logs.source, this.logs.lines,
+             this.logs.grep || false]
+        );
+        this.logs.text = res.text || "(sin salida)";
+        this.logs.loading = false;
+    }
+
+    downloadLogs() {
+        const blob = new Blob([this.logs.text || ""], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${this.d.name || "instancia"}-${this.logs.source}.log`;
+        a.click();
+        URL.revokeObjectURL(url);
     }
 }

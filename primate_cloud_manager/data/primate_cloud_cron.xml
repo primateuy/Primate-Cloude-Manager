@@ -60,6 +60,18 @@
         <field name="active" eval="True"/>
     </record>
 
+    <!-- Retención de métricas: crudas 14 días, downsample diario, tope 365. -->
+    <record id="cron_cleanup_snapshots" model="ir.cron">
+        <field name="name">Primate Cloud: retención de métricas</field>
+        <field name="model_id" ref="model_primate_cloud_monitor_snapshot"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_cleanup_snapshots()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="nextcall" eval="(DateTime.now() + timedelta(days=1)).strftime('%Y-%m-%d 05:15:00')"/>
+        <field name="active" eval="True"/>
+    </record>
+
     <!-- Métricas: snapshot horario de CloudWatch por cuenta (EC2 + RDS). -->
     <record id="cron_snapshot_metrics" model="ir.cron">
         <field name="name">Primate Cloud: snapshot de métricas (CloudWatch)</field>

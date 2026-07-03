@@ -79,6 +79,70 @@
                     </div>
                 </div>
 
+                <!-- Métricas (Fase 9): sin agente, RAM/disco = "requiere agente" -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Métricas</h2>
+                    <div class="o_pcm_actions">
+                        <span class="o_pcm_muted" t-if="d.metrics and d.metrics.at">
+                            <i class="fa fa-clock-o"/> datos al <t t-out="d.metrics.at"/>
+                        </span>
+                        <button t-if="d.state === 'running'" class="o_pcm_btn"
+                                t-on-click="() => this.refreshMetrics()">
+                            <i class="fa fa-refresh"/> Actualizar
+                        </button>
+                    </div>
+                </div>
+                <div class="o_pcm_card" t-if="d.metrics">
+                    <div class="o_pcm_cols2">
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">CPU</span>
+                            <span t-if="d.metrics.has_data"><t t-out="d.metrics.cpu"/> %</span>
+                            <span t-else="" class="o_pcm_muted">sin datos aún</span></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Status check</span>
+                            <span t-if="d.metrics.has_data and d.metrics.status_check_failed >= 1" class="o_pcm_err">Fallando</span>
+                            <span t-elif="d.metrics.has_data">OK</span>
+                            <span t-else="" class="o_pcm_muted">sin datos aún</span></div>
+                        <!-- RAM/disco: métrica AUSENTE (sin agente), nunca cero. -->
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">RAM</span>
+                            <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Disco</span>
+                            <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
+                    </div>
+                </div>
+
+                <!-- Logs on-demand (SSM). No se persisten. -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Logs</h2>
+                </div>
+                <div class="o_pcm_card">
+                    <div class="o_pcm_actions">
+                        <select t-model="logs.source" class="o_pcm_select">
+                            <option value="odoo">Odoo</option>
+                            <option value="nginx">Nginx</option>
+                            <option value="postgres">PostgreSQL</option>
+                            <option value="os">Sistema</option>
+                        </select>
+                        <select t-model.number="logs.lines" class="o_pcm_select">
+                            <option value="100">100 líneas</option>
+                            <option value="500">500 líneas</option>
+                            <option value="1000">1000 líneas</option>
+                        </select>
+                        <input type="text" t-model="logs.grep" class="o_pcm_input"
+                               placeholder="Filtrar texto…"/>
+                        <button class="o_pcm_btn o_pcm_btn_accent"
+                                t-att-disabled="d.state !== 'running' or logs.loading"
+                                t-on-click="() => this.fetchLogs()">
+                            <i class="fa fa-download"/> Traer logs
+                        </button>
+                        <button class="o_pcm_btn" t-if="logs.text"
+                                t-on-click="() => this.downloadLogs()">
+                            <i class="fa fa-file-text-o"/> Descargar
+                        </button>
+                    </div>
+                    <div t-if="logs.loading" class="o_pcm_muted">Trayendo logs…</div>
+                    <pre t-elif="logs.text" class="o_pcm_logs" t-out="logs.text"/>
+                    <div t-else="" class="o_pcm_muted">Elegí una fuente y traé los logs.</div>
+                </div>
+
                 <!-- Bases de datos que corren en este servidor -->
                 <div class="o_pcm_card" t-if="d.databases and d.databases.length">
                     <h2>Bases de datos</h2>

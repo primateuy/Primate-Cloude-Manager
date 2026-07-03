@@ -534,6 +534,39 @@
             h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 10px; }
         }
 
+        .o_pcm_cols3 {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            margin-top: 16px;
+
+            @media (max-width: 900px) { grid-template-columns: 1fr; }
+        }
+
+        // Selectores/inputs del visor de logs (mismo lenguaje que los botones).
+        .o_pcm_select, .o_pcm_input {
+            padding: 6px 10px;
+            border: 1px solid var(--pcm-border, #d0d5dd);
+            border-radius: 6px;
+            background: var(--pcm-surface, #fff);
+            font-size: 13px;
+        }
+        .o_pcm_input { flex: 1 1 160px; }
+
+        // Salida de logs: monoespaciada, con scroll, sin desbordar el ancho.
+        .o_pcm_logs {
+            margin-top: 12px;
+            max-height: 420px;
+            overflow: auto;
+            padding: 12px;
+            background: var(--pcm-code-bg, #0f172a);
+            color: var(--pcm-code-fg, #e2e8f0);
+            border-radius: 8px;
+            font-family: var(--o-mono-font-family, ui-monospace, monospace);
+            font-size: 12px;
+            white-space: pre;
+        }
+
         .o_pcm_line {
             display: flex;
             align-items: center;

@@ -54,6 +54,7 @@
                     <Inicio t-if="current.type === 'inicio'"
                             userName="userName"
                             onOpenEnv="(id, name) => this.openEnvDetail(id, name)"/>
+                    <Costos t-elif="current.type === 'costos'"/>
                     <Entornos t-elif="current.type === 'entornos'"
                               onOpenEnv="(id, name) => this.openEnvDetail(id, name)"
                               onManage="(id, name) => this.manageEnv(id, name)"/>

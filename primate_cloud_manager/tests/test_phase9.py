@@ -652,3 +652,128 @@ class TestCloudWatchServicePhase9(TransactionCase):
         self.assertIn("cpu", r)
         self.assertIn("status_check_failed", r)
         self.assertIsNone(r["cpu"])  # moto no genera métricas → ausente
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestSnapshotRetentionPhase9(TransactionCase):
+    """Bloque 4: retención de monitor.snapshot (ventana cruda + downsample + tope)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "P", "account_id": self.account.id})
+        self.env_ = self.env["primate.cloud.environment"].create({
+            "name": "E", "project_id": self.project.id,
+            "env_type": "production", "state": "active"})
+        self.instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv", "account_id": self.account.id,
+            "environment_id": self.env_.id, "aws_instance_id": "i-1",
+            "instance_state": "running", "region": "us-east-1"})
+        self.Snap = self.env["primate.cloud.monitor.snapshot"]
+
+    def _snap(self, dt, cpu=10.0):
+        return self.Snap.create({
+            "ec2_instance_id": self.instance.id,
+            "environment_id": self.env_.id, "snapshot_date": dt, "cpu": cpu})
+
+    def test_retencion_cruda_downsample_y_tope(self):
+        from datetime import timedelta
+        now = fields.Datetime.now()
+        # a) 3 snapshots de HOY (ventana cruda) → intactas.
+        raw = [self._snap(now - timedelta(hours=h)) for h in (1, 2, 3)]
+        # b) 3 snapshots del MISMO día viejo (30d) → downsample a 1 (la más nueva).
+        old_day = now - timedelta(days=30)
+        old_same_day = [self._snap(old_day - timedelta(hours=h)) for h in (0, 1, 2)]
+        newest_old = old_same_day[0]  # la de h=0 es la más nueva del día
+        # c) 1 snapshot de OTRO día viejo (31d) → se conserva su representante.
+        other_old = self._snap(now - timedelta(days=31))
+        # d) 1 snapshot > 365d → borrada por el tope duro.
+        ancient = self._snap(now - timedelta(days=400))
+
+        res = self.Snap._cron_cleanup_snapshots()
+
+        # Ventana cruda intacta.
+        for s in raw:
+            self.assertTrue(s.exists())
+        # Downsample: del día viejo queda solo la más nueva.
+        self.assertTrue(newest_old.exists())
+        self.assertFalse(old_same_day[1].exists())
+        self.assertFalse(old_same_day[2].exists())
+        # El otro día viejo conserva su representante.
+        self.assertTrue(other_old.exists())
+        # Tope duro: la ancestral se borró.
+        self.assertFalse(ancient.exists())
+        self.assertEqual(res["capped"], 1)
+        self.assertEqual(res["downsampled"], 2)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestCostOverviewAndLogsPhase9(TransactionCase):
+    """Bloque 4: serializers de la UI (resumen de costos con 'datos al', logs)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "P", "account_id": self.account.id})
+        self.env_ = self.env["primate.cloud.environment"].create({
+            "name": "E", "project_id": self.project.id,
+            "env_type": "production", "state": "active"})
+        self.Dash = self.env["primate.cloud.dashboard"]
+
+    def test_cost_overview_incluye_pulled_at_y_desglose(self):
+        from datetime import date
+        today = fields.Date.context_today(self.account)
+        month_start = today.replace(day=1)
+        now = fields.Datetime.now()
+        self.account.cost_pulled_at = now
+        Entry = self.env["primate.cloud.cost.entry"]
+        Entry.create({
+            "account_id": self.account.id, "period_start": month_start,
+            "period_end": date(month_start.year, month_start.month, 28),
+            "granularity": "monthly", "environment_ref": self.env_.pcm_ref,
+            "environment_name": "E", "client_name": "Cli",
+            "service": "AmazonEC2", "amount": 10.0, "pulled_at": now})
+        Entry.create({
+            "account_id": self.account.id, "period_start": month_start,
+            "period_end": date(month_start.year, month_start.month, 28),
+            "granularity": "monthly", "environment_ref": False,
+            "environment_name": "Sin atribuir", "service": "Tax",
+            "amount": 2.0, "pulled_at": now})
+        data = self.Dash.get_cost_overview(self.account.id)
+        # 'datos al' presente (honestidad).
+        self.assertTrue(data["pulled_at"])
+        self.assertEqual(data["current_total"], 12.0)
+        labels = [r["label"] for r in data["by_environment"]]
+        self.assertIn("E", labels)
+        self.assertIn("Sin atribuir", labels)
+
+    def test_get_instance_logs_instancia_detenida(self):
+        inst = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv", "account_id": self.account.id,
+            "environment_id": self.env_.id, "aws_instance_id": "i-1",
+            "instance_state": "stopped", "region": "us-east-1"})
+        res = self.Dash.get_instance_logs(inst.id, "odoo")
+        self.assertEqual(res["status"], "error")
+
+    def test_fetch_logs_comando_sin_credenciales(self):
+        """El comando de logs NO referencia el odoo.conf ni credenciales."""
+        inst = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv", "account_id": self.account.id,
+            "environment_id": self.env_.id, "aws_instance_id": "i-1",
+            "instance_state": "running", "region": "us-east-1"})
+        captured = {}
+        ssm = mock.Mock()
+        ssm.run_script.side_effect = lambda inst_id, cmd, **kw: (
+            captured.update(cmd=cmd) or {"status": "Success", "stdout": "log"})
+        with mock.patch.object(type(inst), "_get_ssm_service", return_value=ssm):
+            res = inst.fetch_logs("odoo", lines=100, grep="ERROR")
+        self.assertEqual(res["text"], "log")
+        for forbidden in ("odoo.conf", "PGPASSWORD", "password", "db_password"):
+            self.assertNotIn(forbidden, captured["cmd"])
+        self.assertIn("journalctl -u odoo", captured["cmd"])
