@@ -502,16 +502,7 @@ class PrimateCloudAccount(models.Model):
             tag_raw = keys[0] if keys else ""
             tag_value = tag_raw.split("$", 1)[1] if "$" in tag_raw else ""
             service_name = keys[1] if len(keys) > 1 else ""
-            env_id, env_name, client_ref, client_name, partner_id = \
-                self._resolve_attribution(tag_value)
-            vals = {
-                "environment_name": env_name, "environment_id": env_id,
-                "client_ref": client_ref, "client_name": client_name,
-                "partner_id": partner_id,
-                "amount": group.get("amount") or 0.0,
-                "currency": group.get("currency") or "USD",
-                "pulled_at": now,
-            }
+            amount = group.get("amount") or 0.0
             existing = Entry.search([
                 ("account_id", "=", self.id),
                 ("period_start", "=", period_start),
@@ -520,6 +511,25 @@ class PrimateCloudAccount(models.Model):
                 ("environment_ref", "=", tag_value or False),
                 ("service", "=", service_name or False),
             ], limit=1)
+            # No persistir filas de detalle en cero (ruido): CE devuelve un grupo
+            # por cada servicio "tocado" aunque no facture. El cuadre NO se afecta
+            # —_reconcile_costs compara contra result["total"], que YA suma este
+            # grupo (trivialmente, 0)—. Si un pull previo dejó una fila que ahora
+            # quedó en cero, se elimina para no arrastrar dato viejo.
+            if not amount:
+                if existing:
+                    existing.unlink()
+                continue
+            env_id, env_name, client_ref, client_name, partner_id = \
+                self._resolve_attribution(tag_value)
+            vals = {
+                "environment_name": env_name, "environment_id": env_id,
+                "client_ref": client_ref, "client_name": client_name,
+                "partner_id": partner_id,
+                "amount": amount,
+                "currency": group.get("currency") or "USD",
+                "pulled_at": now,
+            }
             if existing:
                 existing.write(vals)
             else:

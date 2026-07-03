@@ -493,6 +493,48 @@ class TestCostPullPhase9(TransactionCase):
         period = self._persist(result)
         self.assertTrue(self.account._reconcile_costs(result, period, "monthly"))
 
+    # --- Salto de grupos en cero: no se persisten, pero el cuadre no se afecta ---
+    def test_grupos_cero_no_se_persisten_pero_cuadran(self):
+        """CE devuelve un grupo por servicio 'tocado' aunque no facture (visto
+        en la pasada real: 10 grupos, todos 0.0). Esas filas de detalle NO se
+        persisten (ruido), pero _reconcile_costs sigue cerrando porque reconcilia
+        contra result['total'] (total real de CE), no contra la suma persistida."""
+        env_ref = self.env_prod.pcm_ref
+        tag = "primate:environment_id$" + env_ref
+        # Un grupo con costo real + varios en cero (distintos servicios y buckets).
+        result = self._ce_result([
+            ([tag, "AmazonEC2"], 12.0),          # facturado → se persiste
+            ([tag, "AWSGlue"], 0.0),             # tocado pero 0 → NO se persiste
+            (["", "AmazonS3"], 0.0),             # sin atribuir y 0 → NO se persiste
+            (["", "AWSKMS"], 0.0),               # id.
+        ], total=12.0)
+        period = self._persist(result)
+        # Solo la fila no-cero quedó persistida.
+        rows = self.Entry.search([("account_id", "=", self.account.id),
+                                  ("period_start", "=", period)])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows.service, "AmazonEC2")
+        self.assertEqual(rows.amount, 12.0)
+        # El cuadre cierra: persistido (12) == total CE (12), aunque los ceros
+        # no estén en la tabla.
+        self.assertTrue(self.account._reconcile_costs(result, period, "monthly"))
+
+    def test_repull_a_cero_elimina_fila_vieja(self):
+        """Si un pull previo dejó una fila con costo y el re-pull la reporta en
+        cero (corrección de AWS), la fila vieja se elimina para no arrastrar dato
+        obsoleto — y el cuadre sigue cerrando."""
+        env_ref = self.env_prod.pcm_ref
+        tag = "primate:environment_id$" + env_ref
+        period = self._persist(self._ce_result([([tag, "AmazonEC2"], 9.0)]))
+        self.assertEqual(self.Entry.search_count([
+            ("account_id", "=", self.account.id), ("period_start", "=", period)]), 1)
+        # Re-pull del mismo período: ahora ese servicio quedó en 0.
+        result0 = self._ce_result([([tag, "AmazonEC2"], 0.0)], total=0.0)
+        self._persist(result0, period)
+        self.assertEqual(self.Entry.search_count([
+            ("account_id", "=", self.account.id), ("period_start", "=", period)]), 0)
+        self.assertTrue(self.account._reconcile_costs(result0, period, "monthly"))
+
 
 @unittest.skipUnless(HAS_MOTO, "moto no está instalado")
 @tagged("post_install", "-at_install", "primate_cloud")
