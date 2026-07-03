@@ -13,4 +13,5 @@ from . import primate_cloud_commit
 from . import primate_cloud_module
 from . import primate_cloud_deployment
 from . import primate_cloud_dashboard
+from . import res_partner
 from . import res_users

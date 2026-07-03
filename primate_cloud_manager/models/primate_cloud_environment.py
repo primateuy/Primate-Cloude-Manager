@@ -132,6 +132,20 @@ class PrimateCloudEnvironment(models.Model):
     active = fields.Boolean(string="Activo", default=True)
     notes = fields.Text(string="Notas")
 
+    # Identificador ESTABLE de atribución de costos (Fase 9, Opción A). Se
+    # genera una vez y no cambia al renombrar: es la clave del tag AWS
+    # `primate:environment_id`, con la que Cost Explorer agrupa. copy=False
+    # para que un duplicado NO herede el ref (huérfanaría su atribución).
+    pcm_ref = fields.Char(
+        string="Ref estable", readonly=True, copy=False, index=True,
+        help="Identificador inmutable para atribución de costos (tag "
+             "primate:environment_id). No cambia al renombrar el entorno.",
+    )
+
+    _pcm_ref_uniq = models.Constraint(
+        "UNIQUE(pcm_ref)", "El identificador estable (pcm_ref) debe ser único."
+    )
+
     # --- Respaldos (Fase 8) ---
     backup_policy_id = fields.Many2one(
         "primate.cloud.backup.policy",
@@ -207,6 +221,24 @@ class PrimateCloudEnvironment(models.Model):
         string="Config de staging (cifrada)", copy=False,
         groups="primate_cloud_manager.group_cloud_admin",
     )
+
+    @staticmethod
+    def _new_pcm_ref():
+        """Genera un identificador estable único (Fase 9, Opción A)."""
+        return "pcm_env_" + uuid.uuid4().hex
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        """Asigna el pcm_ref por registro si no viene (único por uuid).
+
+        Se hace en create, no con un default lambda, para garantizar un valor
+        DISTINTO por cada registro de un create en lote (un default se evaluaría
+        una vez y colisionaría con la constraint de unicidad).
+        """
+        for vals in vals_list:
+            if not vals.get("pcm_ref"):
+                vals["pcm_ref"] = self._new_pcm_ref()
+        return super().create(vals_list)
 
     def _save_provision_config(self, values, field="provision_config_encrypted"):
         """Guarda (cifrada) la última config de un wizard en el campo indicado."""

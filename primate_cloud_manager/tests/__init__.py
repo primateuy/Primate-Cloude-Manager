@@ -13,5 +13,6 @@ from . import test_phase6
 from . import test_phase7
 from . import test_phase8
 from . import test_phase85
+from . import test_phase9
 from . import test_pcm_app
 from . import test_integration_moto
