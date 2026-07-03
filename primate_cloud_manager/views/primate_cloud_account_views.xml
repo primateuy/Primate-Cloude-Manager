@@ -33,6 +33,10 @@
                             string="Sincronizar recursos"
                             invisible="connection_state != 'connected'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_pull_costs" type="object"
+                            string="Actualizar costos"
+                            invisible="connection_state != 'connected'"
+                            groups="primate_cloud_manager.group_cloud_operator"/>
                     <button name="action_retag_preview" type="object"
                             string="Previsualizar re-etiquetado"
                             invisible="connection_state != 'connected'"

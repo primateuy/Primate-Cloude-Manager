@@ -47,6 +47,19 @@
         <field name="active" eval="True"/>
     </record>
 
+    <!-- Costos: pull diario de Cost Explorer por cuenta (dato con retardo;
+         04:45, después del sync/respaldos). -->
+    <record id="cron_pull_costs" model="ir.cron">
+        <field name="name">Primate Cloud: consultar costos (Cost Explorer)</field>
+        <field name="model_id" ref="model_primate_cloud_account"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_pull_costs()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="nextcall" eval="(DateTime.now() + timedelta(days=1)).strftime('%Y-%m-%d 04:45:00')"/>
+        <field name="active" eval="True"/>
+    </record>
+
     <!-- Anti-zombi de propagación DNS: reintenta los registros en 'pending'
          (INSYNC → finaliza; PENDING demasiado viejo → error honesto). -->
     <record id="cron_resync_pending_dns" model="ir.cron">

@@ -2,14 +2,23 @@
 """Cuenta AWS administrada por el módulo."""
 import logging
 import os
+from datetime import date, timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
-from ..services import aws_base, aws_ec2, aws_rds, aws_route53
+from ..services import (
+    aws_base, aws_cost_explorer, aws_ec2, aws_rds, aws_route53,
+)
 from ..tools import bus, crypto
 
 _logger = logging.getLogger(__name__)
+
+# No re-consultar Cost Explorer si el último pull fue hace menos de esto (el
+# dato de CE tiene retardo de horas: pegarle cada minuto paga de más sin cambio).
+COST_PULL_FRESHNESS_HOURS = 6
+# Tolerancia (en la moneda) al verificar que suma de atribuciones = total CE.
+COST_RECONCILE_TOLERANCE = 0.01
 
 # Parámetro de sistema donde se guarda la clave de cifrado si no se define por
 # variable de entorno. Ver _get_encryption_key().
@@ -121,6 +130,10 @@ class PrimateCloudAccount(models.Model):
         copy=False,
     )
     last_sync_date = fields.Datetime(string="Última sincronización", readonly=True, copy=False)
+    cost_pulled_at = fields.Datetime(
+        string="Costos consultados el", readonly=True, copy=False,
+        help="Fecha del último pull de Cost Explorer (leyenda 'datos al').",
+    )
     notes = fields.Text(string="Notas")
 
     _aws_account_id_unique = models.Constraint(
@@ -347,6 +360,226 @@ class PrimateCloudAccount(models.Model):
                 "next": {"type": "ir.actions.act_window_close"},
             },
         }
+
+    # ------------------------------------------------------------------
+    # Costos: pull de Cost Explorer + atribución por pcm_ref (Fase 9, Bloque 2)
+    # ------------------------------------------------------------------
+    @api.model
+    def _cron_pull_costs(self):
+        """Cron diario: encola el pull de costos de cada cuenta conectada."""
+        for account in self.search([("connection_state", "=", "connected")]):
+            account.with_delay(
+                description=_("Costos: %s") % account.name
+            ).job_pull_costs()
+
+    def action_pull_costs(self):
+        """Botón: encola el pull de costos, respetando la guarda de frescura."""
+        self.ensure_one()
+        self.with_delay(
+            description=_("Costos: %s") % self.name
+        ).job_pull_costs()
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info",
+                       "message": _("Actualización de costos encolada."),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def job_pull_costs(self, force=False):
+        """Job: consulta Cost Explorer y persiste ``cost.entry`` (upsert).
+
+        Guarda de frescura: si el último pull fue hace < COST_PULL_FRESHNESS_HOURS
+        y no se fuerza, no vuelve a pegarle a CE (el dato tiene retardo). Cada
+        pull re-consulta el mes en curso (que cambia día a día) y ACTUALIZA las
+        filas por (cuenta, período, ref, servicio) — no duplica.
+        """
+        self.ensure_one()
+        Entry = self.env["primate.cloud.cost.entry"]
+        Log = self.env["primate.cloud.operation.log"]
+        if not force and self._cost_pull_is_fresh():
+            _logger.info("Costos de %s aún frescos; se omite el pull.", self.name)
+            return {"skipped": "fresh"}
+        try:
+            service = aws_cost_explorer.AwsCostExplorerService(
+                self._get_aws_service())
+            now = fields.Datetime.now()
+            today = fields.Date.context_today(self)
+            month_start = today.replace(day=1)
+            # Mes en curso [inicio de mes, hoy+1) para incluir el día actual.
+            current = service.get_cost_and_usage(
+                start=fields.Date.to_string(month_start),
+                end=fields.Date.to_string(today + timedelta(days=1)),
+                granularity="MONTHLY", group_by=self._cost_group_by())
+            self._persist_cost_result(current, month_start,
+                                      today + timedelta(days=1), "monthly", now)
+            self._reconcile_costs(current, month_start, "monthly")
+            # Mes anterior (comparativa).
+            prev_end = month_start
+            prev_start = (month_start - timedelta(days=1)).replace(day=1)
+            previous = service.get_cost_and_usage(
+                start=fields.Date.to_string(prev_start),
+                end=fields.Date.to_string(prev_end),
+                granularity="MONTHLY", group_by=self._cost_group_by())
+            self._persist_cost_result(previous, prev_start, prev_end,
+                                      "monthly", now)
+            # Proyección a fin de mes (una fila is_forecast, no agrupada).
+            forecast = service.get_cost_forecast(
+                start=fields.Date.to_string(today + timedelta(days=1)),
+                end=fields.Date.to_string(self._month_end(month_start)))
+            self._persist_forecast(forecast, month_start,
+                                   self._month_end(month_start), now)
+        except Exception as error:  # noqa: BLE001 - se audita y no se traga
+            self.message_post(body=_("Pull de costos fallido: %s") % error)
+            Log.log_operation("cost_pull", name=_("Costos: %s") % self.name,
+                              record=self, result="failed", error_message=str(error))
+            return False
+        self._store_cost_cache(current, previous, forecast, now)
+        Log.log_operation("cost_pull", name=_("Costos: %s") % self.name,
+                          record=self, result="success")
+        return {"ok": True}
+
+    def _cost_pull_is_fresh(self):
+        """True si ya hay costos de esta cuenta consultados hace poco."""
+        self.ensure_one()
+        last = self.env["primate.cloud.cost.entry"].search(
+            [("account_id", "=", self.id)], order="pulled_at desc", limit=1)
+        if not last.pulled_at:
+            return False
+        age = fields.Datetime.now() - last.pulled_at
+        return age.total_seconds() < COST_PULL_FRESHNESS_HOURS * 3600
+
+    @staticmethod
+    def _cost_group_by():
+        """GroupBy estable: por tag de entorno + servicio (máx 2 en CE)."""
+        return [
+            {"Type": "TAG", "Key": aws_base.ENVIRONMENT_ID_TAG},
+            {"Type": "DIMENSION", "Key": "SERVICE"},
+        ]
+
+    @staticmethod
+    def _month_end(month_start):
+        """Primer día del mes siguiente (fin exclusive del mes en curso)."""
+        if month_start.month == 12:
+            return date(month_start.year + 1, 1, 1)
+        return date(month_start.year, month_start.month + 1, 1)
+
+    def _resolve_attribution(self, tag_value):
+        """pcm_ref (valor del tag) → (environment_id, environment_name,
+        client_ref, client_name, partner_id), robusto ante entornos borrados.
+
+        - tag con valor y entorno existe → todo resuelto (por pcm_ref EXACTO).
+        - tag con valor pero entorno borrado → id/partner False, name "Entorno
+          eliminado", ref conservado.
+        - sin valor → "Sin atribuir".
+        """
+        if not tag_value:
+            return (False, _("Sin atribuir"), False, _("Sin atribuir"), False)
+        env = self.env["primate.cloud.environment"].search(
+            [("pcm_ref", "=", tag_value)], limit=1)
+        if not env:
+            return (False, _("Entorno eliminado"), False,
+                    _("Cliente eliminado"), False)
+        partner = env.project_id.partner_id
+        # Materializa el ref del cliente (lazy), como en el provisioning: así
+        # el cost.entry guarda la clave estable del partner.
+        client_ref = partner._ensure_pcm_ref() if partner else False
+        client_name = partner.name or _("Cliente eliminado") if partner else False
+        return (env.id, env.name, client_ref, client_name,
+                partner.id if partner else False)
+
+    def _persist_cost_result(self, result, period_start, period_end,
+                             granularity, now):
+        """Upsert de las filas cost.entry a partir del resultado de CE.
+
+        Identidad = (cuenta, período, granularidad, is_forecast, ref, servicio).
+        Re-pull del mismo período ACTUALIZA la fila (no inserta otra).
+        """
+        Entry = self.env["primate.cloud.cost.entry"]
+        for group in result.get("groups", []):
+            keys = group.get("keys", [])
+            # GroupBy = [TAG env_id, SERVICE]. El tag viene como
+            # "primate:environment_id$<valor>" (vacío si el recurso no lo tiene).
+            tag_raw = keys[0] if keys else ""
+            tag_value = tag_raw.split("$", 1)[1] if "$" in tag_raw else ""
+            service_name = keys[1] if len(keys) > 1 else ""
+            env_id, env_name, client_ref, client_name, partner_id = \
+                self._resolve_attribution(tag_value)
+            vals = {
+                "environment_name": env_name, "environment_id": env_id,
+                "client_ref": client_ref, "client_name": client_name,
+                "partner_id": partner_id,
+                "amount": group.get("amount") or 0.0,
+                "currency": group.get("currency") or "USD",
+                "pulled_at": now,
+            }
+            existing = Entry.search([
+                ("account_id", "=", self.id),
+                ("period_start", "=", period_start),
+                ("granularity", "=", granularity),
+                ("is_forecast", "=", False),
+                ("environment_ref", "=", tag_value or False),
+                ("service", "=", service_name or False),
+            ], limit=1)
+            if existing:
+                existing.write(vals)
+            else:
+                Entry.create(dict(vals, account_id=self.id,
+                                  period_start=period_start,
+                                  period_end=period_end,
+                                  granularity=granularity, is_forecast=False,
+                                  environment_ref=tag_value or False,
+                                  service=service_name or False))
+
+    def _reconcile_costs(self, result, period_start, granularity):
+        """Verifica que la suma de las atribuciones persistidas = total de CE.
+
+        El bucket "Sin atribuir" existe justamente para que SIEMPRE cuadre. Si
+        no cuadra (más allá de la tolerancia de redondeo), se avisa: un reporte
+        de costos que no coincide con la factura de AWS no sirve.
+        """
+        self.ensure_one()
+        persisted = sum(self.env["primate.cloud.cost.entry"].search([
+            ("account_id", "=", self.id),
+            ("period_start", "=", period_start),
+            ("granularity", "=", granularity),
+            ("is_forecast", "=", False),
+        ]).mapped("amount"))
+        total = result.get("total") or 0.0
+        if abs(persisted - total) > COST_RECONCILE_TOLERANCE:
+            self.message_post(body=_(
+                "⚠️ Cuadre de costos: suma de atribuciones %(sum).4f ≠ total "
+                "CE %(total).4f (dif %(diff).4f). Revisar.",
+                sum=persisted, total=total, diff=persisted - total))
+            _logger.warning("Costos de %s no cuadran: %.4f vs %.4f",
+                            self.name, persisted, total)
+            return False
+        return True
+
+    def _persist_forecast(self, forecast, period_start, period_end, now):
+        """Upsert de la fila de proyección (is_forecast=True, no agrupada)."""
+        Entry = self.env["primate.cloud.cost.entry"]
+        vals = {
+            "amount": forecast.get("amount") or 0.0,
+            "currency": forecast.get("currency") or "USD",
+            "environment_name": _("Proyección fin de mes"), "pulled_at": now,
+        }
+        existing = Entry.search([
+            ("account_id", "=", self.id),
+            ("period_start", "=", period_start),
+            ("granularity", "=", "monthly"),
+            ("is_forecast", "=", True),
+        ], limit=1)
+        if existing:
+            existing.write(vals)
+        else:
+            Entry.create(dict(vals, account_id=self.id,
+                              period_start=period_start, period_end=period_end,
+                              granularity="monthly", is_forecast=True))
+
+    def _store_cost_cache(self, current, previous, forecast, now):
+        """Deja el timestamp del último pull a nivel cuenta (para la guarda de
+        frescura y la leyenda 'datos al'). El cache por entorno es del Bloque 4."""
+        self.sudo().cost_pulled_at = now
 
     # ------------------------------------------------------------------
     # Re-tagging de recursos existentes (Fase 9, Opción A, Bloque 1c)

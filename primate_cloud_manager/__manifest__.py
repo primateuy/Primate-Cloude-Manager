@@ -40,6 +40,7 @@ Arquitectura extensible para Azure y GCP en fases futuras.
         "views/primate_cloud_database_views.xml",
         "views/primate_cloud_backup_policy_views.xml",
         "views/primate_cloud_backup_views.xml",
+        "views/primate_cloud_cost_entry_views.xml",
         "views/primate_cloud_dns_record_views.xml",
         "views/primate_cloud_repository_views.xml",
         "views/primate_cloud_deployment_views.xml",

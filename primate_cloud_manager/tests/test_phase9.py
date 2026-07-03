@@ -327,3 +327,197 @@ class TestRetagPhase9(TransactionCase):
             # No se re-taggea una instancia terminada.
             self.assertEqual(c["tagged"], 0)
             self.assertEqual(c["already_ok"], 0)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestCostPullPhase9(TransactionCase):
+    """Bloque 2: pull de Cost Explorer, atribución robusta, upsert y cuadre."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.partner = self.env["res.partner"].create({"name": "Cliente X"})
+        self.project = self.env["primate.cloud.project"].create({
+            "name": "Forum", "account_id": self.account.id,
+            "partner_id": self.partner.id})
+        self.env_prod = self.env["primate.cloud.environment"].create({
+            "name": "Forum Prod", "project_id": self.project.id,
+            "env_type": "production", "state": "active"})
+        self.Entry = self.env["primate.cloud.cost.entry"]
+
+    def _ce_result(self, groups, total=None):
+        """Arma la respuesta normalizada de aws_cost_explorer."""
+        if total is None:
+            total = sum(a for _k, a in groups)
+        return {"total": total, "currency": "USD",
+                "groups": [{"keys": k, "amount": a, "currency": "USD"}
+                           for k, a in groups]}
+
+    def _persist(self, result, period=None):
+        from datetime import date
+        period = period or date(2026, 7, 1)
+        self.account._persist_cost_result(
+            result, period, date(2026, 8, 1), "monthly",
+            self.env.cr.now() if hasattr(self.env.cr, "now") else None)
+        return period
+
+    # --- Atribución robusta (por pcm_ref exacto) ---
+    def test_atribucion_entorno_existente(self):
+        env_ref = self.env_prod.pcm_ref
+        tag = "primate:environment_id$" + env_ref
+        self._persist(self._ce_result([([tag, "AmazonEC2"], 10.0)]))
+        entry = self.Entry.search([("environment_ref", "=", env_ref)])
+        self.assertEqual(entry.environment_name, "Forum Prod")
+        self.assertEqual(entry.environment_id, self.env_prod)
+        self.assertEqual(entry.client_name, "Cliente X")
+        self.assertEqual(entry.partner_id, self.partner)
+        self.assertEqual(entry.amount, 10.0)
+
+    def test_atribucion_entorno_borrado_conserva_ref(self):
+        """Un ref cuyo entorno no existe: name 'Entorno eliminado', ref
+        conservado, id/partner en False — el costo NO se pierde."""
+        tag = "primate:environment_id$pcm_env_borrado123"
+        self._persist(self._ce_result([([tag, "AmazonRDS"], 5.0)]))
+        entry = self.Entry.search([("environment_ref", "=", "pcm_env_borrado123")])
+        self.assertTrue(entry)
+        self.assertEqual(entry.environment_name, "Entorno eliminado")
+        self.assertEqual(entry.client_name, "Cliente eliminado")
+        self.assertFalse(entry.environment_id)
+        self.assertFalse(entry.partner_id)
+        self.assertEqual(entry.amount, 5.0)
+
+    def test_atribucion_sin_tag_es_sin_atribuir(self):
+        """Grupo sin valor de tag → bucket 'Sin atribuir'."""
+        self._persist(self._ce_result([(["", "AWSDataTransfer"], 3.0)]))
+        entry = self.Entry.search([("environment_ref", "=", False),
+                                   ("service", "=", "AWSDataTransfer")])
+        self.assertEqual(entry.environment_name, "Sin atribuir")
+        self.assertEqual(entry.amount, 3.0)
+
+    def test_partner_esquema_tres_campos_borrado(self):
+        """El cliente tiene el mismo esquema: si el entorno existe pero se
+        materializa el partner ref; el snapshot de nombre queda."""
+        env_ref = self.env_prod.pcm_ref
+        tag = "primate:environment_id$" + env_ref
+        self._persist(self._ce_result([([tag, "AmazonEC2"], 7.0)]))
+        entry = self.Entry.search([("environment_ref", "=", env_ref)])
+        self.assertTrue(entry.client_ref)  # materializado
+        self.assertEqual(entry.client_ref, self.partner.pcm_ref)
+
+    # --- Upsert idempotente (re-pull actualiza, no duplica) ---
+    def test_upsert_no_duplica_actualiza(self):
+        env_ref = self.env_prod.pcm_ref
+        tag = "primate:environment_id$" + env_ref
+        period = self._persist(self._ce_result([([tag, "AmazonEC2"], 10.0)]))
+        # 2º pull del MISMO período con valor nuevo (el mes en curso cambió).
+        self._persist(self._ce_result([([tag, "AmazonEC2"], 12.5)]), period)
+        entries = self.Entry.search([
+            ("account_id", "=", self.account.id),
+            ("environment_ref", "=", env_ref),
+            ("service", "=", "AmazonEC2"),
+            ("period_start", "=", period)])
+        self.assertEqual(len(entries), 1)      # NO duplicó
+        self.assertEqual(entries.amount, 12.5)  # actualizó el valor
+
+    def test_upsert_sin_atribuir_no_duplica(self):
+        period = self._persist(self._ce_result([(["", "Tax"], 1.0)]))
+        self._persist(self._ce_result([(["", "Tax"], 2.0)]), period)
+        entries = self.Entry.search([
+            ("account_id", "=", self.account.id),
+            ("environment_ref", "=", False), ("service", "=", "Tax"),
+            ("period_start", "=", period)])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries.amount, 2.0)
+
+    def test_upsert_sin_atribuir_vs_eliminado_son_filas_distintas(self):
+        """Claves de upsert DISTINTAS: 'Sin atribuir' (ref NULL) y 'Entorno
+        eliminado' (ref con valor, id False) NO se colapsan aunque compartan
+        cuenta/período/servicio — son costos de naturaleza distinta (nunca
+        atribuido vs atribuido a algo que ya no existe)."""
+        tag_del = "primate:environment_id$pcm_env_muerto"
+        period = self._persist(self._ce_result([
+            (["", "AmazonEC2"], 3.0),          # sin atribuir (ref NULL)
+            ([tag_del, "AmazonEC2"], 8.0),     # entorno eliminado (ref con valor)
+        ]))
+        sin = self.Entry.search([
+            ("account_id", "=", self.account.id), ("period_start", "=", period),
+            ("service", "=", "AmazonEC2"), ("environment_ref", "=", False)])
+        elim = self.Entry.search([
+            ("account_id", "=", self.account.id), ("period_start", "=", period),
+            ("service", "=", "AmazonEC2"),
+            ("environment_ref", "=", "pcm_env_muerto")])
+        self.assertEqual(len(sin), 1)
+        self.assertEqual(sin.amount, 3.0)
+        self.assertEqual(sin.environment_name, "Sin atribuir")
+        self.assertEqual(len(elim), 1)
+        self.assertEqual(elim.amount, 8.0)
+        self.assertEqual(elim.environment_name, "Entorno eliminado")
+        self.assertNotEqual(sin.id, elim.id)   # DOS filas separadas
+        # Y re-pull no las colapsa entre sí.
+        self._persist(self._ce_result([
+            (["", "AmazonEC2"], 3.5),
+            ([tag_del, "AmazonEC2"], 8.5)]), period)
+        self.assertEqual(self.Entry.search_count([
+            ("account_id", "=", self.account.id), ("period_start", "=", period),
+            ("service", "=", "AmazonEC2")]), 2)
+
+    # --- Cuadre: suma de atribuciones = total CE ---
+    def test_cuadre_suma_igual_total(self):
+        env_ref = self.env_prod.pcm_ref
+        tag = "primate:environment_id$" + env_ref
+        # entorno + sin-atribuir; total = 10 + 4 = 14.
+        result = self._ce_result([([tag, "AmazonEC2"], 10.0),
+                                   (["", "AWSDataTransfer"], 4.0)], total=14.0)
+        period = self._persist(result)
+        ok = self.account._reconcile_costs(result, period, "monthly")
+        self.assertTrue(ok)
+
+    def test_cuadre_detecta_descuadre(self):
+        env_ref = self.env_prod.pcm_ref
+        tag = "primate:environment_id$" + env_ref
+        # Persistimos 10 pero el total CE dice 14 (faltarían 4 sin atribuir).
+        result = self._ce_result([([tag, "AmazonEC2"], 10.0)], total=14.0)
+        period = self._persist(result)
+        ok = self.account._reconcile_costs(result, period, "monthly")
+        self.assertFalse(ok)  # no cuadra → avisa
+
+    def test_cuadre_con_entorno_borrado_igual_cuadra(self):
+        """El bucket 'eliminado' cuenta para el total: suma = total igual."""
+        tag_del = "primate:environment_id$pcm_env_x"
+        result = self._ce_result([([tag_del, "AmazonEC2"], 8.0),
+                                   (["", "Tax"], 2.0)], total=10.0)
+        period = self._persist(result)
+        self.assertTrue(self.account._reconcile_costs(result, period, "monthly"))
+
+
+@unittest.skipUnless(HAS_MOTO, "moto no está instalado")
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestCostExplorerServicePhase9(TransactionCase):
+    """Round-trip del adaptador Cost Explorer contra moto (datos vacíos: valida
+    forma/parsing, no valores — eso es la prueba real del cierre de fase)."""
+
+    def test_get_cost_and_usage_roundtrip(self):
+        from ..services import aws_base, aws_cost_explorer
+        with mock_aws():
+            base = aws_base.AwsBaseService("testing", "testing", "us-east-1")
+            svc = aws_cost_explorer.AwsCostExplorerService(base)
+            r = svc.get_cost_and_usage(
+                "2026-06-01", "2026-07-01", "MONTHLY",
+                [{"Type": "TAG", "Key": "primate:environment_id"},
+                 {"Type": "DIMENSION", "Key": "SERVICE"}])
+        # moto devuelve vacío: la forma normalizada está bien, no rompe.
+        self.assertIn("total", r)
+        self.assertIn("groups", r)
+        self.assertIsInstance(r["groups"], list)
+
+    def test_get_cost_forecast_tolera_sin_historico(self):
+        from ..services import aws_base, aws_cost_explorer
+        with mock_aws():
+            base = aws_base.AwsBaseService("testing", "testing", "us-east-1")
+            svc = aws_cost_explorer.AwsCostExplorerService(base)
+            f = svc.get_cost_forecast("2026-07-04", "2026-08-01")
+        self.assertIn("amount", f)
+        self.assertIsInstance(f["amount"], float)

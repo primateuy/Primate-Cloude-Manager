@@ -77,6 +77,12 @@
               action="action_backup"
               sequence="20"/>
 
+    <menuitem id="menu_cost_entry"
+              name="Costos"
+              parent="menu_primate_cloud_operations"
+              action="action_cost_entry"
+              sequence="30"/>
+
     <menuitem id="menu_operation_log"
               name="Bitácora"
               parent="menu_primate_cloud_operations"

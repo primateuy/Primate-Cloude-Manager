@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_cost_entry_list" model="ir.ui.view">
+        <field name="name">primate.cloud.cost.entry.list</field>
+        <field name="model">primate.cloud.cost.entry</field>
+        <field name="arch" type="xml">
+            <list string="Costos" class="o_pcm" create="false" edit="false">
+                <field name="period_start"/>
+                <field name="account_id"/>
+                <field name="environment_name"/>
+                <field name="client_name" optional="show"/>
+                <field name="service"/>
+                <field name="amount" sum="Total"/>
+                <field name="currency" optional="hide"/>
+                <field name="is_forecast" optional="hide"/>
+                <field name="pulled_at" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_cost_entry_search" model="ir.ui.view">
+        <field name="name">primate.cloud.cost.entry.search</field>
+        <field name="model">primate.cloud.cost.entry</field>
+        <field name="arch" type="xml">
+            <search string="Buscar costos">
+                <field name="environment_name"/>
+                <field name="client_name"/>
+                <field name="service"/>
+                <filter name="realizado" string="Realizado" domain="[('is_forecast','=',False)]"/>
+                <filter name="proyeccion" string="Proyección" domain="[('is_forecast','=',True)]"/>
+                <filter name="sin_atribuir" string="Sin atribuir" domain="[('environment_ref','=',False)]"/>
+                <group>
+                    <filter name="g_env" string="Entorno" context="{'group_by': 'environment_name'}"/>
+                    <filter name="g_client" string="Cliente" context="{'group_by': 'client_name'}"/>
+                    <filter name="g_service" string="Servicio" context="{'group_by': 'service'}"/>
+                    <filter name="g_account" string="Cuenta" context="{'group_by': 'account_id'}"/>
+                    <filter name="g_period" string="Período" context="{'group_by': 'period_start'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_cost_entry" model="ir.actions.act_window">
+        <field name="name">Costos</field>
+        <field name="res_model">primate.cloud.cost.entry</field>
+        <field name="view_mode">list</field>
+        <field name="search_view_id" ref="view_cost_entry_search"/>
+        <field name="context">{'search_default_realizado': 1, 'search_default_g_env': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Todavía no hay costos consultados.</p>
+            <p>Los costos se traen de AWS Cost Explorer al sincronizar la cuenta (botón "Actualizar costos"). Los datos tienen retardo de horas.</p>
+        </field>
+    </record>
+
+</odoo>
