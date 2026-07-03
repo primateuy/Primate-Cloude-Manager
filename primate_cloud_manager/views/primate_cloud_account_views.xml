@@ -33,6 +33,15 @@
                             string="Sincronizar recursos"
                             invisible="connection_state != 'connected'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_retag_preview" type="object"
+                            string="Previsualizar re-etiquetado"
+                            invisible="connection_state != 'connected'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <button name="action_retag_resources" type="object"
+                            string="Re-etiquetar recursos" class="btn-secondary"
+                            invisible="connection_state != 'connected'"
+                            groups="primate_cloud_manager.group_cloud_admin"
+                            confirm="Se aplicarán los tags estables a los recursos gestionados en AWS. ¿Continuar? (Previsualizá primero.)"/>
                     <field name="connection_state" widget="statusbar"
                            statusbar_visible="draft,connected,error"/>
                 </header>

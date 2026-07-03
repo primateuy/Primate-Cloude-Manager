@@ -11,6 +11,7 @@ _logger = logging.getLogger(__name__)
 ACTION_TYPES = [
     ("connection_test", "Validar conexión"),
     ("sync", "Sincronizar recursos"),
+    ("retag", "Re-etiquetar recursos"),
     ("ec2_start", "Iniciar EC2"),
     ("ec2_stop", "Detener EC2"),
     ("ec2_restart", "Reiniciar EC2"),

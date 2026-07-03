@@ -312,10 +312,35 @@ class AwsEc2Service:
         """Extrae el AWS Request ID de la metadata de una respuesta boto3."""
         return (response or {}).get("ResponseMetadata", {}).get("RequestId")
 
+    def create_tags(self, resource_ids, tags, region=None):
+        """Aplica (o sobrescribe) tags en recursos EC2 existentes (re-tagging).
+
+        ``ec2:CreateTags`` es idempotente a nivel AWS: fijar una clave con el
+        mismo valor es un no-op y no duplica. Acepta varios recursos en un
+        request (instancia + volúmenes) → se taggean juntos.
+
+        Args:
+            resource_ids (list[str]): ids de recursos EC2 (instancia, volúmenes).
+            tags (list[dict]): tags boto3 ``[{"Key":..,"Value":..}, ...]``.
+            region (str, optional): región de los recursos.
+
+        Returns:
+            str: el AWS Request ID.
+        """
+        client = self._base.get_client("ec2", region=region)
+        response = client.create_tags(Resources=list(resource_ids), Tags=tags)
+        return self._request_id(response)
+
     @staticmethod
     def _normalize_instance(inst, region):
         """Convierte la respuesta cruda de AWS a un dict estable para el modelo."""
         tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+        # Ids de volúmenes EBS adjuntos (para re-taggearlos junto a la instancia).
+        volume_ids = [
+            bdm["Ebs"]["VolumeId"]
+            for bdm in inst.get("BlockDeviceMappings", [])
+            if (bdm.get("Ebs") or {}).get("VolumeId")
+        ]
         # Tamaño del volumen raíz: no viene en describe_instances; se deja en 0
         # y se completa en fases posteriores con describe_volumes si hace falta.
         return {
@@ -327,5 +352,6 @@ class AwsEc2Service:
             "private_ip": inst.get("PrivateIpAddress"),
             "region": region,
             "tags": tags,
+            "volume_ids": volume_ids,
             "created_at": inst.get("LaunchTime"),
         }

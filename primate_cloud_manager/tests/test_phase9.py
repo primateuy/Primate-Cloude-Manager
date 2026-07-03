@@ -211,3 +211,119 @@ class TestAttributionRefsPhase9(TransactionCase):
         keys = {t["Key"] for t in tag_specs}
         self.assertIn("primate:environment_id", keys)
         self.assertNotIn("primate:client_id", keys)
+
+
+try:
+    import boto3
+    from moto import mock_aws
+    HAS_MOTO = True
+except ImportError:  # pragma: no cover
+    HAS_MOTO = False
+
+import unittest
+
+
+@unittest.skipUnless(HAS_MOTO, "moto no está instalado")
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestRetagPhase9(TransactionCase):
+    """Paso (c): re-tagging idempotente, conflicto y dry-run (moto)."""
+
+    def _setup_account_with_instance(self):
+        from ..services import aws_base, aws_ec2
+        account = self.env["primate.cloud.account"].create({
+            "name": "moto", "default_region": "us-east-1",
+            "iam_access_key_id": "testing", "iam_secret_access_key": "testing",
+        })
+        partner = self.env["res.partner"].create({"name": "Cli"})
+        project = self.env["primate.cloud.project"].create({
+            "name": "P", "account_id": account.id, "partner_id": partner.id})
+        environment = self.env["primate.cloud.environment"].create({
+            "name": "E", "project_id": project.id, "env_type": "production",
+            "state": "active"})
+        # EC2 REAL en moto SIN los tags estables (simula recurso legado).
+        client = boto3.client("ec2", region_name="us-east-1")
+        res = client.run_instances(
+            ImageId="ami-12345678", MinCount=1, MaxCount=1,
+            InstanceType="t3.micro",
+            TagSpecifications=[{"ResourceType": "instance",
+                                "Tags": [{"Key": "Name", "Value": "e"}]}])
+        aws_id = res["Instances"][0]["InstanceId"]
+        instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "e", "account_id": account.id,
+            "environment_id": environment.id, "aws_instance_id": aws_id,
+            "instance_state": "running", "region": "us-east-1"})
+        return account, environment, instance, aws_id
+
+    def _live_env_id_tag(self, aws_id):
+        from ..services import aws_base
+        client = boto3.client("ec2", region_name="us-east-1")
+        r = client.describe_instances(InstanceIds=[aws_id])
+        tags = {t["Key"]: t["Value"]
+                for t in r["Reservations"][0]["Instances"][0].get("Tags", [])}
+        return tags.get(aws_base.ENVIRONMENT_ID_TAG)
+
+    def test_retag_aplica_y_es_idempotente(self):
+        with mock_aws():
+            account, environment, instance, aws_id = \
+                self._setup_account_with_instance()
+            # 1ª corrida: el recurso no tiene el tag → tagged=1.
+            c1 = account.job_retag_resources(dry_run=False)
+            self.assertEqual(c1["tagged"], 1)
+            self.assertEqual(c1["already_ok"], 0)
+            self.assertEqual(self._live_env_id_tag(aws_id), environment.pcm_ref)
+            # 2ª corrida: ya está ok → tagged=0, already_ok=1 (señal de que no
+            # hay pendientes).
+            c2 = account.job_retag_resources(dry_run=False)
+            self.assertEqual(c2["tagged"], 0)
+            self.assertEqual(c2["fixed"], 0)
+            self.assertEqual(c2["already_ok"], 1)
+
+    def test_retag_conflicto_sobrescribe_y_cuenta_aparte(self):
+        with mock_aws():
+            account, environment, instance, aws_id = \
+                self._setup_account_with_instance()
+            from ..services import aws_base
+            # Alguien puso un valor DISTINTO a mano en AWS.
+            boto3.client("ec2", region_name="us-east-1").create_tags(
+                Resources=[aws_id],
+                Tags=[{"Key": aws_base.ENVIRONMENT_ID_TAG,
+                       "Value": "pcm_env_valor_ajeno"}])
+            c = account.job_retag_resources(dry_run=False)
+            self.assertEqual(c["fixed"], 1)      # contado aparte
+            self.assertEqual(c["tagged"], 0)
+            # El modelo es la fuente de verdad: se sobrescribió.
+            self.assertEqual(self._live_env_id_tag(aws_id), environment.pcm_ref)
+
+    def test_retag_dry_run_no_aplica(self):
+        with mock_aws():
+            account, environment, instance, aws_id = \
+                self._setup_account_with_instance()
+            c = account.job_retag_resources(dry_run=True)
+            self.assertEqual(c["tagged"], 1)     # lo reporta en el plan
+            # ...pero NO aplicó nada en AWS.
+            self.assertIsNone(self._live_env_id_tag(aws_id))
+
+    def test_retag_incluye_volumenes(self):
+        with mock_aws():
+            account, environment, instance, aws_id = \
+                self._setup_account_with_instance()
+            from ..services import aws_base
+            account.job_retag_resources(dry_run=False)
+            # El volumen raíz también quedó taggeado.
+            ec2 = boto3.client("ec2", region_name="us-east-1")
+            vols = ec2.describe_volumes(Filters=[
+                {"Name": "attachment.instance-id", "Values": [aws_id]}])
+            vtags = {t["Key"]: t["Value"]
+                     for t in vols["Volumes"][0].get("Tags", [])}
+            self.assertEqual(vtags.get(aws_base.ENVIRONMENT_ID_TAG),
+                             environment.pcm_ref)
+
+    def test_retag_salta_terminada(self):
+        with mock_aws():
+            account, environment, instance, aws_id = \
+                self._setup_account_with_instance()
+            instance.instance_state = "terminated"
+            c = account.job_retag_resources(dry_run=False)
+            # No se re-taggea una instancia terminada.
+            self.assertEqual(c["tagged"], 0)
+            self.assertEqual(c["already_ok"], 0)

@@ -348,6 +348,139 @@ class PrimateCloudAccount(models.Model):
             },
         }
 
+    # ------------------------------------------------------------------
+    # Re-tagging de recursos existentes (Fase 9, Opción A, Bloque 1c)
+    # ------------------------------------------------------------------
+    def action_retag_preview(self):
+        """Encola una PREVISUALIZACIÓN del re-etiquetado (no aplica nada).
+
+        "Mirar antes que tocar": el plan (qué se taggearía/corregiría) queda en
+        el chatter de la cuenta al terminar, sin escribir ningún tag en AWS.
+        """
+        self.ensure_one()
+        self.with_delay(
+            description=_("Previsualizar re-etiquetado: %s") % self.name
+        ).job_retag_resources(dry_run=True)
+        return self._retag_notification(preview=True)
+
+    def action_retag_resources(self):
+        """Encola el re-etiquetado REAL de los recursos gestionados."""
+        self.ensure_one()
+        self.with_delay(
+            description=_("Re-etiquetar recursos: %s") % self.name
+        ).job_retag_resources(dry_run=False)
+        return self._retag_notification(preview=False)
+
+    def _retag_notification(self, preview):
+        msg = (_("Previsualización de re-etiquetado encolada; el plan quedará "
+                 "en el chatter.") if preview else
+               _("Re-etiquetado encolado; el resultado quedará en el chatter."))
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"type": "info", "message": msg,
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def job_retag_resources(self, dry_run=False):
+        """Job: re-taggea las EC2 gestionadas con los tags estables (Opción A).
+
+        Idempotente y por VÍNCULO del modelo (no por el tag viejo): recorre las
+        instancias de la cuenta con ``environment_id`` y compara el
+        ``primate:environment_id`` REAL en AWS contra el ``pcm_ref`` del entorno:
+
+        - **already_ok**: ya tiene el valor correcto → no se toca (por eso una
+          2ª corrida da tagged=0, señal de que no hay pendientes).
+        - **tagged**: le falta el tag → se aplica.
+        - **fixed**: tiene un valor DISTINTO al del modelo (alguien tocó tags a
+          mano) → el modelo es la fuente de verdad, se **sobrescribe**, pero se
+          cuenta aparte y se deja en el log (un conflicto es señal de algo raro).
+        - **skipped**: no está viva/encontrada en AWS. **failed**: CreateTags o
+          el describe falló (no aborta el lote).
+
+        En ``dry_run`` calcula el plan y lo reporta SIN aplicar ningún tag.
+        """
+        self.ensure_one()
+        Instance = self.env["primate.cloud.ec2.instance"]
+        Log = self.env["primate.cloud.operation.log"]
+        managed = Instance.search([
+            ("account_id", "=", self.id),
+            ("environment_id", "!=", False),
+            ("aws_instance_id", "!=", False),
+            ("instance_state", "not in", ("terminated", "shutting-down")),
+        ])
+        counts = {"already_ok": 0, "tagged": 0, "fixed": 0,
+                  "skipped": 0, "failed": 0}
+        lines = []
+        # Agrupar por región (el cliente EC2 y CreateTags son por región).
+        by_region = {}
+        for inst in managed:
+            region = inst.region or self.default_region
+            by_region[region] = by_region.get(region, Instance) | inst
+        try:
+            ec2 = aws_ec2.AwsEc2Service(self._get_aws_service())
+        except Exception as error:  # noqa: BLE001 - sin servicio: se audita
+            self.message_post(body=_("Re-etiquetado fallido: %s") % error)
+            Log.log_operation("retag", name=_("Re-etiquetar: %s") % self.name,
+                              record=self, result="failed", error_message=str(error))
+            return counts
+        for region, insts in by_region.items():
+            try:
+                live = {d["aws_instance_id"]: d
+                        for d in ec2.list_instances(region=region)}
+            except Exception as error:  # noqa: BLE001 - región no describible
+                counts["failed"] += len(insts)
+                lines.append(_("✖ región %s: no se pudo describir (%s)")
+                             % (region, error))
+                continue
+            for inst in insts:
+                self._retag_one(ec2, inst, live.get(inst.aws_instance_id),
+                                region, dry_run, counts, lines)
+        result = "success" if not counts["failed"] else "partial"
+        header = (_("Previsualización de re-etiquetado") if dry_run
+                  else _("Re-etiquetado"))
+        summary = _("%(header)s: %(counts)s", header=header, counts=counts)
+        self.message_post(body=summary + ("\n" + "\n".join(lines[:60])
+                                          if lines else ""))
+        Log.log_operation("retag", name=_("%s: %s") % (header, self.name),
+                          record=self, result=result)
+        return counts
+
+    def _retag_one(self, ec2, inst, data, region, dry_run, counts, lines):
+        """Clasifica y (si no es dry_run) aplica el re-tag de UNA instancia."""
+        if not data:
+            counts["skipped"] += 1
+            lines.append(_("↷ %s: no encontrada en AWS") % inst.name)
+            return
+        env_ref, client_ref = inst.environment_id._cost_attribution_refs()
+        current = (data.get("tags") or {}).get(aws_base.ENVIRONMENT_ID_TAG)
+        if current == env_ref:
+            counts["already_ok"] += 1
+            return
+        action = "fixed" if current else "tagged"
+        if current:
+            lines.append(_("⚠ %(name)s: conflicto '%(cur)s' → '%(ref)s' "
+                           "(se sobrescribe)", name=inst.name, cur=current,
+                           ref=env_ref))
+        else:
+            lines.append(_("+ %(name)s: %(ref)s", name=inst.name, ref=env_ref))
+        if dry_run:
+            counts[action] += 1
+            return
+        tags = aws_base.build_resource_tags(
+            client=inst.environment_id.project_id.name,
+            environment=inst.environment_id.name,
+            client_ref=client_ref, environment_ref=env_ref,
+        )
+        resource_ids = [inst.aws_instance_id] + (data.get("volume_ids") or [])
+        try:
+            ec2.create_tags(resource_ids, tags, region=region)
+            counts[action] += 1
+        except Exception as error:  # noqa: BLE001 - un recurso no aborta el lote
+            counts["failed"] += 1
+            lines.append(_("✖ %(name)s: CreateTags falló (%(err)s)",
+                           name=inst.name, err=error))
+
     def job_create_ec2(self, vals):
         """Job: crea una instancia EC2 en AWS y la registra en el inventario.
 
