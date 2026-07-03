@@ -227,6 +227,28 @@ class PrimateCloudEnvironment(models.Model):
         """Genera un identificador estable único (Fase 9, Opción A)."""
         return "pcm_env_" + uuid.uuid4().hex
 
+    def _cost_attribution_refs(self):
+        """Devuelve ``(environment_ref, client_ref)`` para los tags estables.
+
+        Materializa el ref del partner (lazy) AL taggear. **Degrada limpio** si
+        falta proyecto o partner: devuelve ``client_ref = False`` (el tag de
+        cliente no se emite) — NUNCA rompe el aprovisionamiento. Un recurso sin
+        tag de cliente es un problema de reporte (tolerable); un provision que
+        aborta por un ref de cliente ausente, NO.
+        """
+        self.ensure_one()
+        partner = self.project_id.partner_id
+        client_ref = False
+        if partner:
+            try:
+                client_ref = partner._ensure_pcm_ref()
+            except Exception:  # noqa: BLE001 - un ref ausente no aborta el provision
+                _logger.warning(
+                    "No se pudo materializar el pcm_ref del partner %s; el "
+                    "recurso queda sin tag de cliente.", partner.id)
+                client_ref = False
+        return self.pcm_ref, client_ref
+
     @api.model_create_multi
     def create(self, vals_list):
         """Asigna el pcm_ref por registro si no viene (único por uuid).
@@ -393,9 +415,12 @@ class PrimateCloudEnvironment(models.Model):
     def _provision_ec2(self, base, account, params, region, domain):
         """Crea la EC2 del entorno y registra el recurso. Devuelve la instancia."""
         ec2 = aws_ec2.AwsEc2Service(base)
+        env_ref, client_ref = self._cost_attribution_refs()
         tags = aws_base.build_resource_tags(
             client=self.project_id.name,
             environment=self.name,
+            client_ref=client_ref,
+            environment_ref=env_ref,
             extra={"Name": params.get("instance_name") or domain},
         )
         # AMI: si el usuario lo dejó vacío, se resuelve para la región; si lo
@@ -452,8 +477,10 @@ class PrimateCloudEnvironment(models.Model):
         db_mode = params.get("db_mode") or "none"
         if db_mode == "rds":
             rds = aws_rds.AwsRdsService(base)
+            env_ref, client_ref = self._cost_attribution_refs()
             tags = aws_base.build_resource_tags(
-                client=self.project_id.name, environment=self.name
+                client=self.project_id.name, environment=self.name,
+                client_ref=client_ref, environment_ref=env_ref,
             )
             data = rds.create_instance(
                 identifier=params["rds_identifier"],

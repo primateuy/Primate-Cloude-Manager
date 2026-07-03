@@ -372,9 +372,15 @@ class PrimateCloudAccount(models.Model):
         try:
             region = vals.get("region") or self.default_region
             ec2 = aws_ec2.AwsEc2Service(self._get_aws_service())
+            # EC2 suelta (sin entorno PCM) = sin refs estables → "sin atribuir"
+            # limpio; con entorno, los refs salen de él (materializa el partner).
+            env_ref, client_ref = (
+                environment._cost_attribution_refs() if environment else (False, False)
+            )
             tags = aws_base.build_resource_tags(
                 client=(environment.project_id.name if environment else self.name),
                 environment=(environment.name if environment else name),
+                client_ref=client_ref, environment_ref=env_ref,
                 extra={"Name": name},
             )
             # AMI: si viene vacío se resuelve para la región; si viene, se limpia.

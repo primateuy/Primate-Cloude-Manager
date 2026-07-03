@@ -15,17 +15,30 @@ MANAGED_BY_TAG = "primate:managed_by"
 MANAGED_BY_VALUE = "pcm"
 CLIENT_TAG = "primate:client"
 ENVIRONMENT_TAG = "primate:environment"
+# Claves ESTABLES de atribución (Fase 9, Opción A). Cost Explorer agrupa por
+# estas (no por los tags por nombre, que son solo para lectura humana).
+CLIENT_ID_TAG = "primate:client_id"
+ENVIRONMENT_ID_TAG = "primate:environment_id"
 
 # Nombre de sesión usado al asumir un rol cruzado en la cuenta del cliente.
 ASSUME_ROLE_SESSION_NAME = "primate-cloud-manager"
 
 
-def build_resource_tags(client, environment, extra=None):
+def build_resource_tags(client, environment, client_ref=None,
+                        environment_ref=None, extra=None):
     """Construye la lista de tags obligatoria para un recurso AWS.
 
+    Emite los tags por nombre (lectura humana) y, si se pasan, los tags de
+    identificador ESTABLE (clave de atribución de costos, Fase 9). Un ``_ref``
+    vacío/None NO se emite: un tag de identificador ausente es preferible a uno
+    vacío (el recurso queda "sin atribuir" limpio, sin ensuciar la agrupación).
+
     Args:
-        client (str): identificador del cliente/proyecto (``primate:client``).
-        environment (str): identificador del entorno (``primate:environment``).
+        client (str): nombre del cliente/proyecto (``primate:client``).
+        environment (str): nombre del entorno (``primate:environment``).
+        client_ref (str, optional): ref estable del cliente (``primate:client_id``).
+        environment_ref (str, optional): ref estable del entorno
+            (``primate:environment_id``).
         extra (dict, optional): tags adicionales {clave: valor}.
 
     Returns:
@@ -36,6 +49,12 @@ def build_resource_tags(client, environment, extra=None):
         CLIENT_TAG: client or "",
         ENVIRONMENT_TAG: environment or "",
     }
+    # Solo se emiten los tags de id si hay valor (cliente/entorno sin ref =
+    # tag ausente, no vacío).
+    if client_ref:
+        tags[CLIENT_ID_TAG] = client_ref
+    if environment_ref:
+        tags[ENVIRONMENT_ID_TAG] = environment_ref
     if extra:
         tags.update(extra)
     return [{"Key": key, "Value": str(value)} for key, value in tags.items()]
