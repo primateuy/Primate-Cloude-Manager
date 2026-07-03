@@ -582,6 +582,47 @@ class PrimateCloudAccount(models.Model):
         self.sudo().cost_pulled_at = now
 
     # ------------------------------------------------------------------
+    # Métricas: snapshot de CloudWatch por cron (Fase 9, Bloque 3)
+    # ------------------------------------------------------------------
+    @api.model
+    def _cron_snapshot_metrics(self):
+        """Cron horario: encola la snapshot de métricas de cada cuenta conectada."""
+        for account in self.search([("connection_state", "=", "connected")]):
+            account.with_delay(
+                description=_("Métricas: %s") % account.name
+            ).job_snapshot_metrics()
+
+    def job_snapshot_metrics(self):
+        """Job: toma métricas de las EC2 corriendo y RDS disponibles de la cuenta.
+
+        Un ``AwsCloudWatchService`` por cuenta (no por recurso). Un error en un
+        recurso no aborta el lote.
+        """
+        self.ensure_one()
+        from ..services import aws_cloudwatch
+        Log = self.env["primate.cloud.operation.log"]
+        cw = aws_cloudwatch.AwsCloudWatchService(self._get_aws_service())
+        instances = self.env["primate.cloud.ec2.instance"].search([
+            ("account_id", "=", self.id), ("instance_state", "=", "running"),
+            ("aws_instance_id", "!=", False)])
+        databases = self.env["primate.cloud.database"].search([
+            ("account_id", "=", self.id), ("db_type", "=", "rds"),
+            ("rds_identifier", "!=", False), ("state", "=", "available")])
+        taken = failed = 0
+        for resource in list(instances) + list(databases):
+            try:
+                resource._take_metrics_snapshot(cw)
+                taken += 1
+            except Exception as error:  # noqa: BLE001 - un recurso no aborta
+                failed += 1
+                _logger.warning("Métricas de %s fallaron: %s",
+                                resource.display_name, error)
+        Log.log_operation(
+            "metrics_snapshot", name=_("Métricas: %s") % self.name, record=self,
+            result="success" if not failed else "partial")
+        return {"taken": taken, "failed": failed}
+
+    # ------------------------------------------------------------------
     # Re-tagging de recursos existentes (Fase 9, Opción A, Bloque 1c)
     # ------------------------------------------------------------------
     def action_retag_preview(self):

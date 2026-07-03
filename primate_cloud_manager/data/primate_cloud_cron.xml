@@ -60,6 +60,17 @@
         <field name="active" eval="True"/>
     </record>
 
+    <!-- Métricas: snapshot horario de CloudWatch por cuenta (EC2 + RDS). -->
+    <record id="cron_snapshot_metrics" model="ir.cron">
+        <field name="name">Primate Cloud: snapshot de métricas (CloudWatch)</field>
+        <field name="model_id" ref="model_primate_cloud_account"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_snapshot_metrics()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+        <field name="active" eval="True"/>
+    </record>
+
     <!-- Anti-zombi de propagación DNS: reintenta los registros en 'pending'
          (INSYNC → finaliza; PENDING demasiado viejo → error honesto). -->
     <record id="cron_resync_pending_dns" model="ir.cron">

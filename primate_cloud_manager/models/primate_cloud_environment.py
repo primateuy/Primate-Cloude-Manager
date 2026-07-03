@@ -32,6 +32,10 @@ NEUTRALIZATION_SQL_PATH = "primate_cloud_manager/data/neutralization.sql"
 # nominal absorbe corrimientos del cron y duración del propio backup.
 BACKUP_FREQUENCY_WINDOW_HOURS = {"daily": 26, "twice_daily": 14, "hourly": 2}
 
+# Umbrales de monitoreo (Fase 9). CPU en %; status check >= 1 = falla real.
+MONITOR_CPU_WARN = 80.0
+MONITOR_CPU_CRIT = 95.0
+
 # Edad máxima (horas) de la evidencia para poder evaluarla. Evidencia más vieja
 # (o sin marca temporal) => "No verificable": NUNCA "Cumple" sobre datos viejos,
 # es el peor falso positivo posible en respaldos. En el flujo normal la evidencia
@@ -177,6 +181,19 @@ class PrimateCloudEnvironment(models.Model):
         string="Última verificación de respaldo", readonly=True, copy=False
     )
 
+    # --- Monitoreo (Fase 9): estado general del entorno por umbrales ---
+    monitor_state = fields.Selection(
+        [
+            ("unknown", "Sin datos"),
+            ("ok", "Operativo"),
+            ("warn", "Advertencia"),
+            ("critical", "Crítico"),
+        ],
+        string="Estado de monitoreo", compute="_compute_monitor_state",
+        help="Se calcula de la última métrica de las instancias: status check "
+             "fallido o CPU > 95% = Crítico; CPU > 80% = Advertencia.",
+    )
+
     # --- Staging (Fase 7) ---
     origin_environment_id = fields.Many2one(
         "primate.cloud.environment", string="Entorno origen", readonly=True,
@@ -286,6 +303,27 @@ class PrimateCloudEnvironment(models.Model):
         for environment in self:
             if not environment.account_id and environment.project_id:
                 environment.account_id = environment.project_id.account_id
+
+    @api.depends("ec2_instance_ids.last_cpu",
+                 "ec2_instance_ids.last_status_check_failed",
+                 "ec2_instance_ids.last_metric_date")
+    def _compute_monitor_state(self):
+        """Estado del entorno a partir del cache de métricas de sus instancias
+        (spec §12.3). 'Sin datos' si ninguna instancia tiene métricas aún."""
+        for environment in self:
+            insts = environment.ec2_instance_ids.filtered("last_metric_date")
+            if not insts:
+                environment.monitor_state = "unknown"
+                continue
+            state = "ok"
+            for inst in insts:
+                if (inst.last_status_check_failed or 0) >= 1 \
+                        or (inst.last_cpu or 0) >= MONITOR_CPU_CRIT:
+                    state = "critical"
+                    break
+                if (inst.last_cpu or 0) >= MONITOR_CPU_WARN:
+                    state = "warn"
+            environment.monitor_state = state
 
     # ------------------------------------------------------------------
     # Aprovisionamiento (Fase 4): botón -> wizard -> job

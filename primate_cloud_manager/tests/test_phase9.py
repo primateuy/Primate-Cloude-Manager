@@ -5,7 +5,18 @@ Opción A: clave de atribución de costos inmutable. `environment.pcm_ref` se
 genera por registro en create; `res.partner.pcm_ref` se genera lazy y NO se
 pisa. El backfill (migración) llena solo vacíos — se ejercita su lógica acá.
 """
+import unittest
+from unittest import mock
+
+from odoo import fields
 from odoo.tests.common import TransactionCase, tagged
+
+try:
+    import boto3  # noqa: F401
+    from moto import mock_aws
+    HAS_MOTO = True
+except ImportError:  # pragma: no cover
+    HAS_MOTO = False
 
 
 @tagged("post_install", "-at_install", "primate_cloud")
@@ -211,16 +222,6 @@ class TestAttributionRefsPhase9(TransactionCase):
         keys = {t["Key"] for t in tag_specs}
         self.assertIn("primate:environment_id", keys)
         self.assertNotIn("primate:client_id", keys)
-
-
-try:
-    import boto3
-    from moto import mock_aws
-    HAS_MOTO = True
-except ImportError:  # pragma: no cover
-    HAS_MOTO = False
-
-import unittest
 
 
 @unittest.skipUnless(HAS_MOTO, "moto no está instalado")
@@ -521,3 +522,133 @@ class TestCostExplorerServicePhase9(TransactionCase):
             f = svc.get_cost_forecast("2026-07-04", "2026-08-01")
         self.assertIn("amount", f)
         self.assertIsInstance(f["amount"], float)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestMetricsPhase9(TransactionCase):
+    """Bloque 3: snapshot de métricas, None≠cero, monitor_state, alertas."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "P", "account_id": self.account.id})
+        self.environment = self.env["primate.cloud.environment"].create({
+            "name": "E", "project_id": self.project.id,
+            "env_type": "production", "state": "active"})
+        self.instance = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv", "account_id": self.account.id,
+            "environment_id": self.environment.id, "aws_instance_id": "i-1",
+            "instance_state": "running", "region": "us-east-1"})
+
+    def _cw(self, **metrics):
+        cw = mock.Mock()
+        cw.get_ec2_metrics.return_value = metrics
+        return cw
+
+    # --- Snapshot y None ≠ cero ---
+    def test_snapshot_persiste_y_cachea(self):
+        cw = self._cw(cpu=42.0, network_in=100.0, network_out=200.0,
+                      status_check_failed=0.0)
+        snap = self.instance._take_metrics_snapshot(cw)
+        self.assertEqual(snap.cpu, 42.0)
+        self.assertEqual(snap.environment_id, self.environment)
+        self.assertEqual(self.instance.last_cpu, 42.0)
+        self.assertTrue(self.instance.last_metric_date)
+
+    def test_metrica_none_no_se_persiste_como_cero(self):
+        """CPU sin dato (None) NO se guarda como 0: el campo queda sin escribir
+        y el cache last_cpu no se toca (métrica ausente ≠ métrica en cero)."""
+        # status_check con dato (0=OK real), cpu None (sin dato).
+        cw = self._cw(cpu=None, network_in=None, network_out=None,
+                      status_check_failed=0.0)
+        snap = self.instance._take_metrics_snapshot(cw)
+        # El cache de cpu NO se seteó (sigue en su default, sin last_cpu nuevo).
+        self.assertFalse(self.instance.last_cpu)
+        # status_check sí (0 es un valor real).
+        self.assertEqual(self.instance.last_status_check_failed, 0.0)
+
+    def test_snapshot_un_solo_request(self):
+        """GetMetricData se llama UNA vez por instancia (todas las métricas
+        empaquetadas)."""
+        cw = self._cw(cpu=10.0, status_check_failed=0.0)
+        self.instance._take_metrics_snapshot(cw)
+        self.assertEqual(cw.get_ec2_metrics.call_count, 1)
+
+    # --- monitor_state por umbrales ---
+    def test_monitor_state_unknown_sin_datos(self):
+        self.assertEqual(self.environment.monitor_state, "unknown")
+
+    def test_monitor_state_ok_warn_critical(self):
+        self.instance.write({"last_metric_date": fields.Datetime.now(),
+                             "last_cpu": 50.0, "last_status_check_failed": 0.0})
+        self.environment.invalidate_recordset()
+        self.assertEqual(self.environment.monitor_state, "ok")
+        self.instance.last_cpu = 85.0
+        self.environment.invalidate_recordset()
+        self.assertEqual(self.environment.monitor_state, "warn")
+        self.instance.last_cpu = 97.0
+        self.environment.invalidate_recordset()
+        self.assertEqual(self.environment.monitor_state, "critical")
+
+    def test_monitor_state_status_check_es_critico(self):
+        """StatusCheckFailed >= 1 → Crítico aunque la CPU esté baja."""
+        self.instance.write({"last_metric_date": fields.Datetime.now(),
+                             "last_cpu": 5.0, "last_status_check_failed": 1.0})
+        self.environment.invalidate_recordset()
+        self.assertEqual(self.environment.monitor_state, "critical")
+
+    # --- Alertas derivadas ---
+    def test_status_check_entra_como_alerta(self):
+        self.instance.last_status_check_failed = 1.0
+        data = self.env["primate.cloud.dashboard"].get_dashboard_data()
+        textos = [a["text"] for a in data["alerts"]]
+        self.assertTrue(any("Status check fallido" in t for t in textos))
+
+    def test_backup_no_cumple_entra_como_alerta(self):
+        self.environment.backup_compliance = "non_compliant"
+        data = self.env["primate.cloud.dashboard"].get_dashboard_data()
+        textos = [a["text"] for a in data["alerts"]]
+        self.assertTrue(any("Respaldo no cumple" in t for t in textos))
+
+    def test_home_cuenta_status_check_en_alertas(self):
+        before = self.env["primate.cloud.dashboard"].get_home_data()
+        base = next(k["value"] for k in before["kpis"] if k["key"] == "alerts") \
+            if any(k["key"] == "alerts" for k in before["kpis"]) else None
+        self.instance.last_status_check_failed = 1.0
+        after = self.env["primate.cloud.dashboard"].get_home_data()
+        # El conteo de alertas subió al menos en 1 (el status check).
+        kpi_after = [k for k in after["kpis"] if k["key"] == "alerts"]
+        if kpi_after and base is not None:
+            self.assertGreater(kpi_after[0]["value"], base)
+
+    # --- Cron/job de snapshot ---
+    def test_job_snapshot_metrics_recorre_recursos(self):
+        with mock.patch.object(type(self.instance), "_take_metrics_snapshot") \
+                as take:
+            res = self.account.job_snapshot_metrics()
+        take.assert_called_once()
+        self.assertEqual(res["taken"], 1)
+
+
+@unittest.skipUnless(HAS_MOTO, "moto no está instalado")
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestCloudWatchServicePhase9(TransactionCase):
+    """Round-trip del adaptador CloudWatch contra moto (datos vacíos → None)."""
+
+    def test_get_ec2_metrics_roundtrip(self):
+        from datetime import datetime, timedelta
+        from ..services import aws_base, aws_cloudwatch
+        with mock_aws():
+            base = aws_base.AwsBaseService("testing", "testing", "us-east-1")
+            svc = aws_cloudwatch.AwsCloudWatchService(base)
+            end = datetime(2026, 7, 3, 12, 0)
+            r = svc.get_ec2_metrics("i-123", "us-east-1",
+                                    end - timedelta(hours=1), end)
+        # Forma correcta: todas las claves presentes; sin datos → None (no 0).
+        self.assertIn("cpu", r)
+        self.assertIn("status_check_failed", r)
+        self.assertIsNone(r["cpu"])  # moto no genera métricas → ausente

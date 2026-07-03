@@ -89,6 +89,30 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "text": _("Cuenta con conexión fallida: %s") % account.display_name,
                 "model": "primate.cloud.account", "res_id": account.id,
             })
+        # Fase 9: status check fallido (señal de error REAL de EC2).
+        Ec2 = self.env["primate.cloud.ec2.instance"]
+        for inst in Ec2.search([("last_status_check_failed", ">=", 1)], limit=10):
+            alerts.append({
+                "type": "danger", "icon": "fa-heartbeat",
+                "text": _("Status check fallido: %s") % inst.display_name,
+                "model": "primate.cloud.ec2.instance", "res_id": inst.id,
+            })
+        # Fase 8: entornos que NO cumplen su política de respaldo.
+        for environment in Environment.search(
+                [("backup_compliance", "=", "non_compliant")], limit=10):
+            alerts.append({
+                "type": "warning", "icon": "fa-database",
+                "text": _("Respaldo no cumple: %s") % environment.display_name,
+                "model": "primate.cloud.environment", "res_id": environment.id,
+            })
+        # Fase 8.5: registros DNS divergentes (AWS ≠ PCM).
+        Dns = self.env["primate.cloud.dns.record"]
+        for rec in Dns.search([("sync_state", "=", "divergent")], limit=10):
+            alerts.append({
+                "type": "warning", "icon": "fa-globe",
+                "text": _("DNS divergente: %s") % rec.display_name,
+                "model": "primate.cloud.dns.record", "res_id": rec.id,
+            })
 
         return {"kpis": kpis, "recent_deploys": recent_deploys, "alerts": alerts}
 
@@ -108,6 +132,11 @@ class PrimateCloudDashboard(models.AbstractModel):
             Repository.search_count([("sync_state", "=", "divergent")])
             + Environment.search_count([("state", "=", "error")])
             + Account.search_count([("connection_state", "=", "error")])
+            # Fase 9: status check fallido + respaldo no cumple + DNS divergente.
+            + Ec2.search_count([("last_status_check_failed", ">=", 1)])
+            + Environment.search_count([("backup_compliance", "=", "non_compliant")])
+            + self.env["primate.cloud.dns.record"].search_count(
+                [("sync_state", "=", "divergent")])
         )
         kpis = [
             {"key": "env_active", "label": "Entornos activos", "icon": "fa-cubes",

@@ -13,6 +13,7 @@ ACTION_TYPES = [
     ("sync", "Sincronizar recursos"),
     ("retag", "Re-etiquetar recursos"),
     ("cost_pull", "Consultar costos"),
+    ("metrics_snapshot", "Snapshot de métricas"),
     ("ec2_start", "Iniciar EC2"),
     ("ec2_stop", "Detener EC2"),
     ("ec2_restart", "Reiniciar EC2"),

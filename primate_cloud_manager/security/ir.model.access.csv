@@ -5,6 +5,9 @@ access_account_admin,primate.cloud.account admin,model_primate_cloud_account,gro
 access_backup_policy_viewer,primate.cloud.backup.policy viewer,model_primate_cloud_backup_policy,group_cloud_viewer,1,0,0,0
 access_backup_policy_operator,primate.cloud.backup.policy operator,model_primate_cloud_backup_policy,group_cloud_operator,1,0,0,0
 access_backup_policy_admin,primate.cloud.backup.policy admin,model_primate_cloud_backup_policy,group_cloud_admin,1,1,1,1
+access_monitor_snapshot_viewer,primate.cloud.monitor.snapshot viewer,model_primate_cloud_monitor_snapshot,group_cloud_viewer,1,0,0,0
+access_monitor_snapshot_operator,primate.cloud.monitor.snapshot operator,model_primate_cloud_monitor_snapshot,group_cloud_operator,1,0,1,0
+access_monitor_snapshot_admin,primate.cloud.monitor.snapshot admin,model_primate_cloud_monitor_snapshot,group_cloud_admin,1,1,1,1
 access_cost_entry_viewer,primate.cloud.cost.entry viewer,model_primate_cloud_cost_entry,group_cloud_viewer,1,0,0,0
 access_cost_entry_operator,primate.cloud.cost.entry operator,model_primate_cloud_cost_entry,group_cloud_operator,1,0,1,0
 access_cost_entry_admin,primate.cloud.cost.entry admin,model_primate_cloud_cost_entry,group_cloud_admin,1,1,1,1

@@ -77,10 +77,41 @@ class PrimateCloudDatabase(models.Model):
     )
     last_sync_date = fields.Datetime(string="Última sincronización", readonly=True)
 
+    # --- Métricas RDS (cache de la última snapshot, Fase 9) ---
+    last_cpu = fields.Float(string="CPU % (última)", readonly=True)
+    last_free_storage_gb = fields.Float(string="Storage libre GB (última)", readonly=True)
+    last_metric_date = fields.Datetime(string="Métricas al", readonly=True)
+
     _rds_identifier_uniq = models.Constraint(
         "UNIQUE(account_id, rds_identifier)",
         "Esa base RDS ya existe para la cuenta.",
     )
+
+    def _take_metrics_snapshot(self, cw):
+        """Snapshot de métricas RDS (solo bases RDS con identificador)."""
+        self.ensure_one()
+        if self.db_type != "rds" or not self.rds_identifier:
+            return self.env["primate.cloud.monitor.snapshot"]
+        from datetime import timedelta
+        end = fields.Datetime.now()
+        start = end - timedelta(hours=1)
+        metrics = cw.get_rds_metrics(
+            self.rds_identifier, self.account_id.default_region, start, end)
+        vals = {"database_id": self.id,
+                "environment_id": self.environment_id.id}
+        for key in ("cpu", "free_storage_gb", "db_connections",
+                    "read_iops", "write_iops"):
+            if metrics.get(key) is not None:
+                vals[key] = metrics[key]
+        snapshot = self.env["primate.cloud.monitor.snapshot"].sudo().create(vals)
+        cache = {"last_metric_date": end}
+        if metrics.get("cpu") is not None:
+            cache["last_cpu"] = metrics["cpu"]
+        if metrics.get("free_storage_gb") is not None:
+            # FreeStorageSpace viene en bytes; a GB para el cache legible.
+            cache["last_free_storage_gb"] = metrics["free_storage_gb"] / (1024.0 ** 3)
+        self.write(cache)
+        return snapshot
 
     @api.constrains("ec2_instance_id", "environment_id")
     def _check_instance_environment_coherence(self):

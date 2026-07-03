@@ -67,6 +67,14 @@ class PrimateCloudEc2Instance(models.Model):
     aws_created_at = fields.Datetime(string="Creada en AWS", readonly=True)
     last_sync_date = fields.Datetime(string="Última sincronización", readonly=True)
 
+    # --- Métricas (cache de la última snapshot, Fase 9) ---
+    last_cpu = fields.Float(string="CPU % (última)", readonly=True)
+    last_status_check_failed = fields.Float(
+        string="Status check (última)", readonly=True,
+        help="≥1 = falló algún chequeo de estado de EC2 (señal de error real).",
+    )
+    last_metric_date = fields.Datetime(string="Métricas al", readonly=True)
+
     _aws_instance_uniq = models.Constraint(
         "UNIQUE(account_id, aws_instance_id)",
         "Esa instancia EC2 ya existe para la cuenta.",
@@ -307,6 +315,52 @@ class PrimateCloudEc2Instance(models.Model):
                 description=_("Sincronizar EC2: %s") % instance.name
             ).job_sync_from_aws()
         return self._notify(_("Sincronización encolada."))
+
+    def action_refresh_metrics(self):
+        """Encola un refresh on-demand de métricas de esta instancia."""
+        self.ensure_one()
+        self.with_delay(
+            description=_("Métricas EC2: %s") % self.name
+        ).job_snapshot_metrics()
+        return self._notify(_("Actualización de métricas encolada."))
+
+    def job_snapshot_metrics(self):
+        """Job: toma una snapshot de métricas de esta instancia (CloudWatch)."""
+        self.ensure_one()
+        from ..services import aws_cloudwatch
+        cw = aws_cloudwatch.AwsCloudWatchService(self.account_id._get_aws_service())
+        self._take_metrics_snapshot(cw)
+        return True
+
+    def _take_metrics_snapshot(self, cw):
+        """Consulta CloudWatch, crea la ``monitor.snapshot`` y refresca el cache.
+
+        Un valor ``None`` de CloudWatch (métrica sin datos) NO se persiste como
+        cero: se deja el campo sin escribir. RAM/disco NO se consultan (requieren
+        agente CloudWatch; la UI las muestra como "requiere agente", no en cero).
+        """
+        self.ensure_one()
+        if not self.aws_instance_id:
+            return self.env["primate.cloud.monitor.snapshot"]
+        from datetime import timedelta
+        end = fields.Datetime.now()
+        start = end - timedelta(hours=1)
+        metrics = cw.get_ec2_metrics(self.aws_instance_id, self.region, start, end)
+        # Solo se escriben las métricas con dato (None → no se persiste = NULL,
+        # no cero). status_check: 0 es un valor real (chequeo OK), se escribe.
+        vals = {"ec2_instance_id": self.id,
+                "environment_id": self.environment_id.id}
+        for key in ("cpu", "network_in", "network_out", "status_check_failed"):
+            if metrics.get(key) is not None:
+                vals[key] = metrics[key]
+        snapshot = self.env["primate.cloud.monitor.snapshot"].sudo().create(vals)
+        cache = {"last_metric_date": end}
+        if metrics.get("cpu") is not None:
+            cache["last_cpu"] = metrics["cpu"]
+        if metrics.get("status_check_failed") is not None:
+            cache["last_status_check_failed"] = metrics["status_check_failed"]
+        self.write(cache)
+        return snapshot
 
     # ------------------------------------------------------------------
     # Jobs (queue_job)
