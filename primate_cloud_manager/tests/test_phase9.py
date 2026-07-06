@@ -795,6 +795,20 @@ class TestCostOverviewAndLogsPhase9(TransactionCase):
         self.assertIn("E", labels)
         self.assertIn("Sin atribuir", labels)
 
+    def test_cost_overview_pulled_at_mixto_no_rompe(self):
+        """Con varias cuentas (una con pull, otra sin), el 'datos al' global no
+        debe romper: max() sobre datetime + False comparaba bool y datetime."""
+        now = fields.Datetime.now()
+        self.account.cost_pulled_at = now
+        # Segunda cuenta SIN pull (cost_pulled_at False).
+        self.env["primate.cloud.account"].create({
+            "name": "C2", "default_region": "us-east-1",
+            "iam_access_key_id": "AK2", "iam_secret_access_key": "sk2"})
+        # Sin account_id agrega TODAS las cuentas → antes crasheaba acá.
+        data = self.Dash.get_cost_overview()
+        self.assertEqual(
+            data["pulled_at"], fields.Datetime.to_string(now))
+
     def test_get_instance_logs_instancia_detenida(self):
         inst = self.env["primate.cloud.ec2.instance"].create({
             "name": "srv", "account_id": self.account.id,

@@ -257,16 +257,27 @@ def s08_costos_y_logs(pg):
     assert pg.locator(".o_pcm_costos .o_pcm_kpi_value").count() >= 3, \
         "faltan los KPIs de costos"
     pg.screenshot(path=f"{SHOT}/s08_costos.png")
-    # Visor de logs: drill a un servidor con infra y verificar la sección Logs.
+    # Panel de instancia (tabs): drill a un servidor con infra.
     open_env(pg, INFRA_ENV)
     pg.locator(".o_pcm_instance_head").first.click()
-    pg.wait_for_selector(".o_pcm_detalle", timeout=10000)
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_tabs", timeout=10000)
+    # Tab Dashboard (por defecto): métricas con RAM/disco "requiere agente".
     pg.wait_for_selector(".o_pcm_section_head:has-text('Métricas')", timeout=8000)
     assert pg.locator(":text('requiere agente CloudWatch')").count() >= 1, \
         "RAM/disco deberían mostrar 'requiere agente', no gráfico vacío"
-    assert pg.locator(".o_pcm_section_head:has-text('Logs')").count() == 1, \
-        "falta la sección de logs"
-    pg.screenshot(path=f"{SHOT}/s08_metricas_logs.png")
+    pg.screenshot(path=f"{SHOT}/s08_dashboard.png")
+    # Tab Logs: el visor on-demand vive en su tab.
+    pg.click(".o_pcm_tab:has-text('Logs')")
+    pg.wait_for_selector("button:has-text('Traer logs')", timeout=8000)
+    assert pg.locator("button:has-text('Traer logs')").count() == 1, \
+        "falta el visor de logs en la tab Logs"
+    pg.screenshot(path=f"{SHOT}/s08_logs.png")
+    # Deep-link: la tab activa se refleja en el hash y sobrevive al F5.
+    assert ".logs" in (pg.url or ""), f"la tab no quedó en el hash: {pg.url}"
+    pg.reload()
+    pg.wait_for_selector(".o_pcm_tab_active:has-text('Logs')", timeout=10000)
+    assert pg.locator("button:has-text('Traer logs')").count() == 1, \
+        "tras F5 no se restauró la tab Logs"
 
 
 @scenario

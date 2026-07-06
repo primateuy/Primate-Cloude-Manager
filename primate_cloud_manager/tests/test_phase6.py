@@ -60,6 +60,34 @@ class TestDeployment(TransactionCase):
             self.assertIn("model", kpi)
             self.assertIn("domain", kpi)
 
+    # --- Panel de instancia (Bloque A) ---
+    def test_server_detail_expone_panel(self):
+        """get_server_detail alimenta el panel: repos del entorno, backups de sus
+        BD, y el flag PCM (importada ⇒ False, no inventa paths)."""
+        data = self.env["primate.cloud.dashboard"].get_server_detail(
+            self.instance.id)
+        # Instancia creada a mano (no por PCM) ⇒ False.
+        self.assertFalse(data["provisioned_by_pcm"])
+        # Trae los repos del entorno para la tab Addons.
+        self.assertIn("repositories", data)
+        self.assertIn(self.repo.id, [r["id"] for r in data["repositories"]])
+        # Y la lista (vacía) de backups para la tab Backups.
+        self.assertIn("backups", data)
+        self.assertEqual(data["backups"], [])
+
+    def test_register_provisioned_marca_flag_pcm(self):
+        """Una instancia creada por PCM queda marcada: el panel puede confiar en
+        el layout estándar de paths."""
+        Ec2 = self.env["primate.cloud.ec2.instance"]
+        aws_data = {"aws_instance_id": "i-prov", "name": "prov",
+                    "instance_state": "running", "region": "us-east-1",
+                    "instance_type": "t3.small"}
+        inst = Ec2._register_provisioned(
+            self.account, aws_data, environment=self.env_rec)
+        self.assertTrue(inst.provisioned_by_pcm)
+        detail = self.env["primate.cloud.dashboard"].get_server_detail(inst.id)
+        self.assertTrue(detail["provisioned_by_pcm"])
+
     # --- Creación / nombre ---
     def test_create_asigna_referencia(self):
         dep = self._deploy()

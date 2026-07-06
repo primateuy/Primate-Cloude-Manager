@@ -7,7 +7,7 @@
             <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró el servidor.</div>
 
             <t t-else="">
-                <!-- Hero + acciones -->
+                <!-- Barra superior: nombre + estado + acciones de ciclo de vida -->
                 <div class="o_pcm_hero o_pcm_card">
                     <div class="o_pcm_hero_head">
                         <h1 t-out="d.name"/>
@@ -34,127 +34,265 @@
                             <i class="fa fa-cloud-download"/> Sincronizar
                         </button>
                         <button t-if="d.state === 'running'" class="o_pcm_btn"
-                                t-on-click="() => this.runMethod('action_create_staging_from_instance')">
-                            <i class="fa fa-clone"/> Crear staging
-                        </button>
-                        <button t-if="d.state === 'running'" class="o_pcm_btn"
                                 t-on-click="() => this.runMethod('action_execute_command')">
                             <i class="fa fa-terminal"/> Ejecutar comando
                         </button>
+                        <button t-if="d.state === 'running'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_create_staging_from_instance')">
+                            <i class="fa fa-clone"/> Crear staging
+                        </button>
                         <button t-if="d.state !== 'terminated'" class="o_pcm_btn o_pcm_btn_danger"
                                 t-on-click="() => this.runMethod('action_open_terminate_wizard')">
-                            <i class="fa fa-trash"/> Terminar
+                            <i class="fa fa-trash"/> Eliminar
                         </button>
                     </div>
                 </div>
 
-                <div class="o_pcm_cols2">
-                    <div class="o_pcm_card">
-                        <h2>AWS</h2>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Instance ID</span><span class="o_pcm_mono" t-out="d.aws_instance_id"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span><span t-out="d.instance_type or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Región</span><span t-out="d.region or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">SO</span><span t-out="d.os_type or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Disco</span><span t-out="d.disk_size_gb ? d.disk_size_gb + ' GB' : '—'"/></div>
-                    </div>
-                    <div class="o_pcm_card">
-                        <h2>Red y asociación</h2>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">IP pública</span><span class="o_pcm_mono" t-out="d.public_ip or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">IP privada</span><span class="o_pcm_mono" t-out="d.private_ip or '—'"/></div>
-                        <div class="o_pcm_kv">
-                            <span class="o_pcm_muted">Entorno</span>
-                            <span t-if="d.environment_id" class="o_pcm_link"
-                                  t-on-click="() => this.openRecord('primate.cloud.environment', d.environment_id, d.environment_name)"
-                                  t-out="d.environment_name"/>
-                            <span t-else="">—</span>
-                        </div>
-                        <div class="o_pcm_kv">
-                            <span class="o_pcm_muted">Cuenta</span>
-                            <span t-if="d.account_id" class="o_pcm_link"
-                                  t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account_name)"
-                                  t-out="d.account_name"/>
-                            <span t-else="">—</span>
-                        </div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
-                    </div>
+                <!-- Tabs del panel -->
+                <div class="o_pcm_tabs">
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'dashboard' }"
+                            t-on-click="() => this.setTab('dashboard')">
+                        <i class="fa fa-tachometer"/> Dashboard
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'logs' }"
+                            t-on-click="() => this.setTab('logs')">
+                        <i class="fa fa-file-text-o"/> Logs
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'backups' }"
+                            t-on-click="() => this.setTab('backups')">
+                        <i class="fa fa-database"/> Backups
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'addons' }"
+                            t-on-click="() => this.setTab('addons')">
+                        <i class="fa fa-puzzle-piece"/> Addons
+                    </button>
+                    <button class="o_pcm_tab o_pcm_tab_disabled" disabled="disabled"
+                            title="Se habilita en el bloque de Configuración">
+                        <i class="fa fa-cogs"/> Config
+                    </button>
                 </div>
 
-                <!-- Métricas (Fase 9): sin agente, RAM/disco = "requiere agente" -->
-                <div class="o_pcm_section_head o_pcm_section_bar">
-                    <h2>Métricas</h2>
-                    <div class="o_pcm_actions">
-                        <span class="o_pcm_muted" t-if="d.metrics and d.metrics.at">
-                            <i class="fa fa-clock-o"/> datos al <t t-out="d.metrics.at"/>
-                        </span>
-                        <button t-if="d.state === 'running'" class="o_pcm_btn"
-                                t-on-click="() => this.refreshMetrics()">
-                            <i class="fa fa-refresh"/> Actualizar
-                        </button>
-                    </div>
-                </div>
-                <div class="o_pcm_card" t-if="d.metrics">
+                <!-- ================= TAB: DASHBOARD ================= -->
+                <t t-if="state.tab === 'dashboard'">
                     <div class="o_pcm_cols2">
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">CPU</span>
-                            <span t-if="d.metrics.has_data"><t t-out="d.metrics.cpu"/> %</span>
-                            <span t-else="" class="o_pcm_muted">sin datos aún</span></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Status check</span>
-                            <span t-if="d.metrics.has_data and d.metrics.status_check_failed >= 1" class="o_pcm_err">Fallando</span>
-                            <span t-elif="d.metrics.has_data">OK</span>
-                            <span t-else="" class="o_pcm_muted">sin datos aún</span></div>
-                        <!-- RAM/disco: métrica AUSENTE (sin agente), nunca cero. -->
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">RAM</span>
-                            <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Disco</span>
-                            <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
-                    </div>
-                </div>
-
-                <!-- Logs on-demand (SSM). No se persisten. -->
-                <div class="o_pcm_section_head o_pcm_section_bar">
-                    <h2>Logs</h2>
-                </div>
-                <div class="o_pcm_card">
-                    <div class="o_pcm_actions">
-                        <select t-model="logs.source" class="o_pcm_select">
-                            <option value="odoo">Odoo</option>
-                            <option value="nginx">Nginx</option>
-                            <option value="postgres">PostgreSQL</option>
-                            <option value="os">Sistema</option>
-                        </select>
-                        <select t-model.number="logs.lines" class="o_pcm_select">
-                            <option value="100">100 líneas</option>
-                            <option value="500">500 líneas</option>
-                            <option value="1000">1000 líneas</option>
-                        </select>
-                        <input type="text" t-model="logs.grep" class="o_pcm_input"
-                               placeholder="Filtrar texto…"/>
-                        <button class="o_pcm_btn o_pcm_btn_accent"
-                                t-att-disabled="d.state !== 'running' or logs.loading"
-                                t-on-click="() => this.fetchLogs()">
-                            <i class="fa fa-download"/> Traer logs
-                        </button>
-                        <button class="o_pcm_btn" t-if="logs.text"
-                                t-on-click="() => this.downloadLogs()">
-                            <i class="fa fa-file-text-o"/> Descargar
-                        </button>
-                    </div>
-                    <div t-if="logs.loading" class="o_pcm_muted">Trayendo logs…</div>
-                    <pre t-elif="logs.text" class="o_pcm_logs" t-out="logs.text"/>
-                    <div t-else="" class="o_pcm_muted">Elegí una fuente y traé los logs.</div>
-                </div>
-
-                <!-- Bases de datos que corren en este servidor -->
-                <div class="o_pcm_card" t-if="d.databases and d.databases.length">
-                    <h2>Bases de datos</h2>
-                    <div t-foreach="d.databases" t-as="db" t-key="db.id"
-                         class="o_pcm_line o_pcm_line_click"
-                         t-on-click="() => this.openRecord('primate.cloud.database', db.id, db.name)">
-                        <div class="o_pcm_line_main">
-                            <span class="o_pcm_line_name" t-out="db.name"/>
+                        <div class="o_pcm_card">
+                            <h2>AWS</h2>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Instance ID</span><span class="o_pcm_mono" t-out="d.aws_instance_id"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span><span t-out="d.instance_type or '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Región</span><span t-out="d.region or '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">SO</span><span t-out="d.os_type or '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Disco</span><span t-out="d.disk_size_gb ? d.disk_size_gb + ' GB' : '—'"/></div>
                         </div>
-                        <i class="fa fa-angle-right o_pcm_muted"/>
+                        <div class="o_pcm_card">
+                            <h2>Red y asociación</h2>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">IP pública</span><span class="o_pcm_mono" t-out="d.public_ip or '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">IP privada</span><span class="o_pcm_mono" t-out="d.private_ip or '—'"/></div>
+                            <div class="o_pcm_kv">
+                                <span class="o_pcm_muted">Entorno</span>
+                                <span t-if="d.environment_id" class="o_pcm_link"
+                                      t-on-click="() => this.openRecord('primate.cloud.environment', d.environment_id, d.environment_name)"
+                                      t-out="d.environment_name"/>
+                                <span t-else="">—</span>
+                            </div>
+                            <div class="o_pcm_kv">
+                                <span class="o_pcm_muted">Cuenta</span>
+                                <span t-if="d.account_id" class="o_pcm_link"
+                                      t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account_name)"
+                                      t-out="d.account_name"/>
+                                <span t-else="">—</span>
+                            </div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
+                        </div>
                     </div>
-                </div>
+
+                    <!-- Paths + comandos de shell (solo si aprovisionada por PCM) -->
+                    <div class="o_pcm_card">
+                        <h2>Paths y comandos</h2>
+                        <t t-if="paths">
+                            <div class="o_pcm_cols2">
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Directorio Odoo</span><span class="o_pcm_mono" t-out="paths.home"/></div>
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Config</span><span class="o_pcm_mono" t-out="paths.conf"/></div>
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Intérprete Python</span><span class="o_pcm_mono" t-out="paths.python"/></div>
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Log</span><span class="o_pcm_mono" t-out="paths.logfile"/></div>
+                            </div>
+                            <div class="o_pcm_cmds">
+                                <div t-foreach="shellCommands" t-as="c" t-key="c.label" class="o_pcm_cmd">
+                                    <div class="o_pcm_cmd_head">
+                                        <span class="o_pcm_muted" t-out="c.label"/>
+                                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                                t-on-click="() => this.copy(c.cmd)">
+                                            <i class="fa fa-clipboard"/> Copiar
+                                        </button>
+                                    </div>
+                                    <pre class="o_pcm_mono o_pcm_cmd_body" t-out="c.cmd"/>
+                                </div>
+                            </div>
+                        </t>
+                        <div t-else="" class="o_pcm_muted">
+                            <i class="fa fa-question-circle"/>
+                            Desconocido (no aprovisionada por PCM). Los paths/comandos estándar
+                            no aplican a instancias importadas.
+                        </div>
+                    </div>
+
+                    <!-- Bases de datos de esta instancia -->
+                    <div class="o_pcm_card">
+                        <h2>Bases de datos</h2>
+                        <div t-if="d.databases and d.databases.length">
+                            <div t-foreach="d.databases" t-as="db" t-key="db.id"
+                                 class="o_pcm_line o_pcm_line_click"
+                                 t-on-click="() => this.openRecord('primate.cloud.database', db.id, db.name)">
+                                <div class="o_pcm_line_main">
+                                    <span class="o_pcm_line_name" t-out="db.name"/>
+                                    <span class="o_pcm_muted" t-out="db.db_type_label"/>
+                                </div>
+                                <i class="fa fa-angle-right o_pcm_muted"/>
+                            </div>
+                        </div>
+                        <div t-else="" class="o_pcm_muted">Sin bases de datos asociadas.</div>
+                    </div>
+
+                    <!-- Métricas (Fase 9): RAM/disco = "requiere agente" -->
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Métricas</h2>
+                        <div class="o_pcm_actions">
+                            <span class="o_pcm_muted" t-if="d.metrics and d.metrics.at">
+                                <i class="fa fa-clock-o"/> datos al <t t-out="d.metrics.at"/>
+                            </span>
+                            <button t-if="d.state === 'running'" class="o_pcm_btn"
+                                    t-on-click="() => this.refreshMetrics()">
+                                <i class="fa fa-refresh"/> Actualizar
+                            </button>
+                        </div>
+                    </div>
+                    <div class="o_pcm_card" t-if="d.metrics">
+                        <div class="o_pcm_cols2">
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">CPU</span>
+                                <span t-if="d.metrics.has_data"><t t-out="d.metrics.cpu"/> %</span>
+                                <span t-else="" class="o_pcm_muted">sin datos aún</span></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Status check</span>
+                                <span t-if="d.metrics.has_data and d.metrics.status_check_failed >= 1" class="o_pcm_err">Fallando</span>
+                                <span t-elif="d.metrics.has_data">OK</span>
+                                <span t-else="" class="o_pcm_muted">sin datos aún</span></div>
+                            <!-- RAM/disco: métrica AUSENTE (sin agente), nunca cero. -->
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">RAM</span>
+                                <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Disco</span>
+                                <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
+                        </div>
+                    </div>
+                </t>
+
+                <!-- ================= TAB: LOGS ================= -->
+                <t t-if="state.tab === 'logs'">
+                    <div class="o_pcm_card">
+                        <div class="o_pcm_actions">
+                            <select t-model="logs.source" class="o_pcm_select">
+                                <option value="odoo">Odoo</option>
+                                <option value="nginx">Nginx</option>
+                                <option value="postgres">PostgreSQL</option>
+                                <option value="os">Sistema</option>
+                            </select>
+                            <select t-model.number="logs.lines" class="o_pcm_select">
+                                <option value="100">100 líneas</option>
+                                <option value="500">500 líneas</option>
+                                <option value="1000">1000 líneas</option>
+                            </select>
+                            <input type="text" t-model="logs.grep" class="o_pcm_input"
+                                   placeholder="Filtrar texto…"/>
+                            <button class="o_pcm_btn o_pcm_btn_accent"
+                                    t-att-disabled="d.state !== 'running' or logs.loading"
+                                    t-on-click="() => this.fetchLogs()">
+                                <i class="fa fa-download"/> Traer logs
+                            </button>
+                            <button class="o_pcm_btn" t-if="logs.text"
+                                    t-on-click="() => this.downloadLogs()">
+                                <i class="fa fa-file-text-o"/> Descargar
+                            </button>
+                        </div>
+                        <div t-if="logs.loading" class="o_pcm_muted">Trayendo logs…</div>
+                        <pre t-elif="logs.text" class="o_pcm_logs" t-out="logs.text"/>
+                        <div t-else="" class="o_pcm_muted">Elegí una fuente y traé los logs.</div>
+                    </div>
+                </t>
+
+                <!-- ================= TAB: BACKUPS ================= -->
+                <t t-if="state.tab === 'backups'">
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Backups</h2>
+                        <div class="o_pcm_actions">
+                            <span class="o_pcm_muted" t-if="d.backup_compliance_label">
+                                Cumplimiento: <t t-out="d.backup_compliance_label"/>
+                            </span>
+                            <button class="o_pcm_btn o_pcm_btn_accent"
+                                    t-att-disabled="!d.environment_id"
+                                    t-on-click="() => this.backupNow()">
+                                <i class="fa fa-database"/> Respaldar ahora
+                            </button>
+                        </div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <div t-if="d.backups and d.backups.length">
+                            <div t-foreach="d.backups" t-as="b" t-key="b.id" class="o_pcm_line">
+                                <div class="o_pcm_line_main">
+                                    <span class="o_pcm_line_name" t-out="b.name"/>
+                                    <span class="o_pcm_muted">
+                                        <t t-out="b.database_name"/> ·
+                                        <t t-out="b.purpose_label"/> ·
+                                        <t t-out="b.backup_date"/> ·
+                                        <t t-out="b.state_label"/>
+                                        <t t-if="b.size_mb"> · <t t-out="b.size_mb"/> MB</t>
+                                    </span>
+                                </div>
+                                <button t-if="b.state === 'completed'" class="o_pcm_btn o_pcm_btn_mini"
+                                        t-on-click="() => this.restoreBackup(b.id)">
+                                    <i class="fa fa-undo"/> Restaurar…
+                                </button>
+                            </div>
+                        </div>
+                        <div t-else="" class="o_pcm_muted">Sin backups para las bases de esta instancia.</div>
+                    </div>
+                </t>
+
+                <!-- ================= TAB: ADDONS ================= -->
+                <t t-if="state.tab === 'addons'">
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Addons / repositorios</h2>
+                        <span class="o_pcm_muted">del entorno <t t-out="d.environment_name"/></span>
+                    </div>
+                    <div class="o_pcm_card">
+                        <div t-if="d.repositories and d.repositories.length">
+                            <div t-foreach="d.repositories" t-as="r" t-key="r.id" class="o_pcm_line">
+                                <div class="o_pcm_line_main o_pcm_line_click"
+                                     t-on-click="() => this.openRecord('primate.cloud.repository', r.id, r.name)">
+                                    <span class="o_pcm_line_name" t-out="r.name"/>
+                                    <span class="o_pcm_muted">
+                                        <t t-out="r.repo_type_label"/>
+                                        <t t-if="r.configured_branch"> · <t t-out="r.configured_branch"/></t>
+                                        <t t-if="r.current_commit"> · <span class="o_pcm_mono" t-out="r.current_commit"/></t>
+                                        · <t t-out="r.sync_state_label"/>
+                                    </span>
+                                </div>
+                                <div class="o_pcm_actions">
+                                    <button class="o_pcm_btn o_pcm_btn_mini"
+                                            t-on-click="() => this.runOn('primate.cloud.repository', r.id, 'action_check_sync_state')">
+                                        <i class="fa fa-refresh"/> Verificar
+                                    </button>
+                                    <button class="o_pcm_btn o_pcm_btn_mini"
+                                            t-on-click="() => this.openRecord('primate.cloud.repository', r.id, r.name)">
+                                        <i class="fa fa-cog"/> Settings
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div t-else="" class="o_pcm_muted">Sin repositorios registrados en el entorno.</div>
+                        <div class="o_pcm_muted o_pcm_note">
+                            <i class="fa fa-info-circle"/>
+                            Agregar un repo a la instancia (clonar en el servidor) llega en un
+                            bloque posterior.
+                        </div>
+                    </div>
+                </t>
             </t>
         </div>
     </t>

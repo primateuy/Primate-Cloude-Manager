@@ -76,6 +76,15 @@ class PrimateCloudEc2Instance(models.Model):
     )
     last_metric_date = fields.Datetime(string="Métricas al", readonly=True)
 
+    # True solo si la instancia fue APROVISIONADA por PCM (layout estándar de
+    # install_odoo.sh garantizado). Para las importadas por sync queda en False:
+    # el panel muestra "desconocido" en lugar de inventar paths (mismo criterio
+    # ausente≠inventado que en métricas).
+    provisioned_by_pcm = fields.Boolean(
+        string="Aprovisionada por PCM", default=False, readonly=True,
+        help="Marca si PCM creó la instancia (paths/comandos del panel válidos).",
+    )
+
     _aws_instance_uniq = models.Constraint(
         "UNIQUE(account_id, aws_instance_id)",
         "Esa instancia EC2 ya existe para la cuenta.",
@@ -155,6 +164,8 @@ class PrimateCloudEc2Instance(models.Model):
             recordset: la instancia creada o actualizada.
         """
         vals = self._aws_vals(aws_data, fields.Datetime.now())
+        # La creó PCM: el panel puede confiar en el layout estándar de paths.
+        vals["provisioned_by_pcm"] = True
         if environment:
             vals["environment_id"] = environment.id
         if os_type:

@@ -261,7 +261,70 @@
             color: var(--pcm-error-ink);
             &:hover { background: var(--pcm-error-bg); border-color: var(--pcm-error-dot); }
         }
+        &.o_pcm_btn_mini {
+            padding: 3px 9px;
+            font-size: 0.78rem;
+            border-radius: 7px;
+        }
     }
+
+    // Tabs del panel de instancia (Dashboard / Logs / Backups / Addons / Config).
+    .o_pcm_tabs {
+        display: flex;
+        gap: 4px;
+        margin: 16px 0 12px;
+        border-bottom: 1px solid var(--pcm-line);
+        flex-wrap: wrap;
+
+        .o_pcm_tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 8px 16px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: var(--pcm-soft);
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+
+            &:hover:not(:disabled) { color: var(--pcm-accent-ink); }
+            &.o_pcm_tab_active {
+                color: var(--pcm-accent-ink);
+                border-bottom-color: var(--pcm-accent);
+                font-weight: 500;
+            }
+            &.o_pcm_tab_disabled { opacity: 0.5; cursor: not-allowed; }
+        }
+    }
+
+    // Comandos de shell listos para copiar (tab Dashboard).
+    .o_pcm_cmds {
+        margin-top: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+
+        .o_pcm_cmd_head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 3px;
+        }
+        .o_pcm_cmd_body {
+            margin: 0;
+            padding: 8px 10px;
+            background: var(--pcm-ink-bg, #0F2B33);
+            color: #E8F2F0;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            overflow-x: auto;
+            white-space: pre;
+        }
+    }
+
+    .o_pcm_note { margin-top: 12px; font-size: 0.82rem; }
 
     // Fila de botones de acción (hero de detalles).
     .o_pcm_actions {

@@ -356,8 +356,27 @@ class PrimateCloudDashboard(models.AbstractModel):
         if not inst:
             return {}
         Ec2 = self.env["primate.cloud.ec2.instance"]
+        Db = self.env["primate.cloud.database"]
+        Repo = self.env["primate.cloud.repository"]
+        Backup = self.env["primate.cloud.backup"]
+        Env = self.env["primate.cloud.environment"]
         state_labels = dict(Ec2._fields["instance_state"].selection)
         os_labels = dict(Ec2._fields["os_type"].selection)
+        db_type_labels = dict(Db._fields["db_type"].selection)
+        repo_type_labels = dict(Repo._fields["repo_type"].selection)
+        sync_labels = dict(Repo._fields["sync_state"].selection)
+        bkp_state_labels = dict(Backup._fields["state"].selection)
+        bkp_purpose_labels = dict(Backup._fields["purpose"].selection)
+        env = inst.environment_id
+        databases = Db.search([("ec2_instance_id", "=", inst.id)])
+        # Backups de las BD montadas en esta instancia (granularidad del motor
+        # Fase 8 = entorno/BD; la vista de la instancia = backups de sus BD).
+        backups = Backup.search(
+            [("database_id", "in", databases.ids)], order="backup_date desc, id desc",
+            limit=15) if databases else Backup.browse()
+        # Los repos cuelgan del ENTORNO (no de la instancia): en un entorno de una
+        # instancia es equivalente; se muestran los del entorno con nota en UI.
+        repos = Repo.search([("environment_id", "=", env.id)]) if env else Repo.browse()
         return {
             "id": inst.id,
             "name": inst.display_name,
@@ -370,17 +389,40 @@ class PrimateCloudDashboard(models.AbstractModel):
             "public_ip": inst.public_ip or "",
             "private_ip": inst.private_ip or "",
             "disk_size_gb": inst.disk_size_gb or 0,
+            "provisioned_by_pcm": inst.provisioned_by_pcm,
             "aws_created_at": fields.Datetime.to_string(inst.aws_created_at) or "",
             "last_sync_date": fields.Datetime.to_string(inst.last_sync_date) or "",
             "account_id": inst.account_id.id,
             "account_name": inst.account_id.display_name or "",
-            "environment_id": inst.environment_id.id,
-            "environment_name": inst.environment_id.display_name or "",
+            "environment_id": env.id,
+            "environment_name": env.display_name or "",
+            "backup_compliance": env.backup_compliance if env else "",
+            "backup_compliance_label": (
+                dict(Env._fields["backup_compliance"].selection).get(
+                    env.backup_compliance, env.backup_compliance) if env else ""),
             "databases": [{
                 "id": db.id, "name": db.display_name,
                 "db_type": db.db_type,
-            } for db in self.env["primate.cloud.database"].search(
-                [("ec2_instance_id", "=", inst.id)])],
+                "db_type_label": db_type_labels.get(db.db_type, db.db_type or ""),
+            } for db in databases],
+            "backups": [{
+                "id": b.id, "name": b.display_name,
+                "backup_date": fields.Datetime.to_string(b.backup_date) or "",
+                "state": b.state,
+                "state_label": bkp_state_labels.get(b.state, b.state or ""),
+                "purpose_label": bkp_purpose_labels.get(b.purpose, b.purpose or ""),
+                "size_mb": b.size_mb or 0.0,
+                "database_name": b.database_id.display_name or "",
+            } for b in backups],
+            "repositories": [{
+                "id": r.id, "name": r.display_name,
+                "repo_type": r.repo_type,
+                "repo_type_label": repo_type_labels.get(r.repo_type, r.repo_type or ""),
+                "configured_branch": r.configured_branch or "",
+                "current_commit": (r.current_commit or "")[:10],
+                "sync_state": r.sync_state,
+                "sync_state_label": sync_labels.get(r.sync_state, r.sync_state or ""),
+            } for r in repos],
             # Métricas (Fase 9): las que PCM tiene sin agente + marca de las
             # que REQUIEREN agente (RAM/disco), para que la UI no muestre 0.
             "metrics": {
@@ -447,7 +489,10 @@ class PrimateCloudDashboard(models.AbstractModel):
                                           ("period_start", "=", month_start)])
         accounts = Account.search(
             [("id", "=", account_id)] if account_id else [])
-        pulled = max(accounts.mapped("cost_pulled_at") or [False])
+        # Solo fechas reales: con varias cuentas, unas con pull y otras sin
+        # (cost_pulled_at False), max() sobre la mezcla compararía bool y datetime.
+        pulled_dates = [d for d in accounts.mapped("cost_pulled_at") if d]
+        pulled = max(pulled_dates) if pulled_dates else False
         currency = (current[:1].currency or "USD")
         return {
             "pulled_at": fields.Datetime.to_string(pulled) if pulled else "",

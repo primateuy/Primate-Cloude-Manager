@@ -370,10 +370,22 @@ export class PcmApp extends Component {
     }
 
     // ------------------------------------------------- Deep link (hash)
+    // Cambia la tab activa del detalle actual (p. ej. el panel de instancia) y
+    // la refleja en el hash, para que el deep-link a una tab sobreviva al F5.
+    setDetailTab(tab) {
+        const stack = this.state.stack.slice();
+        stack[stack.length - 1] = { ...stack[stack.length - 1], tab };
+        this.state.stack = stack;
+        this.syncHash();
+    }
+
     syncHash() {
         const parts = this.state.stack.map((entry) => {
             if (DETAIL_HASH[entry.type]) {
-                return `${DETAIL_HASH[entry.type]}-${entry.resId}`;
+                const base = `${DETAIL_HASH[entry.type]}-${entry.resId}`;
+                // La tab va como sufijo ".<tab>" (se omite la default "dashboard").
+                return entry.tab && entry.tab !== "dashboard"
+                    ? `${base}.${entry.tab}` : base;
             }
             if (entry.type === "nativeList") {
                 return `list-${entry.model}`;
@@ -399,9 +411,13 @@ export class PcmApp extends Component {
                 stack.push(this.withTitle({ type: part }));
             } else if (HASH_DETAIL[prefix]) {
                 const type = HASH_DETAIL[prefix];
+                // El resto puede traer la tab como sufijo: "<resId>.<tab>".
+                const rest = part.slice(dashIdx + 1);
+                const dotIdx = rest.indexOf(".");
+                const resId = Number(dotIdx === -1 ? rest : rest.slice(0, dotIdx));
+                const tab = dotIdx === -1 ? undefined : rest.slice(dotIdx + 1);
                 stack.push(this.withTitle({
-                    type, model: DETAIL_MODEL[type],
-                    resId: Number(part.slice(dashIdx + 1)),
+                    type, model: DETAIL_MODEL[type], resId, tab,
                 }));
             } else if (part.startsWith("list-")) {
                 stack.push(this.withTitle({ type: "nativeList", model: part.slice(5) }));
