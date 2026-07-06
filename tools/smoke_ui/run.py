@@ -280,6 +280,12 @@ def s08_costos_y_logs(pg):
     pg.wait_for_selector(".o_pcm_tab_active:has-text('Logs')", timeout=10000)
     assert pg.locator("button:has-text('Traer logs')").count() == 1, \
         "tras F5 no se restauró la tab Logs"
+    # Tab Config (Bloque B3): ahora habilitada; renderiza (form o aviso).
+    pg.click(".o_pcm_tab:has-text('Config')")
+    pg.wait_for_selector(".o_pcm_tab_active:has-text('Config')", timeout=8000)
+    assert pg.locator(".o_pcm_detalle .o_pcm_card").count() >= 1, \
+        "la tab Config no renderizó contenido"
+    pg.screenshot(path=f"{SHOT}/s08_config.png")
 
 
 @scenario

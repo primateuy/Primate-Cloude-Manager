@@ -66,8 +66,8 @@
                             t-on-click="() => this.setTab('addons')">
                         <i class="fa fa-puzzle-piece"/> Addons
                     </button>
-                    <button class="o_pcm_tab o_pcm_tab_disabled" disabled="disabled"
-                            title="Se habilita en el bloque de Configuración">
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'config' }"
+                            t-on-click="() => this.setTab('config')">
                         <i class="fa fa-cogs"/> Config
                     </button>
                 </div>
@@ -341,6 +341,80 @@
                             bloque posterior.
                         </div>
                     </div>
+                </t>
+
+                <!-- ================= TAB: CONFIG ================= -->
+                <t t-if="state.tab === 'config'">
+                    <div t-if="config.loading" class="o_pcm_card o_pcm_muted">Leyendo odoo.conf…</div>
+                    <div t-elif="config.status !== 'ok'" class="o_pcm_card o_pcm_muted">
+                        <i class="fa fa-info-circle"/> <t t-out="config.error"/>
+                    </div>
+                    <t t-else="">
+                        <!-- Editables -->
+                        <div class="o_pcm_section_head o_pcm_section_bar">
+                            <h2>Parámetros editables</h2>
+                            <button class="o_pcm_btn" t-on-click="() => this.loadConfig()">
+                                <i class="fa fa-refresh"/> Recargar
+                            </button>
+                        </div>
+                        <div class="o_pcm_card">
+                            <div t-foreach="config.meta" t-as="m" t-key="m.key" class="o_pcm_kv o_pcm_cfg_row">
+                                <span class="o_pcm_muted o_pcm_mono" t-out="m.key"/>
+                                <!-- bool -->
+                                <input t-if="m.type === 'bool'" type="checkbox"
+                                       t-att-checked="String(config.work[m.key]) === 'True'"
+                                       t-on-change="(ev) => this.setConfigField(m.key, ev.target.checked ? 'True' : 'False')"/>
+                                <!-- enum -->
+                                <select t-elif="m.type === 'enum'" class="o_pcm_select"
+                                        t-on-change="(ev) => this.setConfigField(m.key, ev.target.value)">
+                                    <option t-foreach="m.options" t-as="opt" t-key="opt"
+                                            t-att-value="opt" t-att-selected="String(config.work[m.key]) === opt"
+                                            t-out="opt"/>
+                                </select>
+                                <!-- int -->
+                                <input t-else="" type="number" class="o_pcm_input"
+                                       t-att-min="m.min" t-att-max="m.max"
+                                       t-att-value="config.work[m.key]"
+                                       t-on-input="(ev) => this.setConfigField(m.key, ev.target.value)"/>
+                            </div>
+                        </div>
+
+                        <!-- Read-only -->
+                        <div class="o_pcm_section_head o_pcm_section_bar"><h2>Solo lectura</h2></div>
+                        <div class="o_pcm_card">
+                            <div t-foreach="Object.keys(config.readonly)" t-as="k" t-key="k" class="o_pcm_kv">
+                                <span class="o_pcm_muted o_pcm_mono" t-out="k"/>
+                                <span class="o_pcm_mono" t-out="config.readonly[k]"/>
+                            </div>
+                            <div class="o_pcm_muted o_pcm_note">
+                                <i class="fa fa-info-circle"/>
+                                Estos parámetros no se editan en v1 (un valor malo impediría el
+                                arranque). db_password / admin_passwd no se muestran.
+                            </div>
+                        </div>
+
+                        <!-- Guardar -->
+                        <div class="o_pcm_card">
+                            <div class="o_pcm_note" t-if="hasConfigChanges">
+                                <i class="fa fa-exclamation-triangle o_pcm_err"/>
+                                Guardar reescribe el odoo.conf y <b>reinicia Odoo</b> (unos segundos de corte).
+                            </div>
+                            <div t-if="config.isProduction and hasConfigChanges" class="o_pcm_kv">
+                                <span class="o_pcm_err">PRODUCCIÓN — escribí el nombre del entorno para confirmar:</span>
+                                <input type="text" class="o_pcm_input"
+                                       t-att-placeholder="config.envName"
+                                       t-model="config.typedName"/>
+                            </div>
+                            <div class="o_pcm_actions">
+                                <button class="o_pcm_btn o_pcm_btn_accent"
+                                        t-att-disabled="!canSaveConfig"
+                                        t-on-click="() => this.saveConfig()">
+                                    <i class="fa fa-save"/> Guardar y reiniciar
+                                </button>
+                                <span class="o_pcm_muted" t-if="!hasConfigChanges">Sin cambios.</span>
+                            </div>
+                        </div>
+                    </t>
                 </t>
             </t>
         </div>

@@ -1,14 +1,46 @@
 # -*- coding: utf-8 -*-
 """Instancia EC2: inventario (Fase 2) y acciones de operación (Fase 3)."""
+import base64
+import hashlib
 import json
 import logging
 import shlex
+import time
 
 from odoo import _, SUPERUSER_ID, fields, models
 from odoo.exceptions import UserError
+from odoo.tools import file_open
 
 from ..services import aws_ec2, aws_ssm
 from ..tools import bus, dates
+
+# --- Config del odoo.conf (Bloque B3) ---
+CONFIG_READ_SCRIPT_PATH = "primate_cloud_manager/data/config_read.py"
+CONFIG_APPLY_SCRIPT_PATH = "primate_cloud_manager/data/config_apply.py"
+# Parámetros EDITABLES (los que fallan "suave": límites/comportamiento).
+# tipo -> ("bool"|"int"|"enum", spec). Duplicado como capa 2 en config_apply.py.
+CONFIG_EDITABLE = {
+    "proxy_mode": ("bool", None),
+    "list_db": ("bool", None),
+    "workers": ("int", (0, 64)),
+    "max_cron_threads": ("int", (0, 16)),
+    "limit_time_cpu": ("int", (0, 86400)),
+    "limit_time_real": ("int", (0, 86400)),
+    "limit_request": ("int", (0, 2000000)),
+    "limit_memory_soft": ("int", (0, 2 ** 40)),
+    "limit_memory_hard": ("int", (0, 2 ** 40)),
+    "log_level": ("enum", {"debug", "info", "warn", "error", "critical",
+                           "debug_sql", "debug_rpc"}),
+}
+# READ-ONLY en v1: mal puestos IMPIDEN el arranque de Odoo (regla del usuario).
+CONFIG_READONLY = [
+    "db_host", "db_port", "db_user", "db_name", "data_dir",
+    "http_port", "http_interface", "addons_path", "server_wide_modules",
+]
+# Health check post-restart: timeout GENEROSO (Odoo tarda en levantar) para no
+# disparar un rollback innecesario. Poll cada HEALTH_POLL s hasta HEALTH_TIMEOUT.
+CONFIG_HEALTH_TIMEOUT = 90
+CONFIG_HEALTH_POLL = 5
 
 _logger = logging.getLogger(__name__)
 
@@ -349,6 +381,275 @@ class PrimateCloudEc2Instance(models.Model):
             else:
                 kept.append(line)
         return {"status": status, "text": "\n".join(kept), "cursor": cursor}
+
+    # --- Configuración del odoo.conf (Bloque B3) ---
+    def _render_config_script(self, path, tokens):
+        """Lee un script remoto de ``data/`` y reemplaza sus tokens ``%%...%%``."""
+        with file_open(path, "r") as handle:
+            script = handle.read()
+        for key, value in tokens.items():
+            script = script.replace("%%%%%s%%%%" % key, str(value))
+        return script
+
+    @staticmethod
+    def _python_heredoc(script_body):
+        """Corre un script Python por SSM como root, sin dejar archivo."""
+        return "sudo python3 - <<'PCM_PYEOF'\n%s\nPCM_PYEOF" % script_body
+
+    @staticmethod
+    def _config_marker(stdout, prefix):
+        """Primer valor de un marcador ``PCM_*:`` en el stdout."""
+        for line in (stdout or "").splitlines():
+            if line.startswith(prefix):
+                return line[len(prefix):].strip()
+        return ""
+
+    @staticmethod
+    def _config_markers(stdout, prefix):
+        """Todos los ``PCM_*:clave=valor`` de un prefijo → dict clave→valor."""
+        result = {}
+        for line in (stdout or "").splitlines():
+            if line.startswith(prefix):
+                key, _sep, value = line[len(prefix):].partition("=")
+                result[key.strip()] = value
+        return result
+
+    @staticmethod
+    def _config_field_meta():
+        """Metadata de los campos editables para que el front arme los widgets."""
+        meta = []
+        for key, (kind, spec) in CONFIG_EDITABLE.items():
+            entry = {"key": key, "type": kind}
+            if kind == "enum":
+                entry["options"] = sorted(spec)
+            elif kind == "int":
+                entry["min"], entry["max"] = spec
+            meta.append(entry)
+        return meta
+
+    def _parse_config_read(self, stdout):
+        """Separa la salida de config_read en editables/read-only + hash."""
+        editable, readonly = {}, {}
+        config_hash = self._config_marker(stdout, "PCM_HASH:")
+        for key, value in self._config_markers(stdout, "PCM_VAL:").items():
+            if key in CONFIG_EDITABLE:
+                editable[key] = value
+            elif key in CONFIG_READONLY:
+                readonly[key] = value
+        return {"editable": editable, "readonly": readonly,
+                "config_hash": config_hash}
+
+    def fetch_config(self):
+        """Lee el odoo.conf por SSM (allowlist + hash). Read-only, SÍNCRONO.
+
+        Solo emite parámetros de la allowlist: ``db_password``/``admin_passwd``
+        NUNCA se leen. Del archivo completo solo sale el hash (para el CAS de
+        concurrencia), nunca el contenido.
+        """
+        self.ensure_one()
+        if not self.provisioned_by_pcm:
+            raise UserError(_(
+                "La configuración solo se gestiona en instancias aprovisionadas "
+                "por PCM (paths conocidos)."))
+        script = self._render_config_script(CONFIG_READ_SCRIPT_PATH, {})
+        output = self._get_ssm_service().run_script(
+            self.aws_instance_id, self._python_heredoc(script),
+            region=self.region, comment="pcm config read", timeout=45,
+            agent_timeout=20)
+        return self._parse_config_read(output.get("stdout") or "")
+
+    def _validate_config(self, edits):
+        """Valida/castea los edits contra la allowlist (pura, testeable).
+
+        Devuelve ``{clave: valor_str}`` limpio o levanta ``UserError``. Un valor
+        que no castea (p. ej. ``limit_time_cpu = "abc"``) NUNCA llega al archivo.
+        """
+        clean = {}
+        for key, value in edits.items():
+            if key not in CONFIG_EDITABLE:
+                raise UserError(_("Parámetro no editable: %s.") % key)
+            kind, spec = CONFIG_EDITABLE[key]
+            if kind == "bool":
+                text = str(value)
+                if isinstance(value, bool) or text in (
+                        "True", "False", "true", "false", "1", "0"):
+                    clean[key] = ("True" if (value is True or text in
+                                  ("True", "true", "1")) else "False")
+                else:
+                    raise UserError(_("%s debe ser booleano.") % key)
+            elif kind == "int":
+                try:
+                    num = int(str(value).strip())
+                except (TypeError, ValueError):
+                    raise UserError(_("%s debe ser un entero.") % key)
+                low, high = spec
+                if not low <= num <= high:
+                    raise UserError(_(
+                        "%(k)s fuera de rango [%(lo)s, %(hi)s].",
+                        k=key, lo=low, hi=high))
+                clean[key] = str(num)
+            elif kind == "enum":
+                if str(value) not in spec:
+                    raise UserError(_("Valor inválido para %s.") % key)
+                clean[key] = str(value)
+        if "limit_memory_soft" in clean and "limit_memory_hard" in clean:
+            if int(clean["limit_memory_hard"]) < int(clean["limit_memory_soft"]):
+                raise UserError(_(
+                    "limit_memory_hard debe ser ≥ limit_memory_soft."))
+        return clean
+
+    def action_save_config(self, edits, expected_hash, typed_name=None):
+        """Valida, exige confirmación en prod y encola el guardado (reinicia)."""
+        self.ensure_one()
+        if not self.provisioned_by_pcm:
+            raise UserError(_("Solo se edita la config de instancias PCM."))
+        clean = self._validate_config(edits)
+        if not clean:
+            raise UserError(_("No hay cambios para guardar."))
+        if not expected_hash:
+            raise UserError(_(
+                "Falta la referencia del archivo; recargá la configuración."))
+        environment = self.environment_id
+        if environment and environment.env_type == "production":
+            if (typed_name or "").strip() != (environment.name or "").strip():
+                raise UserError(_(
+                    "Editar la configuración en PRODUCCIÓN reinicia Odoo (corte "
+                    "de servicio). Escribí el nombre exacto del entorno para "
+                    "confirmar."))
+        self.with_delay(
+            description=_("Config EC2: %s") % self.name
+        ).job_save_config(clean, expected_hash)
+        return self._notify(_(
+            "Guardado de configuración encolado (reinicia Odoo unos segundos)."))
+
+    def job_save_config(self, edits, expected_hash):
+        """Job: aplica los cambios, reinicia, verifica salud y hace rollback si falla."""
+        self.ensure_one()
+        title = _("Editar config: %s") % self.name
+        ssm = self._get_ssm_service()
+        edits_b64 = base64.b64encode(
+            json.dumps(edits).encode("utf-8")).decode("ascii")
+        apply_script = self._render_config_script(
+            CONFIG_APPLY_SCRIPT_PATH,
+            {"EDITS_B64": edits_b64, "EXPECTED_HASH": expected_hash})
+        out = ssm.run_script(
+            self.aws_instance_id, self._python_heredoc(apply_script),
+            region=self.region, comment="pcm config apply", timeout=60,
+            agent_timeout=30)
+        stdout = out.get("stdout") or ""
+        result = self._config_marker(stdout, "PCM_RESULT:")
+
+        if result == "stale":
+            self._log("config_edit", result="failed", name=title,
+                      error_message=_("El archivo cambió externamente; no se "
+                                      "aplicó nada."))
+            return self._notify_config_done(False, _(
+                "La configuración cambió por fuera de PCM; recargá y reintentá."))
+        if result == "invalid":
+            bad = self._config_marker(stdout, "PCM_ERROR:")
+            self._log("config_edit", result="failed", name=title,
+                      error_message=_("Valor inválido: %s") % bad)
+            return self._notify_config_done(False, _(
+                "Valor inválido (%s); no se aplicó.") % bad)
+        if result != "applied":
+            self._log("config_edit", result="failed", name=title,
+                      error_message=(stdout or "")[:500])
+            return self._notify_config_done(False, _(
+                "No se pudo aplicar la configuración."))
+
+        backup = self._config_marker(stdout, "PCM_BAK:")
+        port = self._config_marker(stdout, "PCM_HTTP_PORT:") or "8069"
+        # ¿Odoo servía HTTP local ANTES del cambio? (capturado por config_apply
+        # con la config vieja aún corriendo). Decide degraded vs failed.
+        http_was_ok = self._config_marker(stdout, "PCM_HTTP_WAS:") == "ok"
+        old_values = self._config_markers(stdout, "PCM_OLD:")
+        diff = self._config_diff_text(old_values, edits)
+
+        # Reinicio + health check con timeout generoso.
+        ssm.run_script(self.aws_instance_id, "sudo systemctl restart odoo",
+                       region=self.region, comment="pcm config restart",
+                       timeout=45, agent_timeout=20)
+        health = self._config_health_check(port, http_was_ok=http_was_ok)
+
+        if health == "failed":
+            self._config_rollback(backup)
+            self._log("config_edit", result="failed", name=title,
+                      error_message=_(
+                          "El reinicio dejó Odoo caído; se restauró la config "
+                          "anterior.\nCambios intentados:\n%s") % diff)
+            return self._notify_config_done(False, _(
+                "El cambio dejó Odoo sin arrancar; se restauró la config "
+                "anterior y se reinició."))
+
+        note = "" if health == "http" else _(
+            " (Odoo activo; HTTP local no verificable — proxy/socket).")
+        self._log("config_edit", result="success", name=title,
+                  error_message=_("Cambios aplicados:\n%s") % diff)
+        return self._notify_config_done(True, _(
+            "Configuración guardada y Odoo reiniciado.%s") % note)
+
+    def _config_health_check(self, port, http_was_ok=False, _sleep=time.sleep):
+        """Sondea salud tras el restart. Devuelve 'http' | 'degraded' | 'failed'.
+
+        - Odoo inactivo tras el timeout → 'failed' (rollback).
+        - Activo + HTTP local OK → 'http'.
+        - Activo pero SIN HTTP local: si ANTES del cambio servía
+          (``http_was_ok``) el cambio ROMPIÓ el serving → 'failed' (rollback);
+          si ya no servía (proxy_mode/socket) → 'degraded' (no rollback).
+
+        Timeout generoso para no marcar falso-caído mientras Odoo levanta
+        (``_sleep`` inyectable).
+        """
+        ssm = self._get_ssm_service()
+        cmd = ("sudo systemctl is-active odoo | sed 's/^/PCM_ACTIVE:/'; "
+               "curl -sf -m 3 http://127.0.0.1:%s/web/health >/dev/null 2>&1 "
+               "&& echo PCM_HTTP:ok || echo PCM_HTTP:no") % port
+        waited = 0
+        last_active = False
+        while True:
+            out = (ssm.run_script(
+                self.aws_instance_id, cmd, region=self.region,
+                comment="pcm config health", timeout=20, agent_timeout=20
+            ).get("stdout") or "")
+            last_active = "PCM_ACTIVE:active" in out
+            if last_active and "PCM_HTTP:ok" in out:
+                return "http"
+            if waited >= CONFIG_HEALTH_TIMEOUT:
+                break
+            _sleep(CONFIG_HEALTH_POLL)
+            waited += CONFIG_HEALTH_POLL
+        if not last_active:
+            return "failed"
+        # Activo pero sin HTTP: si antes servía, el cambio lo rompió → rollback.
+        return "failed" if http_was_ok else "degraded"
+
+    def _config_rollback(self, backup):
+        """Restaura el backup del conf y reinicia (la instancia no queda caída)."""
+        if not backup:
+            return
+        cmd = ("sudo mv %s /etc/odoo/odoo.conf "
+               "&& sudo chown odoo:odoo /etc/odoo/odoo.conf "
+               "&& sudo chmod 640 /etc/odoo/odoo.conf "
+               "&& sudo systemctl restart odoo") % shlex.quote(backup)
+        self._get_ssm_service().run_script(
+            self.aws_instance_id, cmd, region=self.region,
+            comment="pcm config rollback", timeout=45, agent_timeout=20)
+
+    @staticmethod
+    def _config_diff_text(old_values, new_values):
+        """Diff legible ``clave: viejo → nuevo`` para la bitácora."""
+        lines = []
+        for key, new_value in new_values.items():
+            old_value = old_values.get(key, "")
+            lines.append("%s: %s → %s" % (
+                key, old_value if old_value != "" else "(ausente)", new_value))
+        return "\n".join(lines)
+
+    def _notify_config_done(self, ok, message):
+        """Avisa el resultado del guardado por el bus (job async)."""
+        bus.toast(self.env, message,
+                  ntype="success" if ok else "danger", sticky=not ok)
+        return True
 
     def _log(self, action_type, result="success", error_message=None, aws_request_id=None, name=None):
         """Atajo para registrar en la bitácora sobre esta instancia."""

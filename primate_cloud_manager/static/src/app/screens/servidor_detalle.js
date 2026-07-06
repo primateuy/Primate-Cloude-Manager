@@ -48,6 +48,12 @@ export class ServidorDetalle extends Component {
             source: "odoo", lines: 200, grep: "", text: "", loading: false,
             streaming: false, cursor: false,
         });
+        // Editor del odoo.conf (tab Config, Bloque B3). Carga perezosa.
+        this.config = useState({
+            loaded: false, loading: false, status: "", error: "",
+            editable: {}, readonly: {}, meta: [], hash: false, work: {},
+            isProduction: false, envName: "", typedName: "", saving: false,
+        });
         this._streamTimer = null;   // handle del setInterval (no reactivo)
         this._polling = false;      // evita solapar polls si uno tarda
         this._onVisibility = () => this._handleVisibility();
@@ -81,6 +87,87 @@ export class ServidorDetalle extends Component {
         this.state.tab = tab;
         // Refleja la tab en el hash del router (deep-link que sobrevive al F5).
         this.props.onTabChange?.(tab);
+        // Carga perezosa del odoo.conf al abrir la tab Config (lectura SSM).
+        if (tab === "config" && !this.config.loaded) {
+            this.loadConfig();
+        }
+    }
+
+    // --- Config (odoo.conf) -------------------------------------------------
+    async loadConfig() {
+        this.config.loading = true;
+        this.config.error = "";
+        const res = await this.orm.call(
+            "primate.cloud.dashboard", "get_instance_config",
+            [this.props.serverId]
+        );
+        this.config.loading = false;
+        this.config.loaded = true;
+        this.config.status = res.status;
+        if (res.status !== "ok") {
+            this.config.error = res.text || "No se pudo leer la configuración.";
+            return;
+        }
+        this.config.editable = res.editable || {};
+        this.config.readonly = res.readonly || {};
+        this.config.meta = res.meta || [];
+        this.config.hash = res.config_hash;
+        this.config.isProduction = res.is_production;
+        this.config.envName = res.environment_name || "";
+        this.config.work = { ...(res.editable || {}) };
+        this.config.typedName = "";
+    }
+
+    // Escribe un campo editado en la copia de trabajo (bool como "True"/"False").
+    setConfigField(key, value) {
+        this.config.work = { ...this.config.work, [key]: value };
+    }
+
+    // Solo los campos realmente cambiados (compara trabajo vs original).
+    get configChanged() {
+        const out = {};
+        for (const m of this.config.meta) {
+            const cur = String(this.config.work[m.key] ?? "");
+            const orig = String(this.config.editable[m.key] ?? "");
+            if (cur !== orig) {
+                out[m.key] = this.config.work[m.key];
+            }
+        }
+        return out;
+    }
+
+    get hasConfigChanges() {
+        return Object.keys(this.configChanged).length > 0;
+    }
+
+    // En prod el guardado exige tipear el nombre exacto del entorno.
+    get canSaveConfig() {
+        if (!this.hasConfigChanges || this.config.saving) {
+            return false;
+        }
+        if (this.config.isProduction) {
+            return this.config.typedName.trim() === this.config.envName.trim();
+        }
+        return true;
+    }
+
+    async saveConfig() {
+        const edits = this.configChanged;
+        this.config.saving = true;
+        const res = await this.orm.call(
+            "primate.cloud.dashboard", "save_instance_config",
+            [this.props.serverId, edits, this.config.hash,
+             this.config.typedName || false]
+        );
+        this.config.saving = false;
+        if (res.status === "ok") {
+            this.env.pcm?.notify(
+                "Guardado encolado; Odoo se reinicia unos segundos.",
+                { type: "success" });
+        } else {
+            this.env.pcm?.notify(res.text || "No se pudo guardar",
+                                 { type: "danger" });
+        }
     }
 
     // --- Dashboard: paths + comandos listos para copiar -----------------------

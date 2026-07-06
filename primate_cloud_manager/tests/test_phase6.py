@@ -46,6 +46,32 @@ class TestDeployment(TransactionCase):
             type(self.instance), "_get_ssm_service", return_value=fake
         ), fake
 
+    def _patch_ssm_routed(self, routes):
+        """SSM falso que responde según un substring del comment. Un valor lista
+        se consume como secuencia (para simular polls de health sucesivos)."""
+        fake = mock.Mock()
+        counters = {}
+
+        def run_script(instance_id, cmd, **kw):
+            comment = kw.get("comment", "")
+            for key, resp in routes.items():
+                if key in comment:
+                    if isinstance(resp, list):
+                        idx = min(counters.get(key, 0), len(resp) - 1)
+                        counters[key] = counters.get(key, 0) + 1
+                        return resp[idx]
+                    return resp
+            return {"stdout": "", "status": "Success"}
+
+        fake.run_script.side_effect = run_script
+        return mock.patch.object(
+            type(self.instance), "_get_ssm_service", return_value=fake
+        ), fake
+
+    def _last_config_log(self):
+        return self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "config_edit")], order="id desc", limit=1)
+
     # --- Panel (dashboard) ---
     def test_dashboard_data(self):
         data = self.env["primate.cloud.dashboard"].get_dashboard_data()
@@ -181,6 +207,123 @@ class TestDeployment(TransactionCase):
             self.instance.id, "odoo", "s=prev")
         self.assertEqual(res["status"], "error")
         self.assertEqual(res["cursor"], "s=prev")
+
+    # --- Editar config / odoo.conf (Bloque B3) ---
+    def test_validate_config_castea_y_rechaza(self):
+        inst = self.instance
+        clean = inst._validate_config(
+            {"workers": "2", "proxy_mode": True, "log_level": "info"})
+        self.assertEqual(
+            clean, {"workers": "2", "proxy_mode": "True", "log_level": "info"})
+        with self.assertRaises(UserError):   # no castea
+            inst._validate_config({"limit_time_cpu": "abc"})
+        with self.assertRaises(UserError):   # fuera de rango
+            inst._validate_config({"workers": "999"})
+        with self.assertRaises(UserError):   # no editable
+            inst._validate_config({"db_host": "x"})
+        with self.assertRaises(UserError):   # enum inválido
+            inst._validate_config({"log_level": "loud"})
+        with self.assertRaises(UserError):   # coherencia soft/hard
+            inst._validate_config(
+                {"limit_memory_soft": "200", "limit_memory_hard": "100"})
+
+    def test_config_read_parse_separa_y_omite(self):
+        stdout = ("PCM_HASH:abc123\nPCM_VAL:proxy_mode=True\n"
+                  "PCM_VAL:db_host=localhost\nPCM_VAL:limit_time_cpu=60\n")
+        data = self.instance._parse_config_read(stdout)
+        self.assertEqual(data["config_hash"], "abc123")
+        self.assertEqual(data["editable"]["limit_time_cpu"], "60")
+        self.assertEqual(data["readonly"]["db_host"], "localhost")
+        self.assertNotIn("db_password", data["editable"])
+        self.assertNotIn("db_password", data["readonly"])
+
+    def test_save_config_prod_exige_nombre(self):
+        self.instance.provisioned_by_pcm = True
+        self.env_rec.env_type = "production"
+        self.env_rec.name = "Prod X"
+        with self.assertRaises(UserError):
+            self.instance.action_save_config(
+                {"workers": "2"}, "h", typed_name="mal")
+        # Nombre correcto → encola sin error (no corre el job).
+        self.instance.action_save_config(
+            {"workers": "2"}, "h", typed_name="Prod X")
+
+    def test_job_save_config_ok_registra_diff(self):
+        self.instance.provisioned_by_pcm = True
+        apply_out = {"stdout": (
+            "PCM_OLD:workers=0\nPCM_BAK:/etc/odoo/odoo.conf.pcm-bak-1\n"
+            "PCM_HTTP_PORT:8069\nPCM_RESULT:applied\n"), "status": "Success"}
+        patcher, fake = self._patch_ssm_routed({"config apply": apply_out})
+        with patcher, mock.patch.object(
+                type(self.instance), "_config_health_check", return_value="http"):
+            self.instance.job_save_config({"workers": "2"}, "h")
+        log = self._last_config_log()
+        self.assertEqual(log.result, "success")
+        self.assertIn("workers: 0 → 2", log.error_message)
+        comments = [c.kwargs.get("comment", "")
+                    for c in fake.run_script.call_args_list]
+        self.assertTrue(any("restart" in c for c in comments))
+        self.assertFalse(any("rollback" in c for c in comments))
+
+    def test_job_save_config_stale_no_reinicia(self):
+        self.instance.provisioned_by_pcm = True
+        patcher, fake = self._patch_ssm_routed(
+            {"config apply": {"stdout": "PCM_RESULT:stale\n", "status": "Success"}})
+        with patcher:
+            self.instance.job_save_config({"workers": "2"}, "viejo")
+        self.assertEqual(self._last_config_log().result, "failed")
+        comments = [c.kwargs.get("comment", "")
+                    for c in fake.run_script.call_args_list]
+        self.assertFalse(any("restart" in c for c in comments))  # NO reinició
+
+    def test_job_save_config_rollback_si_no_levanta(self):
+        self.instance.provisioned_by_pcm = True
+        apply_out = {"stdout": (
+            "PCM_OLD:workers=0\nPCM_BAK:/etc/odoo/odoo.conf.pcm-bak-1\n"
+            "PCM_HTTP_PORT:8069\nPCM_RESULT:applied\n"), "status": "Success"}
+        patcher, fake = self._patch_ssm_routed({"config apply": apply_out})
+        with patcher, mock.patch.object(
+                type(self.instance), "_config_health_check", return_value="failed"):
+            self.instance.job_save_config({"workers": "2"}, "h")
+        self.assertEqual(self._last_config_log().result, "failed")
+        comments = [c.kwargs.get("comment", "")
+                    for c in fake.run_script.call_args_list]
+        self.assertTrue(any("rollback" in c for c in comments))  # restauró
+
+    def test_config_health_check_espera_y_estados(self):
+        """No marca caído demasiado rápido; distingue http/degraded/failed."""
+        self.instance.provisioned_by_pcm = True
+        slept = []
+        _sleep = lambda s: slept.append(s)   # noqa: E731
+        # (a) activo+http recién al 3er poll → 'http', esperó 2 veces.
+        seq = [{"stdout": "PCM_ACTIVE:activating\nPCM_HTTP:no\n", "status": "S"},
+               {"stdout": "PCM_ACTIVE:activating\nPCM_HTTP:no\n", "status": "S"},
+               {"stdout": "PCM_ACTIVE:active\nPCM_HTTP:ok\n", "status": "S"}]
+        with self._patch_ssm_routed({"config health": seq})[0]:
+            self.assertEqual(
+                self.instance._config_health_check("8069", _sleep=_sleep), "http")
+        self.assertEqual(len(slept), 2)   # esperó, no marcó caído al primer no
+        # (b) nunca activo → 'failed' tras agotar el timeout.
+        with self._patch_ssm_routed(
+                {"config health": {"stdout": "PCM_ACTIVE:failed\nPCM_HTTP:no\n",
+                                   "status": "S"}})[0]:
+            self.assertEqual(
+                self.instance._config_health_check("8069", _sleep=_sleep), "failed")
+        # (c) activo sin HTTP y NO servía antes (proxy/socket) → 'degraded'.
+        with self._patch_ssm_routed(
+                {"config health": {"stdout": "PCM_ACTIVE:active\nPCM_HTTP:no\n",
+                                   "status": "S"}})[0]:
+            self.assertEqual(
+                self.instance._config_health_check(
+                    "8069", http_was_ok=False, _sleep=_sleep), "degraded")
+        # (d) activo sin HTTP pero SÍ servía antes → el cambio lo rompió →
+        # 'failed' (dispara rollback; no se degrada un Odoo que quedó sin servir).
+        with self._patch_ssm_routed(
+                {"config health": {"stdout": "PCM_ACTIVE:active\nPCM_HTTP:no\n",
+                                   "status": "S"}})[0]:
+            self.assertEqual(
+                self.instance._config_health_check(
+                    "8069", http_was_ok=True, _sleep=_sleep), "failed")
 
     # --- Creación / nombre ---
     def test_create_asigna_referencia(self):

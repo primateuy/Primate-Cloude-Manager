@@ -488,6 +488,46 @@ class PrimateCloudDashboard(models.AbstractModel):
             return {"status": "error", "text": str(error), "cursor": from_cursor}
 
     @api.model
+    def get_instance_config(self, instance_id):
+        """Lee el odoo.conf de una instancia (allowlist + hash) para la tab Config.
+
+        Solo instancias PCM. Nunca devuelve db_password/admin_passwd (allowlist).
+        """
+        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not inst:
+            return {"status": "error", "text": _("Instancia no encontrada.")}
+        if not inst.provisioned_by_pcm:
+            return {"status": "error",
+                    "text": _("Requiere una instancia aprovisionada por PCM.")}
+        if inst.instance_state != "running":
+            return {"status": "error",
+                    "text": _("La instancia no está corriendo.")}
+        try:
+            data = inst.fetch_config()
+            data["status"] = "ok"
+            data["meta"] = inst._config_field_meta()
+            data["is_production"] = bool(
+                inst.environment_id
+                and inst.environment_id.env_type == "production")
+            data["environment_name"] = inst.environment_id.name or ""
+            return data
+        except Exception as error:  # noqa: BLE001
+            return {"status": "error", "text": str(error)}
+
+    @api.model
+    def save_instance_config(self, instance_id, edits, expected_hash,
+                             typed_name=None):
+        """Valida y encola el guardado del odoo.conf (reinicia Odoo)."""
+        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not inst:
+            return {"status": "error", "text": _("Instancia no encontrada.")}
+        try:
+            inst.action_save_config(edits, expected_hash, typed_name=typed_name)
+            return {"status": "ok"}
+        except Exception as error:  # noqa: BLE001 - error legible a la UI
+            return {"status": "error", "text": str(error)}
+
+    @api.model
     def get_cost_overview(self, account_id=None):
         """Resumen de costos para la pantalla de Costos (lee cost.entry).
 

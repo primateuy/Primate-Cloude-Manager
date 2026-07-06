@@ -20,6 +20,7 @@ ACTION_TYPES = [
     ("ec2_terminate", "Terminar EC2"),
     ("ec2_create", "Crear EC2"),
     ("ssm_command", "Ejecutar comando SSM"),
+    ("config_edit", "Editar configuración (odoo.conf)"),
     ("rds_create", "Crear RDS"),
     ("dns_create", "Crear registro DNS"),
     ("dns_update", "Actualizar registro DNS"),
