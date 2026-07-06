@@ -396,6 +396,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "account_name": inst.account_id.display_name or "",
             "environment_id": env.id,
             "environment_name": env.display_name or "",
+            "environment_real_name": env.name or "" if env else "",
+            "is_production": bool(env and env.env_type == "production"),
             "main_url": env.main_url or "" if env else "",
             "runtime": {
                 "python": inst.runtime_python_version or "",
@@ -512,6 +514,32 @@ class PrimateCloudDashboard(models.AbstractModel):
             data["environment_name"] = inst.environment_id.name or ""
             return data
         except Exception as error:  # noqa: BLE001
+            return {"status": "error", "text": str(error)}
+
+    @api.model
+    def list_instance_db_users(self, instance_id, db):
+        """Usuarios internos activos de una BD de la instancia (para Login as)."""
+        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not inst or inst.instance_state != "running":
+            return {"status": "error", "text": _("Instancia no disponible.")}
+        try:
+            return {"status": "ok", "users": inst.list_db_users(db)}
+        except Exception as error:  # noqa: BLE001
+            return {"status": "error", "text": str(error)}
+
+    @api.model
+    def login_as(self, instance_id, db, uid, login, is_admin_target=False,
+                 admin_ack=False, typed_name=None):
+        """Genera el enlace de impersonación (con fricción + auditoría). B5."""
+        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not inst:
+            return {"status": "error", "text": _("Instancia no encontrada.")}
+        try:
+            res = inst.action_login_as(
+                db, uid, login, is_admin_target=is_admin_target,
+                admin_ack=admin_ack, typed_name=typed_name)
+            return {"status": "ok", "url": res["url"]}
+        except Exception as error:  # noqa: BLE001 - error legible a la UI
             return {"status": "error", "text": str(error)}
 
     @api.model

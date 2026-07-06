@@ -407,6 +407,71 @@ class TestDeployment(TransactionCase):
             [("action_type", "=", "addon_add")], order="id desc", limit=1)
         self.assertEqual(log.result, "partial")
 
+    # --- Login as / impersonación (Bloque B5) ---
+    def _unb64url(self, s):
+        import base64
+        return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+    def test_impersonate_token_firma_y_verifica(self):
+        import json
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey)
+        self.instance.public_ip = "1.2.3.4"
+        token = self.instance._make_impersonate_token("demo", 7, "juan")
+        payload_b64, sig_b64 = token.split(".")
+        payload = json.loads(self._unb64url(payload_b64))
+        self.assertEqual(payload["db"], "demo")
+        self.assertEqual(payload["uid"], 7)
+        self.assertEqual(payload["login"], "juan")
+        self.assertIn("nonce", payload)
+        self.assertIn("exp", payload)
+        # La pública de la cuenta valida la firma sobre el payload.
+        pub = Ed25519PublicKey.from_public_bytes(
+            __import__("base64").b64decode(self.account.impersonate_public_key()))
+        pub.verify(self._unb64url(sig_b64), self._unb64url(payload_b64))  # no raise
+        with self.assertRaises(Exception):   # payload alterado → firma inválida
+            pub.verify(self._unb64url(sig_b64),
+                       self._unb64url(payload_b64) + b"x")
+
+    def test_login_as_gating_y_auditoria(self):
+        inst = self.instance
+        inst.public_ip = "1.2.3.4"
+        admin_grp = self.env.ref("primate_cloud_manager.group_cloud_admin")
+        # Sin grupo admin cloud → rechaza.
+        admin_grp.write({"user_ids": [(3, self.env.user.id)]})
+        with self.assertRaises(UserError):
+            inst.action_login_as("demo", 7, "juan")
+        admin_grp.write({"user_ids": [(4, self.env.user.id)]})
+        # Prod exige el nombre exacto.
+        self.env_rec.env_type = "production"
+        self.env_rec.name = "Prod Z"
+        with self.assertRaises(UserError):
+            inst.action_login_as("demo", 7, "juan", typed_name="mal")
+        # Destino admin sin ack → rechaza (nunca un click más).
+        self.env_rec.env_type = "development"
+        with self.assertRaises(UserError):
+            inst.action_login_as("demo", 7, "juan",
+                                 is_admin_target=True, admin_ack=False)
+        # Camino normal → URL + auditoría (quién→a quién).
+        res = inst.action_login_as("demo", 7, "juan")
+        self.assertIn("/pcm/impersonate?token=", res["url"])
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "impersonate")], order="id desc", limit=1)
+        self.assertEqual(log.result, "success")
+        self.assertIn("juan", log.error_message)
+
+    def test_login_as_admin_target_marca_auditoria(self):
+        inst = self.instance
+        inst.public_ip = "1.2.3.4"
+        admin_grp = self.env.ref("primate_cloud_manager.group_cloud_admin")
+        admin_grp.write({"user_ids": [(4, self.env.user.id)]})
+        self.env_rec.env_type = "development"
+        inst.action_login_as("demo", 2, "admin",
+                             is_admin_target=True, admin_ack=True)
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "impersonate")], order="id desc", limit=1)
+        self.assertIn("ADMIN", log.error_message)   # marca distinta en auditoría
+
     # --- Creación / nombre ---
     def test_create_asigna_referencia(self):
         dep = self._deploy()

@@ -188,6 +188,50 @@
                         <div t-else="" class="o_pcm_muted">Sin bases de datos asociadas.</div>
                     </div>
 
+                    <!-- Login as / impersonación (Bloque B5) -->
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Login as…</h2>
+                        <button class="o_pcm_btn" t-att-disabled="d.state !== 'running'"
+                                t-on-click="() => this.toggleLoginAs()">
+                            <i class="fa fa-user-secret"/> Iniciar sesión como…
+                        </button>
+                    </div>
+                    <div class="o_pcm_card" t-if="loginas.open">
+                        <div class="o_pcm_actions">
+                            <select class="o_pcm_select" t-model="loginas.db">
+                                <option t-foreach="d.databases or []" t-as="db" t-key="db.id"
+                                        t-att-value="db.name" t-out="db.name"/>
+                            </select>
+                            <button class="o_pcm_btn" t-on-click="() => this.loadLoginAsUsers()">
+                                <i class="fa fa-users"/> Listar usuarios
+                            </button>
+                        </div>
+                        <div t-if="d.is_production" class="o_pcm_kv">
+                            <span class="o_pcm_err">PRODUCCIÓN — escribí el nombre del entorno para confirmar:</span>
+                            <input type="text" class="o_pcm_input"
+                                   t-att-placeholder="d.environment_real_name"
+                                   t-model="loginas.typedName"/>
+                        </div>
+                        <div t-if="loginas.loading" class="o_pcm_muted">Listando usuarios…</div>
+                        <div t-foreach="loginas.users" t-as="u" t-key="u.id" class="o_pcm_line">
+                            <div class="o_pcm_line_main">
+                                <span class="o_pcm_line_name" t-out="u.name"/>
+                                <span class="o_pcm_muted o_pcm_mono" t-out="u.login"/>
+                                <span t-if="u.is_admin" class="o_pcm_err"> · ADMIN</span>
+                            </div>
+                            <button class="o_pcm_btn o_pcm_btn_mini"
+                                    t-att-class="{ o_pcm_btn_danger: u.is_admin }"
+                                    t-on-click="() => this.doLoginAs(u)">
+                                <i class="fa fa-sign-in"/> Entrar
+                            </button>
+                        </div>
+                        <div class="o_pcm_muted o_pcm_note">
+                            <i class="fa fa-info-circle"/>
+                            Abre el Odoo del cliente ya logueado (sesión same-origin, sin leer la
+                            contraseña). Queda registrado en la auditoría de los dos lados.
+                        </div>
+                    </div>
+
                     <!-- Métricas (Fase 9): RAM/disco = "requiere agente" -->
                     <div class="o_pcm_section_head o_pcm_section_bar">
                         <h2>Métricas</h2>

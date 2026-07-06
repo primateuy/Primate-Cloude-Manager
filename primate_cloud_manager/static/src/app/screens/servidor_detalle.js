@@ -59,6 +59,10 @@ export class ServidorDetalle extends Component {
             open: false, github_url: "", configured_branch: "",
             repo_type: "custom_client", github_token: "", saving: false,
         });
+        // Login as / impersonación (tab Dashboard, Bloque B5).
+        this.loginas = useState({
+            open: false, db: "", users: [], loading: false, typedName: "",
+        });
         this._streamTimer = null;   // handle del setInterval (no reactivo)
         this._polling = false;      // evita solapar polls si uno tarda
         this._onVisibility = () => this._handleVisibility();
@@ -298,6 +302,62 @@ export class ServidorDetalle extends Component {
 
     async refreshMetrics() {
         await this.runMethod("action_refresh_metrics");
+    }
+
+    // --- Login as / impersonación (Bloque B5) --------------------------------
+    toggleLoginAs() {
+        this.loginas.open = !this.loginas.open;
+        if (this.loginas.open && !this.loginas.db) {
+            const dbs = this.d.databases || [];
+            this.loginas.db = dbs.length ? dbs[0].name : "";
+        }
+    }
+
+    async loadLoginAsUsers() {
+        if (!this.loginas.db) {
+            this.env.pcm?.notify("Elegí una base de datos", { type: "warning" });
+            return;
+        }
+        this.loginas.loading = true;
+        this.loginas.users = [];
+        const res = await this.orm.call(
+            "primate.cloud.dashboard", "list_instance_db_users",
+            [this.props.serverId, this.loginas.db]
+        );
+        this.loginas.loading = false;
+        if (res.status === "ok") {
+            this.loginas.users = res.users || [];
+        } else {
+            this.env.pcm?.notify(res.text || "No se pudo listar usuarios",
+                                 { type: "danger" });
+        }
+    }
+
+    async doLoginAs(user) {
+        // Destino con rol admin → paso extra explícito, nunca un click más.
+        let adminAck = false;
+        if (user.is_admin) {
+            adminAck = window.confirm(
+                `"${user.login}" tiene rol de ADMINISTRACIÓN. ¿Confirmás ` +
+                `impersonar un administrador? (queda marcado en la auditoría)`);
+            if (!adminAck) {
+                return;
+            }
+        }
+        const res = await this.orm.call(
+            "primate.cloud.dashboard", "login_as",
+            [this.props.serverId, this.loginas.db, user.id, user.login,
+             user.is_admin, adminAck, this.loginas.typedName || false]
+        );
+        if (res.status === "ok") {
+            // Sesión same-origin: se abre el Odoo del cliente ya logueado.
+            window.open(res.url, "_blank", "noopener");
+            this.env.pcm?.notify("Abriendo sesión como " + user.login,
+                                 { type: "success" });
+        } else {
+            this.env.pcm?.notify(res.text || "No se pudo iniciar la sesión",
+                                 { type: "danger" });
+        }
     }
 
     // --- Logs on-demand (SSM). No persiste; se muestra y se puede descargar. ---

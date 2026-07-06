@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Deshabilitado por default: habilitarlo es un acto explícito de PCM. -->
+        <record id="pcm_imp_enabled" model="ir.config_parameter">
+            <field name="key">pcm.impersonate.enabled</field>
+            <field name="value">False</field>
+        </record>
+        <!-- Epoch: subirlo corta las sesiones de soporte YA abiertas. -->
+        <record id="pcm_imp_epoch" model="ir.config_parameter">
+            <field name="key">pcm.impersonate.epoch</field>
+            <field name="value">0</field>
+        </record>
+        <!-- Gancho del banner "sesión iniciada por soporte": OFF por default. -->
+        <record id="pcm_imp_banner" model="ir.config_parameter">
+            <field name="key">pcm.impersonate.banner</field>
+            <field name="value">False</field>
+        </record>
+        <!-- Vida máxima de una sesión de soporte (horas). -->
+        <record id="pcm_imp_max_hours" model="ir.config_parameter">
+            <field name="key">pcm.impersonate.session_max_hours</field>
+            <field name="value">8</field>
+        </record>
+    </data>
+</odoo>

@@ -6,6 +6,7 @@ import json
 import logging
 import shlex
 import time
+import uuid
 
 from odoo import _, SUPERUSER_ID, fields, models
 from odoo.exceptions import UserError
@@ -765,6 +766,209 @@ class PrimateCloudEc2Instance(models.Model):
             return int((out.get("stdout") or "0").strip().split("\n")[0])
         except (ValueError, IndexError):
             return 0
+
+    # --- Login as / impersonación (Bloque B5) ---
+    def _impersonate_base_url(self):
+        """URL base del Odoo del cliente (dominio https, o IP pública http)."""
+        self.ensure_one()
+        env = self.environment_id
+        if env and env.main_url:
+            return "https://%s" % env.main_url.rstrip("/")
+        return "http://%s" % (self.public_ip or "")
+
+    def _make_impersonate_token(self, db, uid, login, admin_ack=False):
+        """Arma y FIRMA (Ed25519) el token de un solo uso, corto (60 s)."""
+        self.ensure_one()
+        payload = {
+            "db": db, "uid": int(uid), "login": login,
+            "env_id": self.environment_id.id,
+            "exp": time.time() + 60,
+            "nonce": uuid.uuid4().hex,
+            "admin": self.env.user.login,
+        }
+        if admin_ack:
+            payload["admin_ack"] = True
+        payload_bytes = json.dumps(
+            payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        signature = self.account_id.sign_impersonate_token(payload_bytes)
+
+        def b64url(raw):
+            return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        return "%s.%s" % (b64url(payload_bytes), b64url(signature))
+
+    def list_db_users(self, db):
+        """Lista usuarios INTERNOS activos de una BD remota (SSM psql, sin creds).
+
+        Devuelve ``[{id, login, name, is_admin}]``. El admin se marca (impersonar
+        un rol de administración exige un paso extra en la UI + en el token).
+        """
+        self.ensure_one()
+        sql = (
+            "SELECT u.id, u.login, COALESCE(pp.name, u.login), "
+            "EXISTS(SELECT 1 FROM res_groups_users_rel r "
+            "JOIN ir_model_data d ON d.model='res.groups' AND d.res_id=r.gid "
+            "AND d.module='base' AND d.name='group_system' WHERE r.uid=u.id) "
+            "FROM res_users u JOIN res_partner pp ON pp.id=u.partner_id "
+            "WHERE u.active AND NOT u.share AND u.login NOT IN ('__system__') "
+            "ORDER BY u.login")
+        out = self._get_ssm_service().run_script(
+            self.aws_instance_id,
+            "sudo -u postgres psql -d %s -tAF'|' -c %s"
+            % (shlex.quote(db), shlex.quote(sql)),
+            region=self.region, comment="pcm impersonate users", timeout=45,
+            agent_timeout=20)
+        users = []
+        for line in (out.get("stdout") or "").splitlines():
+            parts = line.split("|")
+            if len(parts) >= 4 and parts[0].strip().isdigit():
+                users.append({
+                    "id": int(parts[0]), "login": parts[1],
+                    "name": parts[2], "is_admin": parts[3].strip() == "t",
+                })
+        return users
+
+    def action_login_as(self, db, uid, login, is_admin_target=False,
+                        admin_ack=False, typed_name=None):
+        """Genera el enlace de impersonación con toda la fricción + auditoría.
+
+        Solo ``group_cloud_admin``. Prod → tipear el nombre del entorno. Destino
+        admin → paso extra (``admin_ack``). AUDITA SIEMPRE (aunque no se complete
+        el redirect). Devuelve ``{"url": ...}``.
+        """
+        self.ensure_one()
+        if not self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"):
+            raise UserError(_("Solo un administrador cloud puede impersonar."))
+        environment = self.environment_id
+        is_prod = bool(environment and environment.env_type == "production")
+        if is_prod and (typed_name or "").strip() != (
+                environment.name or "").strip():
+            raise UserError(_(
+                "Impersonar en PRODUCCIÓN: escribí el nombre exacto del entorno "
+                "para confirmar."))
+        if is_admin_target and not admin_ack:
+            raise UserError(_(
+                "El usuario destino tiene rol de administración: requiere una "
+                "confirmación extra explícita."))
+        # Auditoría SIEMPRE (quién → a quién, BD, entorno, prod, cuándo).
+        self._log("impersonate", result="success",
+                  name=_("Login as %s") % login,
+                  error_message=_(
+                      "%(who)s → %(whom)s (uid %(uid)s)%(admin)s | BD %(db)s | "
+                      "entorno %(env)s%(prod)s") % {
+                      "who": self.env.user.login, "whom": login, "uid": uid,
+                      "admin": _(" [ADMIN]") if is_admin_target else "",
+                      "db": db, "env": environment.name if environment else "—",
+                      "prod": _(" | PRODUCCIÓN") if is_prod else ""})
+        url = "%s/pcm/impersonate?token=%s" % (
+            self._impersonate_base_url(),
+            self._make_impersonate_token(db, uid, login,
+                                         admin_ack=is_admin_target and admin_ack))
+        return {"url": url}
+
+    # --- Deploy / habilitar / kill-switch del companion (Bloque B5) ---
+    def _companion_tar_b64(self):
+        """Empaqueta el addon companion (tar.gz base64) para enviarlo por SSM."""
+        import io
+        import tarfile
+        from odoo.tools import file_path
+        src = file_path("primate_cloud_manager/companion/pcm_impersonate")
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(src, arcname="pcm_impersonate")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    def _odoo_shell_heredoc(self, db, script):
+        """Comando SSM que corre un script Python por ``odoo-bin shell`` en una BD."""
+        return ("sudo -u odoo /opt/odoo/venv/bin/python3 "
+                "/opt/odoo/odoo/odoo-bin shell -c /etc/odoo/odoo.conf -d %s "
+                "--no-http <<'PCM_SHELL_EOF'\n%s\nPCM_SHELL_EOF"
+                % (shlex.quote(db), script))
+
+    def deploy_impersonate(self, dbs, pcm_ip=None):
+        """Despliega el companion: envía el addon, lo instala por BD, escribe la
+        clave PÚBLICA y (opcional) restringe el endpoint a la IP de PCM en nginx.
+        NO lo habilita (eso es un acto explícito aparte)."""
+        self.ensure_one()
+        ssm = self._get_ssm_service()
+        self._ensure_custom_addons_path()
+        quoted = shlex.quote(CUSTOM_ADDONS_DIR)
+        ssm.run_script(
+            self.aws_instance_id,
+            "printf '%%s' '%s' | base64 -d | sudo tar xz -C %s "
+            "&& sudo chown -R odoo:odoo %s/pcm_impersonate"
+            % (self._companion_tar_b64(), quoted, quoted),
+            region=self.region, comment="pcm impersonate deploy", timeout=120,
+            agent_timeout=30)
+        pubkey = self.account_id.impersonate_public_key()
+        odoo_bin = ("sudo -u odoo /opt/odoo/venv/bin/python3 "
+                    "/opt/odoo/odoo/odoo-bin -c /etc/odoo/odoo.conf")
+        for db in dbs:
+            ssm.run_script(
+                self.aws_instance_id,
+                "%s -d %s -i pcm_impersonate --stop-after-init"
+                % (odoo_bin, shlex.quote(db)),
+                region=self.region, comment="pcm impersonate install",
+                timeout=300, agent_timeout=30)
+            self._impersonate_set_param(db, "pcm.impersonate.public_key", pubkey)
+        if pcm_ip:
+            self._nginx_allowlist(pcm_ip)
+        self.restart_odoo()
+
+    def _impersonate_set_param(self, db, key, value):
+        """Setea un ir.config_parameter en una BD remota (valor por base64)."""
+        val_b64 = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        script = ("import base64\n"
+                  "env['ir.config_parameter'].sudo().set_param(%r, "
+                  "base64.b64decode('%s').decode())\n"
+                  "env.cr.commit()\n" % (key, val_b64))
+        self._get_ssm_service().run_script(
+            self.aws_instance_id, self._odoo_shell_heredoc(db, script),
+            region=self.region, comment="pcm impersonate param", timeout=120,
+            agent_timeout=30)
+
+    def set_impersonate_enabled(self, dbs, enabled):
+        """Habilita o DESHABILITA la impersonación. Al deshabilitar sube el epoch:
+        eso corta también las sesiones de soporte YA abiertas (kill-switch)."""
+        self.ensure_one()
+        for db in dbs:
+            bump = ("" if enabled else
+                    "try:\n ep=int(p.get_param('pcm.impersonate.epoch','0'))\n"
+                    "except Exception:\n ep=0\n"
+                    "p.set_param('pcm.impersonate.epoch', str(ep+1))\n")
+            script = ("p = env['ir.config_parameter'].sudo()\n"
+                      "p.set_param('pcm.impersonate.enabled', %r)\n%s"
+                      "env.cr.commit()\n"
+                      % ("True" if enabled else "False", bump))
+            self._get_ssm_service().run_script(
+                self.aws_instance_id, self._odoo_shell_heredoc(db, script),
+                region=self.region, comment="pcm impersonate enable",
+                timeout=120, agent_timeout=30)
+
+    def _nginx_allowlist(self, pcm_ip):
+        """Restringe /pcm/impersonate a la IP de egreso de PCM (allow-list)."""
+        script = (
+            "import glob, subprocess\n"
+            "IP = %r\n"
+            "block = ('    location = /pcm/impersonate {\\n'\n"
+            "         '        allow ' + IP + ';\\n        deny all;\\n'\n"
+            "         '        proxy_pass http://127.0.0.1:8069;\\n'\n"
+            "         '        proxy_set_header Host $host;\\n'\n"
+            "         '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\\n'\n"
+            "         '        proxy_set_header X-Forwarded-Proto $scheme;\\n    }\\n\\n')\n"
+            "for f in glob.glob('/etc/nginx/sites-enabled/*'):\n"
+            "    if f.endswith('/default'): continue\n"
+            "    s = open(f).read()\n"
+            "    if '/pcm/impersonate' in s: continue\n"
+            "    s = s.replace('    location / {', block + '    location / {', 1)\n"
+            "    open(f, 'w').write(s)\n"
+            "subprocess.run(['nginx','-t'], check=True)\n"
+            "subprocess.run(['systemctl','reload','nginx'], check=True)\n"
+            "print('PCM_NGINX:ok')\n" % pcm_ip)
+        self._get_ssm_service().run_script(
+            self.aws_instance_id, self._python_heredoc(script),
+            region=self.region, comment="pcm nginx allowlist", timeout=60,
+            agent_timeout=30)
 
     def _log(self, action_type, result="success", error_message=None, aws_request_id=None, name=None):
         """Atajo para registrar en la bitácora sobre esta instancia."""

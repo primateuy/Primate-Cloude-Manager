@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- El cliente VE el registro de impersonaciones desde su propio Odoo. -->
+    <record id="view_pcm_imp_log_list" model="ir.ui.view">
+        <field name="name">pcm.impersonation.log.list</field>
+        <field name="model">pcm.impersonation.log</field>
+        <field name="arch" type="xml">
+            <list string="Sesiones de soporte (PCM)" create="false" edit="false">
+                <field name="create_date"/>
+                <field name="source_admin"/>
+                <field name="target_login"/>
+                <field name="is_admin_target"/>
+                <field name="database"/>
+                <field name="ended_reason"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_pcm_imp_log" model="ir.actions.act_window">
+        <field name="name">Sesiones de soporte (PCM)</field>
+        <field name="res_model">pcm.impersonation.log</field>
+        <field name="view_mode">list</field>
+    </record>
+
+    <!-- Kill-switch del lado del cliente: desactiva Y corta las sesiones vivas
+         (sube el epoch, que invalida las marcas de sesión ya emitidas). -->
+    <record id="action_pcm_imp_disable" model="ir.actions.server">
+        <field name="name">Desactivar impersonación de soporte (PCM)</field>
+        <field name="model_id" ref="model_pcm_impersonation_log"/>
+        <field name="state">code</field>
+        <field name="code">
+param = env['ir.config_parameter'].sudo()
+param.set_param('pcm.impersonate.enabled', 'False')
+try:
+    ep = int(param.get_param('pcm.impersonate.epoch', '0'))
+except Exception:
+    ep = 0
+param.set_param('pcm.impersonate.epoch', str(ep + 1))
+        </field>
+    </record>
+
+    <menuitem id="menu_pcm_imp_root" name="Soporte PCM"
+              parent="base.menu_administration" sequence="90"/>
+    <menuitem id="menu_pcm_imp_log" name="Sesiones de soporte"
+              parent="menu_pcm_imp_root" action="action_pcm_imp_log"
+              sequence="10"/>
+    <menuitem id="menu_pcm_imp_disable" name="Desactivar impersonación"
+              parent="menu_pcm_imp_root" action="action_pcm_imp_disable"
+              sequence="20"/>
+</odoo>

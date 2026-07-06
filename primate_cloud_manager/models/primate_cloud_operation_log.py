@@ -22,6 +22,7 @@ ACTION_TYPES = [
     ("ssm_command", "Ejecutar comando SSM"),
     ("config_edit", "Editar configuración (odoo.conf)"),
     ("addon_add", "Agregar addon a la instancia"),
+    ("impersonate", "Login as (impersonación)"),
     ("rds_create", "Crear RDS"),
     ("dns_create", "Crear registro DNS"),
     ("dns_update", "Actualizar registro DNS"),
