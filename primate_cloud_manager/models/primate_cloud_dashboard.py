@@ -515,6 +515,24 @@ class PrimateCloudDashboard(models.AbstractModel):
             return {"status": "error", "text": str(error)}
 
     @api.model
+    def add_instance_addon(self, instance_id, vals):
+        """Agrega un repo/addon a la instancia (clona + registra). Bloque B4."""
+        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not inst or not inst.environment_id:
+            return {"status": "error", "text": _("Instancia/entorno no encontrado.")}
+        if not inst.provisioned_by_pcm:
+            return {"status": "error",
+                    "text": _("Requiere una instancia aprovisionada por PCM.")}
+        if inst.instance_state != "running":
+            return {"status": "error",
+                    "text": _("La instancia no está corriendo.")}
+        try:
+            repo = inst.environment_id.add_addon(vals)
+            return {"status": "ok", "repo_id": repo.id}
+        except Exception as error:  # noqa: BLE001 - error legible a la UI
+            return {"status": "error", "text": str(error)}
+
+    @api.model
     def save_instance_config(self, instance_id, edits, expected_hash,
                              typed_name=None):
         """Valida y encola el guardado del odoo.conf (reinicia Odoo)."""

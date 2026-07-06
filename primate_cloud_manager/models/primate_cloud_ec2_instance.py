@@ -42,6 +42,11 @@ CONFIG_READONLY = [
 CONFIG_HEALTH_TIMEOUT = 90
 CONFIG_HEALTH_POLL = 5
 
+# Dir estándar de addons de cliente (Bloque B4). Las instancias nuevas lo traen
+# en el addons_path (install_odoo.sh); las viejas lo reciben retroactivamente al
+# agregar el primer addon.
+CUSTOM_ADDONS_DIR = "/opt/odoo/custom-addons"
+
 _logger = logging.getLogger(__name__)
 
 # Estados posibles devueltos por AWS (describe_instances → State.Name).
@@ -458,14 +463,22 @@ class PrimateCloudEc2Instance(models.Model):
             agent_timeout=20)
         return self._parse_config_read(output.get("stdout") or "")
 
-    def _validate_config(self, edits):
+    def _validate_config(self, edits, internal_keys=frozenset()):
         """Valida/castea los edits contra la allowlist (pura, testeable).
 
         Devuelve ``{clave: valor_str}`` limpio o levanta ``UserError``. Un valor
         que no castea (p. ej. ``limit_time_cpu = "abc"``) NUNCA llega al archivo.
+        ``internal_keys`` = claves que un flujo interno de PCM (addon-add sobre
+        ``addons_path``) habilita además de la allowlist de usuario; NUNCA vienen
+        del editor de usuario (``action_save_config`` no las pasa).
         """
         clean = {}
         for key, value in edits.items():
+            if key in internal_keys:
+                if not str(value).strip():
+                    raise UserError(_("Valor vacío para %s.") % key)
+                clean[key] = str(value)
+                continue
             if key not in CONFIG_EDITABLE:
                 raise UserError(_("Parámetro no editable: %s.") % key)
             kind, spec = CONFIG_EDITABLE[key]
@@ -522,8 +535,13 @@ class PrimateCloudEc2Instance(models.Model):
         return self._notify(_(
             "Guardado de configuración encolado (reinicia Odoo unos segundos)."))
 
-    def job_save_config(self, edits, expected_hash):
-        """Job: aplica los cambios, reinicia, verifica salud y hace rollback si falla."""
+    def job_save_config(self, edits, expected_hash, internal_keys=()):
+        """Job: aplica los cambios, reinicia, verifica salud y hace rollback si falla.
+
+        ``internal_keys`` habilita claves vouched por un flujo interno de PCM
+        (p. ej. ``addons_path`` en addon-add) — reusa toda la máquina de B3
+        (preservación/backup/CAS/restart/health/rollback) sin duplicarla.
+        """
         self.ensure_one()
         title = _("Editar config: %s") % self.name
         ssm = self._get_ssm_service()
@@ -531,7 +549,8 @@ class PrimateCloudEc2Instance(models.Model):
             json.dumps(edits).encode("utf-8")).decode("ascii")
         apply_script = self._render_config_script(
             CONFIG_APPLY_SCRIPT_PATH,
-            {"EDITS_B64": edits_b64, "EXPECTED_HASH": expected_hash})
+            {"EDITS_B64": edits_b64, "EXPECTED_HASH": expected_hash,
+             "EXTRA_ALLOW": ",".join(internal_keys)})
         out = ssm.run_script(
             self.aws_instance_id, self._python_heredoc(apply_script),
             region=self.region, comment="pcm config apply", timeout=60,
@@ -543,19 +562,22 @@ class PrimateCloudEc2Instance(models.Model):
             self._log("config_edit", result="failed", name=title,
                       error_message=_("El archivo cambió externamente; no se "
                                       "aplicó nada."))
-            return self._notify_config_done(False, _(
+            self._notify_config_done(False, _(
                 "La configuración cambió por fuera de PCM; recargá y reintentá."))
+            return "stale"
         if result == "invalid":
             bad = self._config_marker(stdout, "PCM_ERROR:")
             self._log("config_edit", result="failed", name=title,
                       error_message=_("Valor inválido: %s") % bad)
-            return self._notify_config_done(False, _(
+            self._notify_config_done(False, _(
                 "Valor inválido (%s); no se aplicó.") % bad)
+            return "invalid"
         if result != "applied":
             self._log("config_edit", result="failed", name=title,
                       error_message=(stdout or "")[:500])
-            return self._notify_config_done(False, _(
+            self._notify_config_done(False, _(
                 "No se pudo aplicar la configuración."))
+            return "error"
 
         backup = self._config_marker(stdout, "PCM_BAK:")
         port = self._config_marker(stdout, "PCM_HTTP_PORT:") or "8069"
@@ -577,16 +599,18 @@ class PrimateCloudEc2Instance(models.Model):
                       error_message=_(
                           "El reinicio dejó Odoo caído; se restauró la config "
                           "anterior.\nCambios intentados:\n%s") % diff)
-            return self._notify_config_done(False, _(
+            self._notify_config_done(False, _(
                 "El cambio dejó Odoo sin arrancar; se restauró la config "
                 "anterior y se reinició."))
+            return "rolled_back"
 
         note = "" if health == "http" else _(
             " (Odoo activo; HTTP local no verificable — proxy/socket).")
         self._log("config_edit", result="success", name=title,
                   error_message=_("Cambios aplicados:\n%s") % diff)
-        return self._notify_config_done(True, _(
+        self._notify_config_done(True, _(
             "Configuración guardada y Odoo reiniciado.%s") % note)
+        return "saved"
 
     def _config_health_check(self, port, http_was_ok=False, _sleep=time.sleep):
         """Sondea salud tras el restart. Devuelve 'http' | 'degraded' | 'failed'.
@@ -650,6 +674,97 @@ class PrimateCloudEc2Instance(models.Model):
         bus.toast(self.env, message,
                   ntype="success" if ok else "danger", sticky=not ok)
         return True
+
+    # --- Addons de cliente (Bloque B4) ---
+    def _ensure_custom_addons_path(self):
+        """Garantiza el dir custom-addons + que esté en el addons_path.
+
+        Retroactivo para instancias viejas: crea el dir si falta y, si el
+        addons_path no lo incluye, lo agrega REUSANDO B3 (surgical edit + backup
+        + restart + health + rollback), sin duplicar. Devuelve:
+        'ready' (ya estaba / se creó) | 'restarted' (se editó addons_path y
+        reinició) | 'rolled_back' (el cambio de addons_path no levantó) | 'error'.
+        """
+        self.ensure_one()
+        ssm = self._get_ssm_service()
+        ssm.run_script(
+            self.aws_instance_id,
+            "sudo mkdir -p %s && sudo chown odoo:odoo %s"
+            % (shlex.quote(CUSTOM_ADDONS_DIR), shlex.quote(CUSTOM_ADDONS_DIR)),
+            region=self.region, comment="pcm addons mkdir", timeout=45,
+            agent_timeout=30)
+        cfg = self.fetch_config()
+        addons_path = cfg.get("readonly", {}).get("addons_path", "")
+        parts = [p.strip() for p in addons_path.split(",") if p.strip()]
+        if CUSTOM_ADDONS_DIR in parts:
+            return "ready"
+        new_path = ",".join(parts + [CUSTOM_ADDONS_DIR])
+        outcome = self.job_save_config(
+            {"addons_path": new_path}, cfg.get("config_hash"),
+            internal_keys={"addons_path"})
+        if outcome == "saved":
+            return "restarted"
+        if outcome == "rolled_back":
+            return "rolled_back"
+        return "error"
+
+    @staticmethod
+    def _build_addon_clone_script(url, path, ref, token_b64=None):
+        """Script de clone por SSM. El token va por askpass temporal (NUNCA en la
+        URL/git-config/argv), con trap que lo borra pase lo que pase."""
+        qpath, qurl = shlex.quote(path), shlex.quote(url)
+        branch = ("--branch %s " % shlex.quote(ref)) if ref else ""
+        lines = ["set -e",
+                 "mkdir -p %s" % shlex.quote(CUSTOM_ADDONS_DIR),
+                 "rm -rf %s" % qpath]
+        if token_b64:
+            lines += [
+                'TF=$(mktemp); AK=$(mktemp)',
+                'trap \'rm -f "$TF" "$AK"\' EXIT',
+                "printf '%%s' %s | base64 -d > \"$TF\"; chmod 600 \"$TF\""
+                % shlex.quote(token_b64),
+                'printf \'#!/bin/sh\\ncat "%s"\\n\' "$TF" > "$AK"; chmod 700 "$AK"',
+                'GIT_ASKPASS="$AK" GIT_TERMINAL_PROMPT=0 git clone %s%s %s'
+                % (branch, qurl, qpath),
+            ]
+        else:
+            lines.append("GIT_TERMINAL_PROMPT=0 git clone %s%s %s"
+                         % (branch, qurl, qpath))
+        lines += ["chown -R odoo:odoo %s" % qpath,
+                  "echo PCM_CLONE:ok"]
+        return "\n".join(lines)
+
+    def clone_addon(self, url, path, ref=None, token=None):
+        """Clona un repo en la instancia (token seguro). Devuelve True si clonó."""
+        self.ensure_one()
+        token_b64 = (base64.b64encode(token.encode("utf-8")).decode("ascii")
+                     if token else None)
+        script = self._build_addon_clone_script(url, path, ref, token_b64)
+        out = self._get_ssm_service().run_script(
+            self.aws_instance_id, script, region=self.region,
+            comment="pcm addon clone", timeout=180, agent_timeout=60)
+        return "PCM_CLONE:ok" in (out.get("stdout") or "")
+
+    def restart_odoo(self):
+        """Reinicia Odoo (para cargar un addon recién clonado, sin cambio de conf)."""
+        self.ensure_one()
+        self._get_ssm_service().run_script(
+            self.aws_instance_id, "sudo systemctl restart odoo",
+            region=self.region, comment="pcm addon restart", timeout=45,
+            agent_timeout=20)
+
+    def addon_module_count(self, path):
+        """Cuenta módulos (dirs con __manifest__.py) en el clone. 0 = sin módulos."""
+        self.ensure_one()
+        out = self._get_ssm_service().run_script(
+            self.aws_instance_id,
+            "ls %s/*/__manifest__.py 2>/dev/null | wc -l" % shlex.quote(path),
+            region=self.region, comment="pcm addon modules", timeout=45,
+            agent_timeout=30)
+        try:
+            return int((out.get("stdout") or "0").strip().split("\n")[0])
+        except (ValueError, IndexError):
+            return 0
 
     def _log(self, action_type, result="success", error_message=None, aws_request_id=None, name=None):
         """Atajo para registrar en la bitácora sobre esta instancia."""

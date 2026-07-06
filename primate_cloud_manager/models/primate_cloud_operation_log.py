@@ -21,6 +21,7 @@ ACTION_TYPES = [
     ("ec2_create", "Crear EC2"),
     ("ssm_command", "Ejecutar comando SSM"),
     ("config_edit", "Editar configuración (odoo.conf)"),
+    ("addon_add", "Agregar addon a la instancia"),
     ("rds_create", "Crear RDS"),
     ("dns_create", "Crear registro DNS"),
     ("dns_update", "Actualizar registro DNS"),

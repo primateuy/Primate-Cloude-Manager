@@ -40,6 +40,9 @@ CONF = "/etc/odoo/odoo.conf"
 BAK_KEEP = 5
 EDITS_B64 = "%%EDITS_B64%%"
 EXPECTED_HASH = "%%EXPECTED_HASH%%"
+# Claves que un flujo INTERNO de PCM (p. ej. addon-add tocando addons_path)
+# habilita además de la allowlist de usuario. Vacío en el guardado de usuario.
+EXTRA_ALLOW = "%%EXTRA_ALLOW%%"
 
 
 def emit(tag, value=""):
@@ -108,8 +111,18 @@ def main():
         emit("RESULT", "invalid")
         emit("ERROR", "bad_payload")
         return
+    # Claves internas vouched por PCM (addons_path): validador permisivo (str no
+    # vacío); las paga el flujo que las pasa, nunca el editor de usuario.
+    extra = {k for k in EXTRA_ALLOW.split(",") if k}
     clean = {}
     for key, value in edits.items():
+        if key in extra:
+            if not str(value).strip():
+                emit("RESULT", "invalid")
+                emit("ERROR", key)
+                return
+            clean[key] = str(value)
+            continue
         if key not in ALLOW:
             emit("RESULT", "invalid")
             emit("ERROR", key)

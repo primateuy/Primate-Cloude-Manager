@@ -76,6 +76,10 @@ sudo -u "${ODOO_USER}" "${ODOO_HOME}/venv/bin/pip" install --upgrade pip wheel
 sudo -u "${ODOO_USER}" "${ODOO_HOME}/venv/bin/pip" install \
     -r "${ODOO_HOME}/odoo/requirements.txt"
 
+# Dir estándar de addons de cliente (Bloque B4): las instancias nuevas ya lo
+# traen en el addons_path; PCM clona acá al agregar addons.
+sudo -u "${ODOO_USER}" mkdir -p "${ODOO_HOME}/custom-addons"
+
 # 5. odoo.conf ----------------------------------------------------------------
 log "Escribiendo ${ODOO_CONF}…"
 mkdir -p /etc/odoo /var/log/odoo
@@ -87,7 +91,7 @@ db_port = ${DB_PORT}
 db_user = ${DB_USER}
 db_password = ${DB_PASSWORD}
 db_name = ${DB_NAME}
-addons_path = ${ODOO_HOME}/odoo/addons
+addons_path = ${ODOO_HOME}/odoo/addons,${ODOO_HOME}/custom-addons
 logfile = /var/log/odoo/odoo.log
 proxy_mode = True
 CONF

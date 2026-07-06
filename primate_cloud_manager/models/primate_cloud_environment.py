@@ -17,8 +17,9 @@ from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 from odoo.tools import file_open
 
-from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm
+from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm, github_api
 from ..tools import bus, crypto, dates
+from .primate_cloud_ec2_instance import CUSTOM_ADDONS_DIR
 
 _logger = logging.getLogger(__name__)
 
@@ -1916,3 +1917,92 @@ class PrimateCloudEnvironment(models.Model):
     def _build_restart_script():
         """Reinicio de servicios del staging."""
         return "set -e\nsudo systemctl restart odoo\nsudo systemctl restart nginx || true"
+
+    # ------------------------------------------------------------------
+    # Agregar addon a la instancia (Bloque B4)
+    # ------------------------------------------------------------------
+    def add_addon(self, vals):
+        """Registra un repo/addon Y lo clona en la instancia (o ninguna cosa).
+
+        Crea el registro de trazabilidad en estado 'Sin verificar' y encola el
+        trabajo que clona + activa el addons_path + verifica. Si el clone falla,
+        el registro se borra (no queda un 'instalado' mentiroso).
+        """
+        self.ensure_one()
+        if not self.ec2_instance_ids[:1]:
+            raise UserError(_("El entorno no tiene una instancia para clonar el addon."))
+        url = (vals.get("github_url") or "").strip()
+        if not url:
+            raise UserError(_("Falta la URL del repositorio."))
+        slug = github_api.GithubApiService.parse_repo_slug(
+            url, vals.get("organization"))
+        repo_name = (slug.split("/")[-1] if slug
+                     else url.rstrip("/").split("/")[-1])
+        repo_name = repo_name[:-4] if repo_name.endswith(".git") else repo_name
+        repo = self.env["primate.cloud.repository"].create({
+            "name": vals.get("name") or repo_name,
+            "environment_id": self.id,
+            "github_url": url,
+            "organization": vals.get("organization") or False,
+            "repo_type": vals.get("repo_type") or "custom_client",
+            "configured_branch": vals.get("configured_branch") or False,
+            "local_path": "%s/%s" % (CUSTOM_ADDONS_DIR, repo_name),
+            "sync_state": "unknown",   # 'Sin verificar' hasta clonar + detectar
+        })
+        if vals.get("github_token"):
+            repo.github_token = vals["github_token"]   # se cifra en el inverse
+        self.with_delay(
+            description=_("Agregar addon: %s") % repo.name
+        ).job_add_addon(repo.id)
+        return repo
+
+    def job_add_addon(self, repo_id):
+        """Job: clona el addon, activa el addons_path (reusa B3) y verifica."""
+        repo = self.env["primate.cloud.repository"].browse(repo_id).exists()
+        if not repo:
+            return
+        title = _("Agregar addon: %s") % repo.name
+        instance = self.ec2_instance_ids[:1]
+        if not instance:
+            repo._log("addon_add", result="failed", name=title,
+                      error_message=_("El entorno no tiene instancia."))
+            repo.unlink()
+            return
+        # URL de clone: el token va por askpass (NUNCA en la URL persistida).
+        token = repo._get_github_token()
+        slug = repo._repo_slug()
+        clone_url = "https://%sgithub.com/%s.git" % (
+            "x-access-token@" if token else "", slug)
+        cloned = instance.clone_addon(
+            clone_url, repo.local_path, ref=repo.configured_branch or None,
+            token=token)
+        if not cloned:
+            repo._log("addon_add", result="failed", name=title,
+                      error_message=_("El clone del repositorio falló."))
+            repo.unlink()   # o-ninguna: ni registro ni clon
+            return
+        # Activar el addons_path (retroactivo, reusa B3) o reiniciar para cargar.
+        ensure = instance._ensure_custom_addons_path()
+        if ensure in ("rolled_back", "error"):
+            repo._log("addon_add", result="partial", name=title,
+                      error_message=_(
+                          "Clonado, pero el addons_path no quedó activo; el "
+                          "addon NO está cargado (registrado como no verificado)."))
+            repo.message_post(body=_("Addon clonado pero no cargado (addons_path)."))
+            return   # registrado, no verificado — NO éxito mentiroso
+        if ensure == "ready":
+            instance.restart_odoo()   # ya estaba en el path → reiniciar y cargar
+        # 'restarted' → _ensure ya reinició cargando el addon.
+        # Verificar: ¿hay módulos (con __manifest__) en el clone?
+        count = instance.addon_module_count(repo.local_path)
+        if count > 0:
+            repo.sync_state = "updated"   # verificado (presente y cargable)
+            repo._log("addon_add", result="success", name=title,
+                      error_message=_("Addon agregado y verificado (%d módulo(s)).")
+                      % count)
+        else:
+            repo.sync_state = "unknown"   # registrado, no verificado
+            repo._log("addon_add", result="partial", name=title,
+                      error_message=_(
+                          "Clonado pero sin __manifest__ detectable; registrado "
+                          "como NO verificado."))

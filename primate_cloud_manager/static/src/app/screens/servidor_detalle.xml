@@ -307,7 +307,47 @@
                 <t t-if="state.tab === 'addons'">
                     <div class="o_pcm_section_head o_pcm_section_bar">
                         <h2>Addons / repositorios</h2>
-                        <span class="o_pcm_muted">del entorno <t t-out="d.environment_name"/></span>
+                        <div class="o_pcm_actions">
+                            <span class="o_pcm_muted">del entorno <t t-out="d.environment_name"/></span>
+                            <button class="o_pcm_btn o_pcm_btn_accent"
+                                    t-att-disabled="d.state !== 'running'"
+                                    t-on-click="() => this.toggleAddonForm()">
+                                <i class="fa fa-plus"/> Agregar addon
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Formulario de alta de addon -->
+                    <div class="o_pcm_card" t-if="addon.open">
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">URL GitHub</span>
+                            <input type="text" class="o_pcm_input" t-model="addon.github_url"
+                                   placeholder="https://github.com/org/repo"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Rama</span>
+                            <input type="text" class="o_pcm_input" t-model="addon.configured_branch"
+                                   placeholder="19.0 (opcional)"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span>
+                            <select class="o_pcm_select" t-model="addon.repo_type">
+                                <option value="custom_client">Custom Cliente</option>
+                                <option value="custom_primate">Custom Primate</option>
+                                <option value="oca">OCA</option>
+                                <option value="odoo_enterprise">Odoo Enterprise</option>
+                            </select></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Token (repo privado)</span>
+                            <input type="password" class="o_pcm_input" t-model="addon.github_token"
+                                   placeholder="opcional; nunca se guarda en claro"/></div>
+                        <div class="o_pcm_actions">
+                            <button class="o_pcm_btn o_pcm_btn_accent"
+                                    t-att-disabled="addon.saving"
+                                    t-on-click="() => this.submitAddon()">
+                                <i class="fa fa-cloud-download"/> Clonar y registrar
+                            </button>
+                            <button class="o_pcm_btn" t-on-click="() => this.toggleAddonForm()">Cancelar</button>
+                        </div>
+                        <div class="o_pcm_muted o_pcm_note">
+                            <i class="fa fa-info-circle"/>
+                            Se clona en la instancia y se registra. El token de un repo privado
+                            se inyecta por SSM sin quedar en la URL ni persistir.
+                        </div>
                     </div>
                     <div class="o_pcm_card">
                         <div t-if="d.repositories and d.repositories.length">
@@ -335,11 +375,6 @@
                             </div>
                         </div>
                         <div t-else="" class="o_pcm_muted">Sin repositorios registrados en el entorno.</div>
-                        <div class="o_pcm_muted o_pcm_note">
-                            <i class="fa fa-info-circle"/>
-                            Agregar un repo a la instancia (clonar en el servidor) llega en un
-                            bloque posterior.
-                        </div>
                     </div>
                 </t>
 

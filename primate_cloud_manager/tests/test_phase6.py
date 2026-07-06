@@ -325,6 +325,88 @@ class TestDeployment(TransactionCase):
                 self.instance._config_health_check(
                     "8069", http_was_ok=True, _sleep=_sleep), "failed")
 
+    # --- Agregar addon a la instancia (Bloque B4) ---
+    def test_addon_clone_script_token_seguro(self):
+        import base64
+        Ec2 = self.env["primate.cloud.ec2.instance"]
+        tok_b64 = base64.b64encode(b"ghp_secreto").decode()
+        script = Ec2._build_addon_clone_script(
+            "https://x-access-token@github.com/o/r.git",
+            "/opt/odoo/custom-addons/r", "19.0", token_b64=tok_b64)
+        self.assertIn("GIT_ASKPASS", script)
+        self.assertIn("trap", script)             # borra el token pase lo que pase
+        self.assertNotIn("ghp_secreto", script)   # token NO en claro (solo base64)
+        self.assertNotIn("ghp_secreto@", script)  # NUNCA en la URL
+        pub = Ec2._build_addon_clone_script(
+            "https://github.com/o/r.git", "/p", None)
+        self.assertNotIn("GIT_ASKPASS", pub)      # público: sin askpass
+        self.assertIn("git clone", pub)
+
+    def test_config_internal_keys_permite_addons_path(self):
+        inst = self.instance
+        with self.assertRaises(UserError):
+            inst._validate_config({"addons_path": "/x"})   # usuario: no editable
+        clean = inst._validate_config(
+            {"addons_path": "/a,/b"}, internal_keys={"addons_path"})
+        self.assertEqual(clean["addons_path"], "/a,/b")
+
+    def test_add_addon_crea_repo_no_verificado(self):
+        repo = self.env_rec.add_addon(
+            {"github_url": "https://github.com/oca/web"})
+        self.assertEqual(repo.environment_id, self.env_rec)
+        self.assertEqual(repo.sync_state, "unknown")     # sin verificar
+        self.assertIn("custom-addons", repo.local_path)
+
+    def test_job_add_addon_clone_falla_borra_repo(self):
+        repo = self.env_rec.add_addon(
+            {"github_url": "https://github.com/oca/web"})
+        with mock.patch.object(type(self.instance), "clone_addon",
+                               return_value=False):
+            self.env_rec.job_add_addon(repo.id)
+        self.assertFalse(repo.exists())   # ni registro ni clon (consistencia)
+
+    def test_job_add_addon_ok_verifica(self):
+        repo = self.env_rec.add_addon(
+            {"github_url": "https://github.com/oca/web"})
+        with mock.patch.object(type(self.instance), "clone_addon", return_value=True), \
+             mock.patch.object(type(self.instance), "_ensure_custom_addons_path",
+                               return_value="ready"), \
+             mock.patch.object(type(self.instance), "restart_odoo"), \
+             mock.patch.object(type(self.instance), "addon_module_count",
+                               return_value=2):
+            self.env_rec.job_add_addon(repo.id)
+        self.assertEqual(repo.sync_state, "updated")   # verificado
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "addon_add")], order="id desc", limit=1)
+        self.assertEqual(log.result, "success")
+
+    def test_job_add_addon_sin_modulos_no_verificado(self):
+        repo = self.env_rec.add_addon(
+            {"github_url": "https://github.com/oca/web"})
+        with mock.patch.object(type(self.instance), "clone_addon", return_value=True), \
+             mock.patch.object(type(self.instance), "_ensure_custom_addons_path",
+                               return_value="restarted"), \
+             mock.patch.object(type(self.instance), "addon_module_count",
+                               return_value=0):
+            self.env_rec.job_add_addon(repo.id)
+        self.assertEqual(repo.sync_state, "unknown")   # registrado, no verificado
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "addon_add")], order="id desc", limit=1)
+        self.assertEqual(log.result, "partial")
+
+    def test_job_add_addon_addons_path_rollback_es_parcial(self):
+        repo = self.env_rec.add_addon(
+            {"github_url": "https://github.com/oca/web"})
+        with mock.patch.object(type(self.instance), "clone_addon", return_value=True), \
+             mock.patch.object(type(self.instance), "_ensure_custom_addons_path",
+                               return_value="rolled_back"):
+            self.env_rec.job_add_addon(repo.id)
+        self.assertTrue(repo.exists())                 # queda registrado
+        self.assertEqual(repo.sync_state, "unknown")   # pero no verificado
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "addon_add")], order="id desc", limit=1)
+        self.assertEqual(log.result, "partial")
+
     # --- Creación / nombre ---
     def test_create_asigna_referencia(self):
         dep = self._deploy()

@@ -54,6 +54,11 @@ export class ServidorDetalle extends Component {
             editable: {}, readonly: {}, meta: [], hash: false, work: {},
             isProduction: false, envName: "", typedName: "", saving: false,
         });
+        // Alta de addon (tab Addons, Bloque B4).
+        this.addon = useState({
+            open: false, github_url: "", configured_branch: "",
+            repo_type: "custom_client", github_token: "", saving: false,
+        });
         this._streamTimer = null;   // handle del setInterval (no reactivo)
         this._polling = false;      // evita solapar polls si uno tarda
         this._onVisibility = () => this._handleVisibility();
@@ -253,6 +258,41 @@ export class ServidorDetalle extends Component {
     openRecord(model, id, name) {
         if (this.props.onOpenRecord && id) {
             this.props.onOpenRecord(model, id, name);
+        }
+    }
+
+    // --- Agregar addon (clona en la instancia + registra) -------------------
+    toggleAddonForm() {
+        this.addon.open = !this.addon.open;
+    }
+
+    async submitAddon() {
+        if (!this.addon.github_url.trim()) {
+            this.env.pcm?.notify("Falta la URL del repositorio", { type: "warning" });
+            return;
+        }
+        this.addon.saving = true;
+        const res = await this.orm.call(
+            "primate.cloud.dashboard", "add_instance_addon",
+            [this.props.serverId, {
+                github_url: this.addon.github_url,
+                configured_branch: this.addon.configured_branch || false,
+                repo_type: this.addon.repo_type,
+                github_token: this.addon.github_token || false,
+            }]
+        );
+        this.addon.saving = false;
+        if (res.status === "ok") {
+            this.env.pcm?.notify(
+                "Addon encolado (clonando + verificando).", { type: "success" });
+            Object.assign(this.addon, {
+                open: false, github_url: "", configured_branch: "",
+                github_token: "",
+            });
+            await this.load(this.props.serverId);   // refresca la lista de repos
+        } else {
+            this.env.pcm?.notify(res.text || "No se pudo agregar el addon",
+                                 { type: "danger" });
         }
     }
 
