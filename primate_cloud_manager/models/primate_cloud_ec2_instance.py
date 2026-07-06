@@ -85,6 +85,12 @@ class PrimateCloudEc2Instance(models.Model):
         help="Marca si PCM creó la instancia (paths/comandos del panel válidos).",
     )
 
+    # --- Runtime detectado on-demand por SSM (Fase panel, Bloque B1) ---
+    runtime_python_version = fields.Char(string="Versión Python", readonly=True)
+    runtime_odoo_version = fields.Char(string="Versión Odoo", readonly=True)
+    runtime_workers = fields.Char(string="Workers", readonly=True)
+    last_runtime_probe = fields.Datetime(string="Runtime detectado al", readonly=True)
+
     _aws_instance_uniq = models.Constraint(
         "UNIQUE(account_id, aws_instance_id)",
         "Esa instancia EC2 ya existe para la cuenta.",
@@ -395,6 +401,64 @@ class PrimateCloudEc2Instance(models.Model):
         cw = aws_cloudwatch.AwsCloudWatchService(self.account_id._get_aws_service())
         self._take_metrics_snapshot(cw)
         return True
+
+    # Sondeo de runtime (solo lectura). NO toca credenciales: el grep de workers
+    # lee UNA línea del odoo.conf, jamás db_password/admin_passwd ni el archivo
+    # entero. Los paths son los del layout PCM (install_odoo.sh) → exige
+    # provisioned_by_pcm.
+    _RUNTIME_PROBE = (
+        'echo "PCM_PY:$(/opt/odoo/venv/bin/python3 --version 2>&1)"; '
+        'echo "PCM_ODOO:$(sudo -u odoo /opt/odoo/venv/bin/python3 '
+        '/opt/odoo/odoo/odoo-bin --version 2>&1)"; '
+        "echo \"PCM_WORKERS:$(grep -E '^[[:space:]]*workers' "
+        '/etc/odoo/odoo.conf 2>/dev/null | tail -1 | tr -d \'[:space:]\')"'
+    )
+
+    def action_probe_runtime(self):
+        """Encola la detección de versiones (Python/Odoo) y workers por SSM."""
+        self.ensure_one()
+        if not self.provisioned_by_pcm:
+            raise UserError(_(
+                "Solo se puede detectar el runtime de instancias aprovisionadas "
+                "por PCM (el layout de paths es conocido)."))
+        if self.instance_state != "running":
+            raise UserError(_("La instancia no está corriendo."))
+        self.with_delay(
+            description=_("Runtime EC2: %s") % self.name
+        ).job_probe_runtime()
+        return self._notify(_("Detección de runtime encolada."))
+
+    def job_probe_runtime(self):
+        """Job: lee versiones y workers por SSM y refresca el cache."""
+        self.ensure_one()
+        output = self._get_ssm_service().run_script(
+            self.aws_instance_id, self._RUNTIME_PROBE, region=self.region,
+            comment="pcm runtime probe", timeout=60, agent_timeout=30)
+        self._parse_runtime(output.get("stdout") or "")
+        return True
+
+    @staticmethod
+    def _runtime_marker(text, marker):
+        """Devuelve el valor tras un marcador ``PCM_*:`` en el stdout."""
+        for line in text.splitlines():
+            if line.startswith(marker):
+                return line[len(marker):].strip()
+        return ""
+
+    def _parse_runtime(self, stdout):
+        """Parsea los marcadores del sondeo y escribe el cache de runtime."""
+        self.ensure_one()
+        py = self._runtime_marker(stdout, "PCM_PY:").replace("Python", "").strip()
+        odoo = self._runtime_marker(stdout, "PCM_ODOO:")
+        workers_raw = self._runtime_marker(stdout, "PCM_WORKERS:")
+        # "workers=2" → "2"; sin línea workers en el conf ⇒ default de Odoo (0).
+        workers = workers_raw.split("=", 1)[1] if "=" in workers_raw else "0"
+        self.write({
+            "runtime_python_version": py or False,
+            "runtime_odoo_version": odoo or False,
+            "runtime_workers": workers,
+            "last_runtime_probe": fields.Datetime.now(),
+        })
 
     def _take_metrics_snapshot(self, cw):
         """Consulta CloudWatch, crea la ``monitor.snapshot`` y refresca el cache.

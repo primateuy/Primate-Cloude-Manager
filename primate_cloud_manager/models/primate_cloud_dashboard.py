@@ -396,6 +396,13 @@ class PrimateCloudDashboard(models.AbstractModel):
             "account_name": inst.account_id.display_name or "",
             "environment_id": env.id,
             "environment_name": env.display_name or "",
+            "main_url": env.main_url or "" if env else "",
+            "runtime": {
+                "python": inst.runtime_python_version or "",
+                "odoo": inst.runtime_odoo_version or "",
+                "workers": inst.runtime_workers or "",
+                "at": fields.Datetime.to_string(inst.last_runtime_probe) or "",
+            },
             "backup_compliance": env.backup_compliance if env else "",
             "backup_compliance_label": (
                 dict(Env._fields["backup_compliance"].selection).get(

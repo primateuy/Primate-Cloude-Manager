@@ -88,6 +88,43 @@ class TestDeployment(TransactionCase):
         detail = self.env["primate.cloud.dashboard"].get_server_detail(inst.id)
         self.assertTrue(detail["provisioned_by_pcm"])
 
+    # --- Runtime probe (Bloque B1) ---
+    def test_probe_runtime_requiere_pcm(self):
+        """Sin provisioned_by_pcm no se sondea (paths desconocidos)."""
+        self.assertFalse(self.instance.provisioned_by_pcm)
+        with self.assertRaises(UserError):
+            self.instance.action_probe_runtime()
+
+    def test_parse_runtime_marcadores(self):
+        """Parsea PCM_PY/ODOO/WORKERS y escribe el cache."""
+        stdout = ("PCM_PY:Python 3.12.3\n"
+                  "PCM_ODOO:Odoo Server 19.0\n"
+                  "PCM_WORKERS:workers=2\n")
+        self.instance._parse_runtime(stdout)
+        self.assertEqual(self.instance.runtime_python_version, "3.12.3")
+        self.assertEqual(self.instance.runtime_odoo_version, "Odoo Server 19.0")
+        self.assertEqual(self.instance.runtime_workers, "2")
+        self.assertTrue(self.instance.last_runtime_probe)
+
+    def test_parse_runtime_sin_workers_default_cero(self):
+        """Sin línea workers en el conf ⇒ default de Odoo (0), no vacío."""
+        self.instance._parse_runtime("PCM_PY:Python 3.12.3\nPCM_WORKERS:\n")
+        self.assertEqual(self.instance.runtime_workers, "0")
+
+    def test_probe_runtime_comando_sin_credenciales(self):
+        """El sondeo NO vuelca el odoo.conf ni credenciales (solo grep de una
+        línea de workers)."""
+        self.instance.provisioned_by_pcm = True
+        self.instance.instance_state = "running"
+        patcher, fake = self._patch_ssm({"stdout": "", "status": "Success"})
+        with patcher:
+            self.instance.job_probe_runtime()
+        cmd = fake.run_script.call_args[0][1]
+        self.assertNotIn("db_password", cmd)
+        self.assertNotIn("admin_passwd", cmd)
+        self.assertNotIn("cat ", cmd)   # nunca vuelca el archivo entero
+        self.assertIn("workers", cmd)   # solo la línea de workers
+
     # --- Creación / nombre ---
     def test_create_asigna_referencia(self):
         dep = self._deploy()

@@ -105,6 +105,42 @@
                         </div>
                     </div>
 
+                    <!-- Runtime detectado (versiones/workers) + URL de producción -->
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Runtime</h2>
+                        <div class="o_pcm_actions">
+                            <span class="o_pcm_muted" t-if="d.runtime and d.runtime.at">
+                                <i class="fa fa-clock-o"/> detectado al <t t-out="d.runtime.at"/>
+                            </span>
+                            <button t-if="d.provisioned_by_pcm and d.state === 'running'"
+                                    class="o_pcm_btn"
+                                    t-on-click="() => this.runMethod('action_probe_runtime')">
+                                <i class="fa fa-search"/> Detectar versiones
+                            </button>
+                        </div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <div class="o_pcm_cols2">
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">URL de producción</span>
+                                <a t-if="d.main_url" class="o_pcm_link" t-att-href="'https://' + d.main_url"
+                                   target="_blank" rel="noopener" t-out="d.main_url"/>
+                                <span t-else="" class="o_pcm_muted">—</span></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Versión Odoo</span>
+                                <span t-if="d.runtime and d.runtime.odoo" t-out="d.runtime.odoo"/>
+                                <span t-else="" class="o_pcm_muted">sin detectar</span></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Versión Python</span>
+                                <span t-if="d.runtime and d.runtime.python" t-out="d.runtime.python"/>
+                                <span t-else="" class="o_pcm_muted">sin detectar</span></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Workers</span>
+                                <span t-if="d.runtime and d.runtime.at" t-out="d.runtime.workers"/>
+                                <span t-else="" class="o_pcm_muted">sin detectar</span></div>
+                        </div>
+                        <div t-if="!d.provisioned_by_pcm" class="o_pcm_muted o_pcm_note">
+                            <i class="fa fa-info-circle"/>
+                            La detección de versiones requiere una instancia aprovisionada por PCM.
+                        </div>
+                    </div>
+
                     <!-- Paths + comandos de shell (solo si aprovisionada por PCM) -->
                     <div class="o_pcm_card">
                         <h2>Paths y comandos</h2>
