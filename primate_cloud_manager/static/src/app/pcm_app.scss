@@ -326,6 +326,14 @@
 
     .o_pcm_note { margin-top: 12px; font-size: 0.82rem; }
 
+    // Indicador "en vivo" del streaming de logs (punto que late).
+    .o_pcm_live_dot {
+        color: #2E9E5B;
+        font-size: 0.6rem;
+        animation: o_pcm_pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes o_pcm_pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
     // Fila de botones de acción (hero de detalles).
     .o_pcm_actions {
         display: flex;

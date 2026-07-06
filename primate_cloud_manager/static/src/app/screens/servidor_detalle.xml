@@ -223,7 +223,8 @@
                 <t t-if="state.tab === 'logs'">
                     <div class="o_pcm_card">
                         <div class="o_pcm_actions">
-                            <select t-model="logs.source" class="o_pcm_select">
+                            <select t-model="logs.source" class="o_pcm_select"
+                                    t-att-disabled="logs.streaming">
                                 <option value="odoo">Odoo</option>
                                 <option value="nginx">Nginx</option>
                                 <option value="postgres">PostgreSQL</option>
@@ -235,20 +236,32 @@
                                 <option value="1000">1000 líneas</option>
                             </select>
                             <input type="text" t-model="logs.grep" class="o_pcm_input"
+                                   t-att-disabled="logs.streaming"
                                    placeholder="Filtrar texto…"/>
                             <button class="o_pcm_btn o_pcm_btn_accent"
-                                    t-att-disabled="d.state !== 'running' or logs.loading"
+                                    t-att-disabled="d.state !== 'running' or logs.loading or logs.streaming"
                                     t-on-click="() => this.fetchLogs()">
                                 <i class="fa fa-download"/> Traer logs
+                            </button>
+                            <button class="o_pcm_btn"
+                                    t-att-class="{ o_pcm_btn_accent: logs.streaming }"
+                                    t-att-disabled="d.state !== 'running'"
+                                    t-on-click="() => this.toggleStream()">
+                                <i t-att-class="logs.streaming ? 'fa fa-pause' : 'fa fa-play'"/>
+                                <t t-if="logs.streaming"> Pausar</t>
+                                <t t-else=""> En vivo</t>
                             </button>
                             <button class="o_pcm_btn" t-if="logs.text"
                                     t-on-click="() => this.downloadLogs()">
                                 <i class="fa fa-file-text-o"/> Descargar
                             </button>
                         </div>
+                        <div class="o_pcm_muted" t-if="logs.streaming">
+                            <i class="fa fa-circle o_pcm_live_dot"/> En vivo — actualiza cada ~5 s
+                        </div>
                         <div t-if="logs.loading" class="o_pcm_muted">Trayendo logs…</div>
                         <pre t-elif="logs.text" class="o_pcm_logs" t-out="logs.text"/>
-                        <div t-else="" class="o_pcm_muted">Elegí una fuente y traé los logs.</div>
+                        <div t-else="" class="o_pcm_muted">Elegí una fuente y traé los logs, o poné "En vivo".</div>
                     </div>
                 </t>
 

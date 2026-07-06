@@ -1,6 +1,6 @@
 /** @odoo-module **/
 
-import { Component, onWillStart, onWillUpdateProps, useState } from "@odoo/owl";
+import { Component, onWillStart, onWillUnmount, onWillUpdateProps, useState } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
 import { runPcmModelAction } from "../pcm_actions";
@@ -43,16 +43,22 @@ export class ServidorDetalle extends Component {
             loading: true, data: {},
             tab: this.props.initialTab || "dashboard",
         });
-        // Visor de logs on-demand (no persiste; se trae por SSM al pedirlo).
+        // Visor de logs: on-demand (fetch completo) + streaming incremental.
         this.logs = useState({
             source: "odoo", lines: 200, grep: "", text: "", loading: false,
+            streaming: false, cursor: false,
         });
+        this._streamTimer = null;   // handle del setInterval (no reactivo)
+        this._polling = false;      // evita solapar polls si uno tarda
+        this._onVisibility = () => this._handleVisibility();
         onWillStart(() => this.load(this.props.serverId));
         onWillUpdateProps((next) => {
             if (next.serverId !== this.props.serverId) {
+                this.stopStream();  // otra instancia → cortar el streaming viejo
                 this.load(next.serverId);
             }
         });
+        onWillUnmount(() => this.stopStream());
     }
 
     async load(id) {
@@ -68,6 +74,10 @@ export class ServidorDetalle extends Component {
     }
 
     setTab(tab) {
+        // Al salir de la tab Logs, cortar el streaming (no pollear en background).
+        if (tab !== "logs" && this.logs.streaming) {
+            this.stopStream();
+        }
         this.state.tab = tab;
         // Refleja la tab en el hash del router (deep-link que sobrevive al F5).
         this.props.onTabChange?.(tab);
@@ -184,5 +194,78 @@ export class ServidorDetalle extends Component {
         a.download = `${this.d.name || "instancia"}-${this.logs.source}.log`;
         a.click();
         URL.revokeObjectURL(url);
+    }
+
+    // --- Streaming incremental (polla cada ~5s solo mientras la tab está viva) ---
+    toggleStream() {
+        if (this.logs.streaming) {
+            this.stopStream();
+        } else {
+            this.startStream();
+        }
+    }
+
+    startStream() {
+        // Arranca limpio: el primer poll (sin cursor) trae la cola actual.
+        this.logs.text = "";
+        this.logs.cursor = false;
+        this.logs.streaming = true;
+        document.addEventListener("visibilitychange", this._onVisibility);
+        this.pollStream();
+        this._streamTimer = setInterval(() => this.pollStream(), 5000);
+    }
+
+    stopStream() {
+        this.logs.streaming = false;
+        if (this._streamTimer) {
+            clearInterval(this._streamTimer);
+            this._streamTimer = null;
+        }
+        document.removeEventListener("visibilitychange", this._onVisibility);
+    }
+
+    // Pausa el polling con la pestaña oculta; reanuda al volver (ahorra SSM).
+    _handleVisibility() {
+        if (document.hidden) {
+            if (this._streamTimer) {
+                clearInterval(this._streamTimer);
+                this._streamTimer = null;
+            }
+        } else if (this.logs.streaming && !this._streamTimer) {
+            this.pollStream();
+            this._streamTimer = setInterval(() => this.pollStream(), 5000);
+        }
+    }
+
+    async pollStream() {
+        if (this._polling) {
+            return;   // no solapar si un poll tarda más que el intervalo
+        }
+        this._polling = true;
+        try {
+            const res = await this.orm.call(
+                "primate.cloud.dashboard", "get_instance_logs_stream",
+                [this.props.serverId, this.logs.source, this.logs.cursor,
+                 this.logs.lines, this.logs.grep || false]
+            );
+            if (res.cursor !== undefined) {
+                this.logs.cursor = res.cursor;
+            }
+            if (res.text) {
+                const sep = this.logs.text ? "\n" : "";
+                let combined = this.logs.text + sep + res.text;
+                // Cota de memoria: conservar los últimos ~100k caracteres.
+                if (combined.length > 100000) {
+                    combined = combined.slice(-100000);
+                }
+                this.logs.text = combined;
+            }
+            if (res.status === "error") {
+                this.stopStream();
+                this.env.pcm?.notify(res.text || "Error de streaming", { type: "warning" });
+            }
+        } finally {
+            this._polling = false;
+        }
     }
 }

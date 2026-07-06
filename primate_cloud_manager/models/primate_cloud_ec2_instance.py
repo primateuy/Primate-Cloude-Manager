@@ -260,6 +260,96 @@ class PrimateCloudEc2Instance(models.Model):
         text = (output.get("stdout") or "") or (output.get("stderr") or "")
         return {"status": output.get("status") or "Unknown", "text": text}
 
+    # --- Streaming incremental de logs (Bloque B2) ---
+    # Fuentes de journal (usan cursor de journalctl) → unidad systemd.
+    _JOURNAL_STREAM = {"odoo": "-u odoo", "postgres": "-u postgresql", "os": ""}
+    # Fuentes de archivo (usan offset de bytes como cursor).
+    _FILE_STREAM = {"nginx": "/var/log/nginx/error.log"}
+
+    def fetch_logs_stream(self, source, from_cursor=False, lines=200, grep=None):
+        """Trae SOLO lo nuevo desde ``from_cursor`` (streaming incremental por SSM).
+
+        Lectura interactiva read-only y ACOTADA → corre síncrona con timeout
+        corto (política de lecturas interactivas de CLAUDE.md), no por queue_job.
+        Igual que ``fetch_logs``: nunca toca el odoo.conf ni credenciales.
+
+        El cursor es OPACO para el front (lo reenvía en el próximo poll): en
+        journal es el cursor de journalctl; en archivos, el offset de bytes leído.
+        (OJO: el parámetro NO puede llamarse ``cursor`` — ``_()`` inspecciona los
+        locales y toma un ``cursor`` como si fuese el cursor de BD → rompe.)
+
+        Returns:
+            dict: ``{"status": str, "text": str, "cursor": str|bool}`` con solo
+            las líneas nuevas (``text`` vacío si no hubo novedad).
+        """
+        self.ensure_one()
+        if source not in self._LOG_SOURCES:
+            raise UserError(_("Fuente de log no soportada: %s.") % source)
+        try:
+            lines = int(lines)
+        except (TypeError, ValueError):
+            lines = 200
+        journal = source in self._JOURNAL_STREAM
+        cmd = (self._journal_stream_cmd(source, from_cursor, lines, grep) if journal
+               else self._file_stream_cmd(source, from_cursor, lines, grep))
+        output = self._get_ssm_service().run_script(
+            self.aws_instance_id, cmd, region=self.region,
+            comment="pcm logs stream: %s" % source, timeout=45, agent_timeout=20)
+        text = output.get("stdout") or ""
+        status = output.get("status") or "Unknown"
+        return (self._parse_journal_stream(text, status, from_cursor) if journal
+                else self._parse_file_stream(text, status))
+
+    def _journal_stream_cmd(self, source, from_cursor, lines, grep):
+        """Comando journalctl que trae lo nuevo tras el cursor + muestra el nuevo."""
+        base = ("journalctl %s --no-pager -o short-iso --show-cursor"
+                % self._JOURNAL_STREAM[source]).strip()
+        if from_cursor:
+            base += " --after-cursor %s" % shlex.quote(from_cursor)
+        else:
+            base += " -n %d" % lines
+        if grep:
+            # Filtra el contenido pero CONSERVA la línea de cursor final.
+            base += " | grep -a -i -e '^-- cursor:' -e %s" % shlex.quote(grep)
+        return base
+
+    def _file_stream_cmd(self, source, from_cursor, lines, grep):
+        """Comando tail por offset de bytes; emite el tamaño actual como cursor."""
+        path = shlex.quote(self._FILE_STREAM[source])
+        if from_cursor:
+            body = "tail -c +%d %s 2>/dev/null" % (int(from_cursor) + 1, path)
+        else:
+            body = "tail -n %d %s 2>/dev/null" % (lines, path)
+        if grep:
+            body += " | grep -a -i -- %s" % shlex.quote(grep)
+        return '%s; echo "PCM_OFFSET:$(wc -c < %s 2>/dev/null || echo 0)"' % (body, path)
+
+    @staticmethod
+    def _parse_journal_stream(text, status, prev_cursor):
+        """Separa las líneas nuevas del cursor final (``-- cursor: ...``)."""
+        new_cursor = prev_cursor
+        kept = []
+        for line in text.splitlines():
+            if line.startswith("-- cursor:"):
+                new_cursor = line.split(":", 1)[1].strip()
+            elif line.strip() in ("-- No entries --", ""):
+                continue
+            else:
+                kept.append(line)
+        return {"status": status, "text": "\n".join(kept), "cursor": new_cursor}
+
+    @staticmethod
+    def _parse_file_stream(text, status):
+        """Separa las líneas nuevas del marcador de offset (``PCM_OFFSET:``)."""
+        cursor = False
+        kept = []
+        for line in text.splitlines():
+            if line.startswith("PCM_OFFSET:"):
+                cursor = line.split(":", 1)[1].strip()
+            else:
+                kept.append(line)
+        return {"status": status, "text": "\n".join(kept), "cursor": cursor}
+
     def _log(self, action_type, result="success", error_message=None, aws_request_id=None, name=None):
         """Atajo para registrar en la bitácora sobre esta instancia."""
         return self.env["primate.cloud.operation.log"].log_operation(

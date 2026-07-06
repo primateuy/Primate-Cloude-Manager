@@ -266,11 +266,13 @@ def s08_costos_y_logs(pg):
     assert pg.locator(":text('requiere agente CloudWatch')").count() >= 1, \
         "RAM/disco deberían mostrar 'requiere agente', no gráfico vacío"
     pg.screenshot(path=f"{SHOT}/s08_dashboard.png")
-    # Tab Logs: el visor on-demand vive en su tab.
+    # Tab Logs: el visor on-demand + el toggle de streaming ("En vivo") viven acá.
     pg.click(".o_pcm_tab:has-text('Logs')")
     pg.wait_for_selector("button:has-text('Traer logs')", timeout=8000)
     assert pg.locator("button:has-text('Traer logs')").count() == 1, \
         "falta el visor de logs en la tab Logs"
+    assert pg.locator("button:has-text('En vivo')").count() == 1, \
+        "falta el toggle de streaming 'En vivo'"
     pg.screenshot(path=f"{SHOT}/s08_logs.png")
     # Deep-link: la tab activa se refleja en el hash y sobrevive al F5.
     assert ".logs" in (pg.url or ""), f"la tab no quedó en el hash: {pg.url}"

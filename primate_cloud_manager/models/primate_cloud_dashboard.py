@@ -464,6 +464,30 @@ class PrimateCloudDashboard(models.AbstractModel):
             return {"status": "error", "text": str(error)}
 
     @api.model
+    def get_instance_logs_stream(self, instance_id, source, from_cursor=False,
+                                 lines=200, grep=None):
+        """Trae SOLO lo nuevo desde ``from_cursor`` (streaming incremental, sin persistir).
+
+        Wrapper del ``fetch_logs_stream``: el front pollea con el cursor devuelto.
+        Devuelve texto nuevo (vacío si no hubo novedad) + el cursor a reenviar.
+        (El parámetro no puede llamarse ``cursor``: ``_()`` lo tomaría como el
+        cursor de BD por su heurística de locales.)
+        """
+        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        if not inst:
+            return {"status": "error", "text": _("Instancia no encontrada."),
+                    "cursor": from_cursor}
+        if inst.instance_state != "running":
+            return {"status": "error",
+                    "text": _("La instancia no está corriendo."),
+                    "cursor": from_cursor}
+        try:
+            return inst.fetch_logs_stream(source, from_cursor=from_cursor,
+                                          lines=lines, grep=grep)
+        except Exception as error:  # noqa: BLE001 - se muestra el error, no rompe
+            return {"status": "error", "text": str(error), "cursor": from_cursor}
+
+    @api.model
     def get_cost_overview(self, account_id=None):
         """Resumen de costos para la pantalla de Costos (lee cost.entry).
 

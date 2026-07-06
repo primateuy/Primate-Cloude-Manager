@@ -125,6 +125,63 @@ class TestDeployment(TransactionCase):
         self.assertNotIn("cat ", cmd)   # nunca vuelca el archivo entero
         self.assertIn("workers", cmd)   # solo la línea de workers
 
+    # --- Logs streaming incremental (Bloque B2) ---
+    def test_logs_stream_journal_parsea_cursor(self):
+        """Primer poll (sin cursor): usa -n y --show-cursor; separa el cursor."""
+        out = ("2026-01-01T00:00 log line 1\n2026-01-01T00:01 log line 2\n"
+               "-- cursor: s=abc123\n")
+        patcher, fake = self._patch_ssm({"stdout": out, "status": "Success"})
+        with patcher:
+            res = self.instance.fetch_logs_stream("odoo", from_cursor=False)
+        self.assertEqual(res["cursor"], "s=abc123")
+        self.assertIn("log line 1", res["text"])
+        self.assertNotIn("-- cursor:", res["text"])
+        cmd = fake.run_script.call_args[0][1]
+        self.assertIn("--show-cursor", cmd)
+        self.assertIn("-u odoo", cmd)
+        self.assertNotIn("--after-cursor", cmd)
+
+    def test_logs_stream_journal_incremental(self):
+        """Con cursor: usa --after-cursor y sin novedad devuelve texto vacío."""
+        patcher, fake = self._patch_ssm(
+            {"stdout": "-- cursor: s=z9\n", "status": "Success"})
+        with patcher:
+            res = self.instance.fetch_logs_stream("odoo", from_cursor="s=abc123")
+        self.assertEqual(res["cursor"], "s=z9")
+        self.assertEqual(res["text"], "")
+        cmd = fake.run_script.call_args[0][1]
+        self.assertIn("--after-cursor", cmd)
+        self.assertIn("s=abc123", cmd)
+
+    def test_logs_stream_archivo_offset(self):
+        """Fuente de archivo: cursor = offset de bytes; tail -c +(offset+1)."""
+        out = "linea nueva nginx\nPCM_OFFSET:4096\n"
+        patcher, fake = self._patch_ssm({"stdout": out, "status": "Success"})
+        with patcher:
+            res = self.instance.fetch_logs_stream("nginx", from_cursor="1024")
+        self.assertEqual(res["cursor"], "4096")
+        self.assertIn("linea nueva nginx", res["text"])
+        self.assertNotIn("PCM_OFFSET", res["text"])
+        self.assertIn("tail -c +1025", fake.run_script.call_args[0][1])
+
+    def test_logs_stream_sin_credenciales(self):
+        """El streaming NO referencia el odoo.conf ni credenciales."""
+        patcher, fake = self._patch_ssm({"stdout": "", "status": "Success"})
+        with patcher:
+            self.instance.fetch_logs_stream("odoo", from_cursor=False)
+        cmd = fake.run_script.call_args[0][1]
+        self.assertNotIn("db_password", cmd)
+        self.assertNotIn("odoo.conf", cmd)
+        self.assertNotIn("cat ", cmd)
+
+    def test_logs_stream_instancia_detenida(self):
+        """El wrapper del dashboard corta si la instancia no corre (echoa cursor)."""
+        self.instance.instance_state = "stopped"
+        res = self.env["primate.cloud.dashboard"].get_instance_logs_stream(
+            self.instance.id, "odoo", "s=prev")
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(res["cursor"], "s=prev")
+
     # --- Creación / nombre ---
     def test_create_asigna_referencia(self):
         dep = self._deploy()
