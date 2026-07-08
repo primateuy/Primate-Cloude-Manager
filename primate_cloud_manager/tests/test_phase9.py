@@ -727,7 +727,10 @@ class TestSnapshotRetentionPhase9(TransactionCase):
         # a) 3 snapshots de HOY (ventana cruda) → intactas.
         raw = [self._snap(now - timedelta(hours=h)) for h in (1, 2, 3)]
         # b) 3 snapshots del MISMO día viejo (30d) → downsample a 1 (la más nueva).
-        old_day = now - timedelta(days=30)
+        # Anclado a mediodía para que ±2h no crucen la medianoche (si el test
+        # corre pasada la 00:00, restar horas caería en otro día calendario).
+        old_day = (now - timedelta(days=30)).replace(
+            hour=12, minute=0, second=0, microsecond=0)
         old_same_day = [self._snap(old_day - timedelta(hours=h)) for h in (0, 1, 2)]
         newest_old = old_same_day[0]  # la de h=0 es la más nueva del día
         # c) 1 snapshot de OTRO día viejo (31d) → se conserva su representante.
