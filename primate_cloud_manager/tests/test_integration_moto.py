@@ -321,3 +321,123 @@ class TestMotoPhase8(TransactionCase):
         self.assertEqual(set(by_id), {rule_a, rule_b})
         self.assertEqual(by_id[rule_a]["Expiration"]["Days"], 14)
         self.assertEqual(by_id[rule_b]["Expiration"]["Days"], 30)
+
+
+@unittest.skipUnless(HAS_MOTO, "moto no está instalado")
+@tagged("post_install", "-at_install", "primate_cloud", "primate_cloud_moto")
+class TestMotoDiscovery(TransactionCase):
+    """Auto-discovery de red (Bloque B1): describe/validate + auto-crear SG."""
+
+    def _svc(self):
+        from ..services import aws_discovery
+        return aws_discovery.AwsDiscoveryService(_make_base())
+
+    def _public_vpc(self, client, tag_managed=False):
+        """Arma una VPC con IGW + subnet pública (ruta 0.0.0.0/0 → igw)."""
+        vpc = client.create_vpc(CidrBlock="10.0.0.0/16")["Vpc"]
+        vid = vpc["VpcId"]
+        if tag_managed:
+            client.create_tags(Resources=[vid], Tags=[
+                {"Key": "primate:managed_by", "Value": "pcm"}])
+        igw = client.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
+        client.attach_internet_gateway(InternetGatewayId=igw, VpcId=vid)
+        subnet = client.create_subnet(
+            VpcId=vid, CidrBlock="10.0.1.0/24")["Subnet"]["SubnetId"]
+        client.modify_subnet_attribute(
+            SubnetId=subnet, MapPublicIpOnLaunch={"Value": True})
+        rt = client.create_route_table(VpcId=vid)["RouteTable"]["RouteTableId"]
+        client.create_route(RouteTableId=rt, DestinationCidrBlock="0.0.0.0/0",
+                            GatewayId=igw)
+        client.associate_route_table(RouteTableId=rt, SubnetId=subnet)
+        return vid, subnet, igw
+
+    def test_discover_vpc_prefiere_tagueada(self):
+        with mock_aws():
+            client = boto3.client("ec2", region_name="us-east-1")
+            managed, _, _ = self._public_vpc(client, tag_managed=True)
+            self._public_vpc(client)   # otra VPC sin tag (ruido)
+            res = self._svc().discover_vpc("us-east-1")
+        self.assertEqual(res["vpc_id"], managed)   # gana la tagueada
+        self.assertFalse(res["ambiguous"])
+
+    def test_vpc_igw_y_subnet_publica(self):
+        with mock_aws():
+            client = boto3.client("ec2", region_name="us-east-1")
+            vid, subnet, _ = self._public_vpc(client)
+            svc = self._svc()
+            self.assertTrue(svc.vpc_has_igw("us-east-1", vid))
+            found = svc.discover_public_subnet("us-east-1", vid)
+        self.assertEqual(found["subnet_id"], subnet)
+
+    def test_subnet_privada_no_cuenta(self):
+        """Subnet sin ruta a IGW no es pública aunque exista (comportamiento)."""
+        with mock_aws():
+            client = boto3.client("ec2", region_name="us-east-1")
+            vpc = client.create_vpc(CidrBlock="10.1.0.0/16")["Vpc"]["VpcId"]
+            sub = client.create_subnet(
+                VpcId=vpc, CidrBlock="10.1.1.0/24")["Subnet"]["SubnetId"]
+            client.modify_subnet_attribute(
+                SubnetId=sub, MapPublicIpOnLaunch={"Value": True})
+            # sin IGW ni ruta → no es pública de verdad
+            found = self._svc().discover_public_subnet("us-east-1", vpc)
+        self.assertIsNone(found["subnet_id"])
+
+    def test_ensure_security_group_crea_e_idempotente(self):
+        with mock_aws():
+            client = boto3.client("ec2", region_name="us-east-1")
+            vid, _, _ = self._public_vpc(client)
+            ec2 = aws_ec2.AwsEc2Service(_make_base())
+            tags = [{"Key": "primate:managed_by", "Value": "pcm"}]
+            sg1 = ec2.ensure_security_group("us-east-1", vid, tags)
+            sg2 = ec2.ensure_security_group("us-east-1", vid, tags)  # idempotente
+            self.assertEqual(sg1, sg2)   # NO duplica
+            sg = client.describe_security_groups(
+                GroupIds=[sg1])["SecurityGroups"][0]
+            rules = self._svc().validate_sg_rules(sg)
+        self.assertTrue(rules["ok"])          # 80+443 in, egress abierto
+        self.assertEqual(rules["missing_ingress"], [])
+
+    def test_ensure_security_group_completa_regla_faltante(self):
+        """Un SG pcm-managed sin 443 → ensure lo completa (no rechaza)."""
+        with mock_aws():
+            client = boto3.client("ec2", region_name="us-east-1")
+            vid, _, _ = self._public_vpc(client)
+            sg = client.create_security_group(
+                GroupName="pcm-managed", Description="x", VpcId=vid,
+                TagSpecifications=[{"ResourceType": "security-group", "Tags": [
+                    {"Key": "primate:managed_by", "Value": "pcm"}]}])["GroupId"]
+            client.authorize_security_group_ingress(  # solo 80, falta 443
+                GroupId=sg, IpPermissions=[{
+                    "IpProtocol": "tcp", "FromPort": 80, "ToPort": 80,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}])
+            ec2 = aws_ec2.AwsEc2Service(_make_base())
+            same = ec2.ensure_security_group("us-east-1", vid, [
+                {"Key": "primate:managed_by", "Value": "pcm"}])
+            self.assertEqual(same, sg)   # reusa el existente
+            final = client.describe_security_groups(
+                GroupIds=[sg])["SecurityGroups"][0]
+            rules = self._svc().validate_sg_rules(final)
+        self.assertTrue(rules["ok"])   # 443 completado
+
+    def test_discover_instance_profile(self):
+        with mock_aws():
+            iam = boto3.client("iam")
+            iam.create_instance_profile(InstanceProfileName="pcm-ssm-role")
+            svc = self._svc()
+            ok = svc.discover_instance_profile("pcm-ssm-role")
+            missing = svc.discover_instance_profile("no-existe")
+        self.assertTrue(ok["exists"])
+        self.assertFalse(missing["exists"])
+
+    def test_discover_region_composicion(self):
+        with mock_aws():
+            client = boto3.client("ec2", region_name="us-east-1")
+            boto3.client("iam").create_instance_profile(
+                InstanceProfileName="pcm-ssm-role")
+            self._public_vpc(client, tag_managed=True)
+            res = self._svc().discover_region("us-east-1", "pcm-ssm-role")
+        self.assertTrue(res["structural_ok"])         # rol + vpc(igw) + subnet ok
+        self.assertEqual(res["structural_missing"], [])
+        self.assertTrue(res["profile"]["exists"])
+        self.assertTrue(res["vpc"]["has_igw"])
+        self.assertIsNotNone(res["subnet"]["subnet_id"])

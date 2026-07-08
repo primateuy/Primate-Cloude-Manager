@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from . import aws_base
+from . import aws_discovery
 from . import aws_ec2
 from . import aws_rds
 from . import aws_route53

@@ -7,6 +7,8 @@ datos normalizados. No depende del ORM ni escribe en la base.
 import logging
 import time
 
+from . import aws_discovery
+
 _logger = logging.getLogger(__name__)
 
 # Estados terminales de una instancia EC2 al esperar tras crearla.
@@ -330,6 +332,69 @@ class AwsEc2Service:
         client = self._base.get_client("ec2", region=region)
         response = client.create_tags(Resources=list(resource_ids), Tags=tags)
         return self._request_id(response)
+
+    @staticmethod
+    def _error_code(error):
+        """Código de error boto3 (``''`` si no aplica)."""
+        if hasattr(error, "response"):
+            return (error.response or {}).get("Error", {}).get("Code", "")
+        return ""
+
+    def ensure_security_group(self, region, vpc_id, tags, description=None):
+        """Descubre o CREA el SG gestionado (``pcm-managed``) y completa sus reglas.
+
+        Idempotente: si ya existe (nombre + tag en la VPC) lo reusa; si dos jobs
+        lo crean a la vez, el segundo captura ``InvalidGroup.Duplicate`` y reusa
+        (nombre único por VPC). Solo toca el SG de PCM. Deja ingress 80/443 desde
+        0.0.0.0/0 (idempotente) y el egress abierto por default del SG nuevo.
+
+        Args:
+            region (str): región.
+            vpc_id (str): VPC donde vive/creará el SG.
+            tags (list[dict]): tags boto3 (deben incluir ``primate:managed_by=pcm``).
+            description (str, optional): descripción del SG.
+
+        Returns:
+            str: GroupId del SG gestionado.
+        """
+        client = self._base.get_client("ec2", region=region)
+
+        def _find():
+            found = client.describe_security_groups(Filters=[
+                {"Name": "vpc-id", "Values": [vpc_id]},
+                {"Name": "group-name", "Values": [aws_discovery.MANAGED_SG_NAME]},
+            ]).get("SecurityGroups", [])
+            return found[0]["GroupId"] if found else None
+
+        sg_id = _find()
+        if not sg_id:
+            try:
+                sg_id = client.create_security_group(
+                    GroupName=aws_discovery.MANAGED_SG_NAME,
+                    Description=description or "Primate Cloud Manager managed SG",
+                    VpcId=vpc_id,
+                    TagSpecifications=[
+                        {"ResourceType": "security-group", "Tags": tags}],
+                )["GroupId"]
+            except Exception as error:  # noqa: BLE001
+                if self._error_code(error) != "InvalidGroup.Duplicate":
+                    raise
+                sg_id = _find()  # otro job lo creó → reusar
+        self._authorize_web_ingress(client, sg_id)
+        return sg_id
+
+    def _authorize_web_ingress(self, client, sg_id):
+        """Abre 80/443 desde 0.0.0.0/0 en el SG (idempotente: ignora duplicados)."""
+        for port in aws_discovery.REQUIRED_INGRESS_PORTS:
+            try:
+                client.authorize_security_group_ingress(
+                    GroupId=sg_id,
+                    IpPermissions=[{
+                        "IpProtocol": "tcp", "FromPort": port, "ToPort": port,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}])
+            except Exception as error:  # noqa: BLE001
+                if self._error_code(error) != "InvalidPermission.Duplicate":
+                    raise
 
     @staticmethod
     def _normalize_instance(inst, region):
