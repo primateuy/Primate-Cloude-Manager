@@ -69,6 +69,21 @@ if not dns_rec:
         "state": "active", "sync_state": "synced",
     })
 
+# region.setup verde pre-sembrado (auto-discovery, Bloque B4): así el gate de
+# región del wizard PASA con la cuenta falsa y el provisioning falla downstream
+# (AuthFailure), que es lo que ejercita el ciclo error→corrección→éxito del smoke.
+from odoo import fields
+region = fake.default_region or "us-east-1"
+Setup = env["primate.cloud.region.setup"]
+if not Setup.search([("account_id", "=", fake.id), ("region", "=", region)], limit=1):
+    Setup.create({
+        "account_id": fake.id, "region": region, "status": "ok",
+        "vpc_id": "vpc-smoke", "subnet_id": "subnet-smoke",
+        "security_group_id": "sg-smoke", "profile_ok": True, "has_igw": True,
+        "detail": "Todo listo (fixture smoke).",
+        "last_discovered_at": fields.Datetime.now(),
+    })
+
 env.cr.commit()
 print("FIXTURE_ENV_ID", fx.id, "cuenta", fx.account_id.name, "estado", fx.state)
 print("FIXTURE_DNS_ENV_ID", dns_env.id)

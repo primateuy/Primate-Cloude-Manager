@@ -349,6 +349,42 @@ class PrimateCloudEnvironment(models.Model):
             "context": {"default_environment_id": self.id},
         }
 
+    def _fill_network_from_discovery(self, params, account, region):
+        """Completa la red (SG/subnet/profile) desde el descubrimiento de la región.
+
+        REGLA (auto-discovery): un valor EXPLÍCITO del wizard GANA; el discovery
+        solo completa lo VACÍO. Si falta lo estructural (VPC/subnet/rol), levanta
+        el mensaje accionable (no aprovisiona a ciegas). Asegura el SG y COMMITEA
+        enseguida → el advisory lock se libera antes del provisioning largo (no
+        serializa 15 min a dos usuarios de la misma región).
+        """
+        self.ensure_one()
+        sg = params.get("security_group_ids")
+        subnet = params.get("subnet_id")
+        profile = params.get("instance_profile")
+        if sg and subnet and profile:
+            return params   # red totalmente explícita → override, no tocar
+        setup = self.env["primate.cloud.region.setup"].get_or_discover(
+            account, region)
+        if setup.status != "ok":
+            raise UserError(setup.detail or _("La región no está lista para "
+                                              "aprovisionar."))
+        from .primate_cloud_region_setup import PCM_SSM_ROLE
+        filled = dict(params)
+        if not profile:
+            filled["instance_profile"] = PCM_SSM_ROLE
+        if not subnet:
+            filled["subnet_id"] = setup.subnet_id
+        if not sg:
+            # Solo asegura el SG si el caché no lo tiene ya (evita una llamada
+            # AWS por provisión). El lock de sesión con unlock explícito adentro
+            # no retiene el lock durante el provisioning largo (no serializa 15 min).
+            if not setup.security_group_id:
+                setup.job_ensure_security_group()
+            filled["security_group_ids"] = (
+                [setup.security_group_id] if setup.security_group_id else [])
+        return filled
+
     def _enqueue_provision(self, params):
         """Valida, deja el entorno en 'provisioning' y encola el flujo completo.
 
@@ -417,6 +453,10 @@ class PrimateCloudEnvironment(models.Model):
             base = account._get_aws_service()
             region = params.get("region") or account.default_region
             domain = params.get("domain") or self.main_url or self.name
+
+            # 0. Completar la red desde el descubrimiento (auto-discovery): SG/
+            #    subnet/profile vacíos se resuelven de la región; override gana.
+            params = self._fill_network_from_discovery(params, account, region)
 
             # 1. Crear EC2 ------------------------------------------------------
             bus.provision_step(self.env, self, _("Creando instancia EC2…"))

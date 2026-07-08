@@ -2,6 +2,7 @@
 """Tests del caché de descubrimiento por región (Bloque B2). Discovery mockeado."""
 from unittest import mock
 
+from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 
 GREEN = {
@@ -156,3 +157,87 @@ class TestRegionSetup(TransactionCase):
         s2 = self.Setup.create(
             {"account_id": self.account.id, "region": "eu-west-1"})
         self.assertNotEqual(s1._lock_key(), s2._lock_key())
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestProvisionAutodiscovery(TransactionCase):
+    """Integración del discovery con el wizard/provision (Bloque B4)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "P", "account_id": self.account.id})
+        self.env_ = self.env["primate.cloud.environment"].create(
+            {"name": "E", "project_id": self.project.id})
+        self.Setup = self.env["primate.cloud.region.setup"]
+
+    def _wizard(self, **vals):
+        base = {"environment_id": self.env_.id, "account_id": self.account.id,
+                "region": "us-east-1", "domain": "e.primate.cloud",
+                "instance_type": "t3.small", "db_mode": "local_pg",
+                "create_dns": False}
+        base.update(vals)
+        return self.env["primate.cloud.provision.wizard"].create(base)
+
+    def _ok_setup(self):
+        return self.Setup.create({
+            "account_id": self.account.id, "region": "us-east-1",
+            "status": "ok", "subnet_id": "subnet-1",
+            "last_discovered_at": self.env.cr.now()
+            if hasattr(self.env.cr, "now") else None})
+
+    # --- Semáforo bloquea (cuidado #1) ---
+    def test_wizard_bloquea_si_region_roja(self):
+        red = self.Setup.create({
+            "account_id": self.account.id, "region": "us-east-1",
+            "status": "missing_structural", "detail": "Falta la VPC. Corré el runbook."})
+        wiz = self._wizard()
+        with mock.patch.object(type(self.Setup), "get_or_discover", return_value=red):
+            with self.assertRaises(UserError) as cm:
+                wiz.action_provision()
+        self.assertIn("Falta la VPC", str(cm.exception))   # mensaje accionable
+
+    def test_wizard_override_explicito_no_bloquea(self):
+        """Red explícita (admin) → se salta el discovery aunque la región esté roja."""
+        wiz = self._wizard(security_group_ids="sg-x", subnet_id="subnet-x")
+        with mock.patch.object(type(self.env_), "_enqueue_provision") as enq, \
+             mock.patch.object(type(self.env_), "_save_provision_config"), \
+             mock.patch.object(type(self.Setup), "get_or_discover") as god:
+            wiz.action_provision()
+        god.assert_not_called()     # ni consultó el discovery
+        enq.assert_called_once()
+
+    # --- Fill de red desde discovery (regla: explícito gana, completa vacío) ---
+    def test_fill_network_override_gana(self):
+        params = {"region": "us-east-1", "security_group_ids": ["sg-x"],
+                  "subnet_id": "subnet-x", "instance_profile": "prof-x"}
+        with mock.patch.object(type(self.Setup), "get_or_discover") as god:
+            filled = self.env_._fill_network_from_discovery(
+                params, self.account, "us-east-1")
+        god.assert_not_called()     # todo explícito → no toca discovery
+        self.assertEqual(filled["security_group_ids"], ["sg-x"])
+        self.assertEqual(filled["instance_profile"], "prof-x")
+
+    def test_fill_network_completa_vacios(self):
+        setup = self._ok_setup()
+        with mock.patch.object(type(self.Setup), "get_or_discover", return_value=setup), \
+             mock.patch.object(
+                 type(setup), "job_ensure_security_group",
+                 side_effect=lambda: setup.write({"security_group_id": "sg-1"})):
+            filled = self.env_._fill_network_from_discovery(
+                {"region": "us-east-1"}, self.account, "us-east-1")
+        self.assertEqual(filled["instance_profile"], "pcm-ssm-role")
+        self.assertEqual(filled["subnet_id"], "subnet-1")
+        self.assertEqual(filled["security_group_ids"], ["sg-1"])
+
+    def test_fill_network_bloquea_si_falta_estructural(self):
+        red = self.Setup.create({
+            "account_id": self.account.id, "region": "us-east-1",
+            "status": "missing_structural", "detail": "Falta subnet."})
+        with mock.patch.object(type(self.Setup), "get_or_discover", return_value=red):
+            with self.assertRaises(UserError):
+                self.env_._fill_network_from_discovery(
+                    {"region": "us-east-1"}, self.account, "us-east-1")

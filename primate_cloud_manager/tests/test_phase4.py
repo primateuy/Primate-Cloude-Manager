@@ -306,7 +306,10 @@ class TestEnvironmentProvision(TransactionCase):
             "region": "us-east-1", "domain": "forum.primate.cloud",
             "instance_name": "forum-prod", "instance_type": "t3.medium",
             "os_type": "ubuntu_24", "image_id": "ami-1", "disk_size_gb": 30,
-            "security_group_ids": [],
+            # Red explícita (override del admin) → el provision salta el
+            # auto-discovery; estos tests ejercitan la mecánica de provisión.
+            "security_group_ids": ["sg-1"], "subnet_id": "subnet-1",
+            "instance_profile": "pcm-ssm-role",
             "db_mode": "rds", "db_name": "forum", "db_user": "odoo",
             "db_password": "secret", "pg_version": "16",
             "rds_identifier": "forum-db", "rds_instance_class": "db.t3.medium",
@@ -342,6 +345,8 @@ class TestEnvironmentProvision(TransactionCase):
             "environment_id": self.env_rec.id, "region": "us-east-1",
             "domain": "forum.primate.cloud", "image_id": "ami-1",
             "instance_type": "t3.medium", "db_mode": "local_pg",
+            # Red explícita → salta el chequeo de región (override del admin).
+            "security_group_ids": "sg-1", "subnet_id": "subnet-1",
             "create_dns": False,
         })
         with mock.patch.object(type(self.env_rec), "with_delay") as wd:
@@ -355,7 +360,8 @@ class TestEnvironmentProvision(TransactionCase):
         wiz = Wiz.create({
             "environment_id": self.env_rec.id, "region": "us-east-1", "domain": "x",
             "image_id": "ami-zzz", "instance_type": "t3.small",
-            "security_group_ids": "sg-1,sg-2", "instance_profile": "pcm-ssm-role",
+            "security_group_ids": "sg-1,sg-2", "subnet_id": "subnet-1",
+            "instance_profile": "pcm-ssm-role",
             "db_mode": "local_pg", "db_password": "secret", "create_dns": False,
         })
         with mock.patch.object(type(self.env_rec), "with_delay"):

@@ -22,6 +22,12 @@
                         <field name="admin_password" password="True"/>
                     </group>
                 </group>
+                <!-- Semáforo de la región (auto-discovery, Bloque B4). -->
+                <group>
+                    <field name="region_status" readonly="1"/>
+                    <field name="region_detail" readonly="1"
+                           invisible="region_status == 'ok'"/>
+                </group>
                 <notebook>
                     <page string="Cómputo" name="compute">
                         <group>
@@ -29,8 +35,10 @@
                                 <field name="instance_name"/>
                                 <field name="instance_type"/>
                                 <field name="os_type"/>
-                                <label for="image_id"/>
-                                <div class="o_row">
+                                <label for="image_id"
+                                       groups="primate_cloud_manager.group_cloud_admin"/>
+                                <div class="o_row"
+                                     groups="primate_cloud_manager.group_cloud_admin">
                                     <field name="image_id" nolabel="1"
                                            placeholder="(vacío = se resuelve Ubuntu 24.04 de la región)"/>
                                     <button name="action_resolve_ami" type="object"
@@ -38,11 +46,15 @@
                                 </div>
                                 <field name="disk_size_gb"/>
                             </group>
-                            <group string="Red y acceso (opcional)">
+                            <!-- Red: solo admin. El usuario final no la ve; el
+                                 discovery la completa. Un valor acá (override del
+                                 admin) gana sobre lo descubierto. -->
+                            <group string="Red y acceso (admin — override del descubrimiento)"
+                                   groups="primate_cloud_manager.group_cloud_admin">
                                 <field name="key_name"/>
-                                <field name="security_group_ids" placeholder="sg-aaa, sg-bbb"/>
-                                <field name="subnet_id"/>
-                                <field name="instance_profile"/>
+                                <field name="security_group_ids" placeholder="(vacío = auto: pcm-managed)"/>
+                                <field name="subnet_id" placeholder="(vacío = auto: subnet pública)"/>
+                                <field name="instance_profile" placeholder="(vacío = auto: pcm-ssm-role)"/>
                             </group>
                         </group>
                     </page>
@@ -74,6 +86,8 @@
                     </page>
                 </notebook>
                 <footer>
+                    <button name="action_verify_region" type="object"
+                            string="Verificar región" class="btn-secondary"/>
                     <button name="action_provision" type="object"
                             string="Aprovisionar" class="btn-primary"
                             confirm="Esto creará recursos facturables en AWS. ¿Continuar?"/>

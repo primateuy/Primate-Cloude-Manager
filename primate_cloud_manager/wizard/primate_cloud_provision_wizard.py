@@ -87,6 +87,50 @@ class PrimateCloudProvisionWizard(models.TransientModel):
     # --- Odoo ---
     admin_password = fields.Char(string="Contraseña admin (odoo.conf)")
 
+    # --- Semáforo de descubrimiento de red (Bloque B4) ---
+    region_status = fields.Selection(
+        [("draft", "Sin verificar"), ("ok", "Listo"),
+         ("missing_structural", "Falta infraestructura"), ("error", "Error")],
+        string="Estado de la región", default="draft", readonly=True)
+    region_detail = fields.Text(string="Detalle de la región", readonly=True)
+
+    def _load_region_status(self, discover=False):
+        """Refleja en el wizard el estado del descubrimiento de la región.
+
+        ``discover=False`` solo lee el caché (no golpea AWS); ``True`` corre la
+        verificación (``get_or_discover``, honesto: un rojo se re-verifica).
+        """
+        self.ensure_one()
+        Setup = self.env["primate.cloud.region.setup"]
+        if not (self.account_id and self.region):
+            self.region_status, self.region_detail = "draft", False
+            return
+        if discover:
+            setup = Setup.get_or_discover(self.account_id, self.region)
+        else:
+            setup = Setup.search([("account_id", "=", self.account_id.id),
+                                  ("region", "=", self.region)], limit=1)
+        if setup:
+            self.region_status = setup.status
+            self.region_detail = setup.detail
+        else:
+            self.region_status = "draft"
+            self.region_detail = _("Verificá la región antes de aprovisionar.")
+
+    @api.onchange("region", "account_id")
+    def _onchange_region_status(self):
+        """Al cambiar región, muestra el estado cacheado (sin golpear AWS)."""
+        self._load_region_status(discover=False)
+
+    def action_verify_region(self):
+        """'Verificar región': corre el descubrimiento y refresca el semáforo.
+
+        Siempre disponible (también en rojo) → destrabe admin-resuelve → reverifica
+        → verde a un click. Read-only contra AWS (síncrono por la política)."""
+        self.ensure_one()
+        self._load_region_status(discover=True)
+        return {"type": "ir.actions.client", "tag": "soft_reload"}
+
     @api.model
     def default_get(self, fields_list):
         """Precarga el wizard con la última config guardada del entorno.
@@ -193,6 +237,17 @@ class PrimateCloudProvisionWizard(models.TransientModel):
         """Valida, guarda lo ingresado y encola el flujo de aprovisionamiento."""
         self.ensure_one()
         self._validate()
+        # Bloqueo por semáforo (Bloque B4): si el usuario NO dio red explícita,
+        # la región debe estar VERDE — el error es el mensaje accionable del
+        # region.setup, no un fallo tardío en medio del provisioning. Un override
+        # explícito del admin (subnet + SG) se salta el descubrimiento.
+        if not (self.subnet_id and (self.security_group_ids or "").strip()):
+            setup = self.env["primate.cloud.region.setup"].get_or_discover(
+                self.account_id, self.region)
+            if setup.status != "ok":
+                raise UserError(setup.detail or _(
+                    "La región no está lista para aprovisionar. Verificá la "
+                    "región y resolvé lo que falte."))
         # Se guarda ANTES de encolar: si el job falla, la config queda igual.
         self.environment_id._save_provision_config(self._raw_values())
         self.environment_id._enqueue_provision(self._prepare_params())
