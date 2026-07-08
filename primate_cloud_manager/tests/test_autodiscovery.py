@@ -98,3 +98,61 @@ class TestRegionSetup(TransactionCase):
         with self._fake(GREEN)[0]:
             self.Setup.get_or_discover(self.account, "us-east-1")
         self.assertEqual(setup.status, "ok")   # se destrabó solo
+
+    # --- Auto-SG (Bloque B3) ---
+    def test_ensure_sg_refresca_cache(self):
+        """Crear el SG debe ACTUALIZAR el caché (de 'falta SG' a security_group_id),
+        no esperar al próximo TTL."""
+        setup = self.Setup.create({
+            "account_id": self.account.id, "region": "us-east-1",
+            "status": "ok", "vpc_id": "vpc-1", "security_group_id": False})
+        fake_disc = mock.Mock()
+        fake_disc.discover_region.return_value = GREEN  # tras crear el SG → sg-1
+        with mock.patch.object(type(self.account), "_get_aws_service",
+                               return_value=None), \
+             mock.patch("odoo.addons.primate_cloud_manager.services.aws_ec2."
+                        "AwsEc2Service") as SvcCls, \
+             mock.patch.object(type(setup), "_discovery", return_value=fake_disc):
+            SvcCls.return_value.ensure_security_group.return_value = "sg-1"
+            setup.job_ensure_security_group()
+        self.assertEqual(setup.security_group_id, "sg-1")   # caché coherente
+
+    def test_ensure_sg_no_crea_si_falta_estructural(self):
+        """Si falta VPC/subnet, el job NO crea SG (no adivina sobre infra ausente)."""
+        setup = self.Setup.create({
+            "account_id": self.account.id, "region": "us-east-1"})
+        with self._fake(MISSING_VPC)[0], \
+             mock.patch("odoo.addons.primate_cloud_manager.services.aws_ec2."
+                        "AwsEc2Service") as SvcCls:
+            res = setup.job_ensure_security_group()
+        self.assertFalse(res)
+        SvcCls.assert_not_called()   # nunca intentó crear el SG
+
+    def test_ensure_sg_concurrencia_backstop_un_solo_sg(self):
+        """Carrera real: dos ensure a la vez ven el SG ausente, ambos crean; el
+        segundo recibe InvalidGroup.Duplicate y REUSA el del otro → un solo SG."""
+        from botocore.exceptions import ClientError
+
+        from ..services import aws_ec2
+        fake_client = mock.Mock()
+        fake_client.describe_security_groups.side_effect = [
+            {"SecurityGroups": []},                        # _find: no está (carrera)
+            {"SecurityGroups": [{"GroupId": "sg-race"}]},  # tras Duplicate: lo encuentra
+        ]
+        fake_client.create_security_group.side_effect = ClientError(
+            {"Error": {"Code": "InvalidGroup.Duplicate"}}, "CreateSecurityGroup")
+        base = mock.Mock()
+        base.get_client.return_value = fake_client
+        sg = aws_ec2.AwsEc2Service(base).ensure_security_group(
+            "us-east-1", "vpc-1", [])
+        self.assertEqual(sg, "sg-race")   # reusó el del otro job, NO duplicó
+        self.assertTrue(fake_client.authorize_security_group_ingress.called)
+
+    def test_lock_key_estable_por_cuenta_region(self):
+        s1 = self.Setup.create(
+            {"account_id": self.account.id, "region": "us-east-1"})
+        # Mismo (cuenta, región) → misma clave; región distinta → clave distinta.
+        self.assertEqual(s1._lock_key(), s1._lock_key())
+        s2 = self.Setup.create(
+            {"account_id": self.account.id, "region": "eu-west-1"})
+        self.assertNotEqual(s1._lock_key(), s2._lock_key())
