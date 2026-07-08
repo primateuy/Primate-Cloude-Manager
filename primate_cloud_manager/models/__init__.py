@@ -4,6 +4,7 @@ from . import primate_cloud_backup_policy
 from . import primate_cloud_backup
 from . import primate_cloud_cost_entry
 from . import primate_cloud_monitor_snapshot
+from . import primate_cloud_region_setup
 from . import primate_cloud_account
 from . import primate_cloud_project
 from . import primate_cloud_environment
