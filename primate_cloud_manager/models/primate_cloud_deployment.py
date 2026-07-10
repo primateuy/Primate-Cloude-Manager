@@ -37,7 +37,7 @@ class PrimateCloudDeployment(models.Model):
 
     _name = "primate.cloud.deployment"
     _description = "Deployment"
-    _inherit = ["mail.thread"]
+    _inherit = ["mail.thread", "primate.cloud.instance.linked"]
     _order = "execution_date desc, id desc"
 
     name = fields.Char(string="Referencia", required=True, readonly=True, copy=False,

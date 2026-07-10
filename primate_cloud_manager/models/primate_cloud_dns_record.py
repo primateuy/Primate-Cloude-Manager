@@ -40,7 +40,7 @@ class PrimateCloudDnsRecord(models.Model):
 
     _name = "primate.cloud.dns.record"
     _description = "Registro DNS"
-    _inherit = ["mail.thread"]
+    _inherit = ["mail.thread", "primate.cloud.instance.linked"]
     _order = "name"
 
     name = fields.Char(string="Nombre", required=True, help="Ej.: forum.primate.cloud")

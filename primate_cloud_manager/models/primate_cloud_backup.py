@@ -40,6 +40,7 @@ class PrimateCloudBackup(models.Model):
 
     _name = "primate.cloud.backup"
     _description = "Backup Cloud"
+    _inherit = ["primate.cloud.instance.linked"]
     _order = "backup_date desc, id desc"
 
     name = fields.Char(string="Backup", required=True, readonly=True)

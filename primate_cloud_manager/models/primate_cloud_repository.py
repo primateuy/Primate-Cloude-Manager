@@ -55,7 +55,7 @@ class PrimateCloudRepository(models.Model):
 
     _name = "primate.cloud.repository"
     _description = "Repositorio Git"
-    _inherit = ["mail.thread"]
+    _inherit = ["mail.thread", "primate.cloud.instance.linked"]
     _order = "name"
 
     name = fields.Char(string="Nombre", required=True)

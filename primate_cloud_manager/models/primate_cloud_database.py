@@ -25,6 +25,7 @@ class PrimateCloudDatabase(models.Model):
 
     _name = "primate.cloud.database"
     _description = "Base de Datos Cloud"
+    _inherit = ["primate.cloud.instance.linked"]
     _order = "name"
 
     name = fields.Char(string="Nombre", required=True)

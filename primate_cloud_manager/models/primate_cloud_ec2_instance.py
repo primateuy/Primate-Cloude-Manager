@@ -227,11 +227,21 @@ class PrimateCloudEc2Instance(models.Model):
         )
         if existing:
             existing.write(vals)
-            return existing
-        vals.update(
-            {"account_id": account.id, "aws_instance_id": aws_data["aws_instance_id"]}
-        )
-        return self.create(vals)
+            record = existing
+        else:
+            vals.update(
+                {"account_id": account.id,
+                 "aws_instance_id": aws_data["aws_instance_id"]}
+            )
+            record = self.create(vals)
+        # R1 (D6): la máquina 1:1 del servidor. Se fija si estaba vacía o si
+        # la anterior quedó terminada (re-provisión tras un fallo).
+        if environment and (
+            not environment.ec2_instance_id
+            or environment.ec2_instance_id.instance_state == "terminated"
+        ):
+            environment.ec2_instance_id = record.id
+        return record
 
     # ------------------------------------------------------------------
     # Helpers de servicios AWS
