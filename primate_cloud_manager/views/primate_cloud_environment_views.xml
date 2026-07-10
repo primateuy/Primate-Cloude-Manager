@@ -28,6 +28,19 @@
                             string="Aprovisionar" class="btn-primary"
                             invisible="state not in ('draft', 'error')"
                             groups="primate_cloud_manager.group_cloud_admin"/>
+                    <!-- R2: recuperación del estado "servidor sí, instancia no"
+                         (falló la 2ª mitad de la cadena) — reintenta SOLO el
+                         install, sin crear otra EC2. -->
+                    <button name="action_retry_install" type="object"
+                            string="Reintentar instalación"
+                            invisible="state != 'error' or not ec2_instance_id"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <!-- Gate honesto hasta R3: visible, y al click explica por
+                         qué todavía no (multi-Odoo), en vez de ocultarse. -->
+                    <button name="action_create_instance" type="object"
+                            string="Agregar instancia…"
+                            invisible="state != 'active'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
                     <button name="action_create_staging" type="object"
                             string="Crear staging"
                             invisible="state != 'active' or env_type == 'staging'"

@@ -167,7 +167,7 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             )
 
     def _prepare_params(self):
-        """Construye el dict de parámetros que consume ``job_provision``."""
+        """Construye el dict que consume la cadena ``job_provision_server``."""
         self.ensure_one()
         security_groups = [
             sg.strip() for sg in (self.security_group_ids or "").split(",") if sg.strip()

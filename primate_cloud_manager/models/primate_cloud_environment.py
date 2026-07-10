@@ -400,7 +400,7 @@ class PrimateCloudEnvironment(models.Model):
         """Abre el wizard de aprovisionamiento (captura EC2 + DB + DNS).
 
         El botón no toca AWS: solo presenta el wizard. La confirmación del wizard
-        encola el flujo completo (ver :meth:`job_provision`).
+        encola la cadena servidor → instancia (ver :meth:`job_provision_server`).
         """
         self.ensure_one()
         if self.state not in ("draft", "error"):
@@ -468,7 +468,7 @@ class PrimateCloudEnvironment(models.Model):
         params = self._ensure_transient_db_password(params)
         self.with_delay(
             description=_("Aprovisionar entorno: %s") % self.name
-        ).job_provision(params)
+        ).job_provision_server(params)
 
     @api.model
     def _ensure_transient_db_password(self, params):
@@ -513,21 +513,22 @@ class PrimateCloudEnvironment(models.Model):
         return script
 
     # ------------------------------------------------------------------
-    # Job de aprovisionamiento (flujo 7.1)
+    # Jobs de aprovisionamiento (flujo 7.1, partido en R2: D6)
     # ------------------------------------------------------------------
-    def job_provision(self, params):
-        """Job: ejecuta el flujo completo de aprovisionamiento del entorno.
+    def job_provision_server(self, params):
+        """Job R2 (1/2): aprovisiona el SERVIDOR (red + EC2) y encadena el install.
 
-        Pasos: crear EC2 → [crear RDS o PostgreSQL local] → install_odoo.sh por
-        SSM (nginx + SSL) → crear registro DNS → activar el entorno. Cada paso se
-        audita en la bitácora. Ante cualquier error deja el entorno en 'error',
-        registra el motivo y no se lo traga.
-
-        Args:
-            params (dict): parámetros del wizard (cómputo, base de datos, DNS).
+        Crear un entorno = servidor + su primera instancia (D6). Este job hace
+        la parte de MÁQUINA (auto-discovery de red + EC2) y encola
+        :meth:`job_install_instance` con los MISMOS params. La cadena queda
+        persistida en queue_job: si el install falla, el servidor NO queda en
+        limbo — el entorno pasa a 'error' con la máquina viva y
+        :meth:`action_retry_install` reintenta SOLO la instalación (el
+        client_token protege además contra re-crear la EC2 si ESTE job se
+        re-ejecuta).
 
         Returns:
-            bool: True si el flujo terminó bien; False si falló.
+            bool: True si el servidor quedó creado y el install encolado.
         """
         self.ensure_one()
         account = self.account_id
@@ -541,38 +542,151 @@ class PrimateCloudEnvironment(models.Model):
             #    subnet/profile vacíos se resuelven de la región; override gana.
             params = self._fill_network_from_discovery(params, account, region)
 
-            # 1. Crear EC2 ------------------------------------------------------
-            bus.provision_step(self.env, self, _("Creando instancia EC2…"))
-            instance = self._provision_ec2(base, account, params, region, domain)
-
-            # 2. Base de datos (RDS / PostgreSQL local / ninguna) --------------
-            bus.provision_step(self.env, self, _("Configurando la base de datos…"))
-            db_host = self._provision_database(base, account, instance, params, region)
-
-            # 3. install_odoo.sh por SSM (instala Odoo, nginx, SSL) -----------
-            bus.provision_step(self.env, self,
-                               _("Instalando Odoo por SSM (puede tardar varios minutos)…"))
-            self._provision_run_install(base, instance, params, region, db_host, domain)
-
-            # 4. Registro DNS (A -> IP pública) -------------------------------
-            bus.provision_step(self.env, self, _("Configurando DNS…"))
-            self._provision_dns(base, account, instance, params, domain)
+            # 1. Crear la máquina del servidor --------------------------------
+            bus.provision_step(self.env, self, _("Creando el servidor (EC2)…"))
+            self._provision_ec2(base, account, params, region, domain)
         except Exception as error:  # noqa: BLE001 - se normaliza y se audita
             self.state = "error"
-            self.message_post(body=_("Aprovisionamiento fallido: %s") % error)
-            self._log("provision", name=_("Aprovisionar: %s") % self.name,
+            if self.primary_instance_id:
+                self.primary_instance_id.state = "error"
+            self.message_post(body=_("Aprovisionamiento del servidor fallido: %s") % error)
+            self._log("provision", name=_("Aprovisionar servidor: %s") % self.name,
                       result="failed", error_message=str(error))
             bus.provision_done(self.env, self, ok=False,
                                message=_("Aprovisionamiento fallido: %s") % error)
             return False
 
-        # 5. Activar el entorno -----------------------------------------------
+        # 2. Encadenar la instalación del primer Odoo (job separado: si falla,
+        #    se reintenta sin tocar la EC2).
+        self.with_delay(
+            description=_("Instalar instancia: %s") % self.name
+        ).job_install_instance(params)
+        return True
+
+    def job_install_instance(self, params, resume=False):
+        """Job R2 (2/2): monta el Odoo (la instancia) en el servidor ya creado.
+
+        Pasos: BD (RDS/local) → install_odoo.sh por SSM (nginx + SSL) → DNS →
+        activar entorno e instancia. Ante error deja entorno E instancia en
+        'error' con la máquina intacta: recuperable con
+        :meth:`action_retry_install` (mismos args vía requeue — misma
+        contraseña PG transitoria, sin EC2 nueva).
+
+        Args:
+            params (dict): parámetros del wizard (los mismos de la cadena).
+            resume (bool): reanudación sobre infra existente — salta la
+                creación de la BD (la RDS/local ya existe de un intento
+                anterior; el paso local_pg es idempotente pero el RDS no).
+
+        Returns:
+            bool: True si la instancia quedó activa; False si falló.
+        """
+        self.ensure_one()
+        account = self.account_id
+        machine = self.ec2_instance_id or self.ec2_instance_ids.filtered(
+            lambda m: m.instance_state != "terminated")[:1]
+        instance_rec = self.primary_instance_id
+        bus.provision_start(self.env, self,
+                            title=_("Instalando Odoo: %s") % self.name)
+        try:
+            if not machine or machine.instance_state == "terminated":
+                raise UserError(_(
+                    "El servidor no tiene una máquina activa: reaprovisioná el "
+                    "entorno (el wizard recuerda la configuración)."))
+            base = account._get_aws_service()
+            region = params.get("region") or machine.region or account.default_region
+            domain = params.get("domain") or self.main_url or self.name
+            if instance_rec:
+                instance_rec.state = "installing"
+
+            # 1. Base de datos (RDS / PostgreSQL local / ninguna) --------------
+            if resume:
+                db_host = "localhost" if params.get("db_mode") == "local_pg" \
+                    else (params.get("db_host") or "localhost")
+            else:
+                bus.provision_step(self.env, self,
+                                   _("Configurando la base de datos…"))
+                db_host = self._provision_database(
+                    base, account, machine, params, region)
+
+            # 2. install_odoo.sh por SSM (instala Odoo, nginx, SSL) -----------
+            bus.provision_step(self.env, self,
+                               _("Instalando Odoo por SSM (puede tardar varios minutos)…"))
+            self._provision_run_install(base, machine, params, region, db_host, domain)
+
+            # 3. Registro DNS (A -> IP pública) -------------------------------
+            bus.provision_step(self.env, self, _("Configurando DNS…"))
+            self._provision_dns(base, account, machine, params, domain)
+        except Exception as error:  # noqa: BLE001 - se normaliza y se audita
+            self.state = "error"
+            if instance_rec:
+                instance_rec.state = "error"
+            self.message_post(body=_("Instalación de la instancia fallida: %s") % error)
+            self._log("provision", name=_("Instalar instancia: %s") % self.name,
+                      result="failed", error_message=str(error))
+            bus.provision_done(self.env, self, ok=False,
+                               message=_("Instalación fallida: %s") % error)
+            return False
+
+        # 4. Activar entorno e instancia ---------------------------------------
         self.write({"state": "active", "main_url": domain})
+        if instance_rec:
+            vals = {"state": "active"}
+            if not instance_rec.database_id and self.database_ids:
+                vals["database_id"] = self.database_ids[:1].id
+            instance_rec.write(vals)
         self.message_post(body=_("Entorno aprovisionado y activo en %s.") % domain)
         self._log("provision", name=_("Aprovisionar: %s") % self.name, result="success")
         bus.provision_done(self.env, self, ok=True,
                            message=_("Entorno activo en %s.") % domain)
         return True
+
+    def action_retry_install(self):
+        """Reintenta la instalación del Odoo sobre el servidor YA creado.
+
+        Recuperación del estado "servidor sí, instancia no" (falló la 2ª mitad
+        de la cadena): re-encola el job_install_instance FALLIDO con sus mismos
+        args (queue_job los persiste → misma contraseña PG transitoria), sin
+        crear otra EC2. Si no hay job fallido que reintentar, guía al wizard
+        (que recuerda la configuración).
+        """
+        self.ensure_one()
+        failed_job = self.env["queue.job"].search([
+            ("model_name", "=", self._name),
+            ("method_name", "=", "job_install_instance"),
+            ("state", "=", "failed"),
+        ], order="id desc").filtered(
+            lambda j: self.id in j.records.ids)[:1]
+        if not failed_job:
+            raise UserError(_(
+                "No hay una instalación fallida para reintentar acá: usá "
+                "«Aprovisionar» (el wizard recuerda lo que ingresaste)."))
+        self.state = "provisioning"
+        failed_job.requeue()
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "type": "info", "title": _("Reintentando"),
+                "message": _("Se reintenta la instalación sobre el servidor "
+                             "existente (no se crea otra EC2)."),
+            },
+        }
+
+    def action_create_instance(self):
+        """Agregar OTRO Odoo a este servidor — gate honesto hasta R3.
+
+        La acción es visible para que el modelo destino se entienda desde ya,
+        pero el install multi-Odoo (puertos/unit/nginx por slug sin tocar los
+        Odoo vivos) es la fase R3 del recableo: hasta entonces se explica el
+        porqué en lugar de ocultar el botón.
+        """
+        self.ensure_one()
+        raise UserError(_(
+            "Todavía no disponible: montar un segundo Odoo en un servidor "
+            "existente requiere el layout multi-Odoo (fase R3 del recableo, "
+            "en curso). Hoy cada servidor hospeda su instancia primaria; para "
+            "un Odoo nuevo, creá un entorno."))
 
     def _provision_ec2(self, base, account, params, region, domain):
         """Crea la EC2 del entorno y registra el recurso. Devuelve la instancia."""
@@ -644,18 +758,32 @@ class PrimateCloudEnvironment(models.Model):
                 client=self.project_id.name, environment=self.name,
                 client_ref=client_ref, environment_ref=env_ref,
             )
-            data = rds.create_instance(
-                identifier=params["rds_identifier"],
-                instance_class=params["rds_instance_class"],
-                storage_gb=params.get("rds_storage_gb") or 20,
-                master_username=params.get("db_user") or "odoo",
-                master_password=params["db_password"],
-                tags=tags,
-                engine_version=self._pg_engine_version(params.get("pg_version")),
-                multi_az=params.get("rds_multi_az") or False,
-                backup_retention_days=params.get("backup_retention_days") or 7,
-                region=region,
-            )
+            try:
+                data = rds.create_instance(
+                    identifier=params["rds_identifier"],
+                    instance_class=params["rds_instance_class"],
+                    storage_gb=params.get("rds_storage_gb") or 20,
+                    master_username=params.get("db_user") or "odoo",
+                    master_password=params["db_password"],
+                    tags=tags,
+                    engine_version=self._pg_engine_version(params.get("pg_version")),
+                    multi_az=params.get("rds_multi_az") or False,
+                    backup_retention_days=params.get("backup_retention_days") or 7,
+                    region=region,
+                )
+            except Exception as error:  # noqa: BLE001 - solo AlreadyExists
+                # Idempotencia del retry (R2): si la RDS quedó creada de un
+                # intento anterior de la cadena, se REUSA (mismo patrón que el
+                # InvalidGroup.Duplicate del SG). Cualquier otro error se
+                # propaga.
+                code = getattr(error, "response", {}).get(
+                    "Error", {}).get("Code", "")
+                if code != "DBInstanceAlreadyExists":
+                    raise
+                data = rds.get_instance(params["rds_identifier"], region=region)
+                self.message_post(body=_(
+                    "RDS ya existente (reintento): se reusa %s."
+                ) % params["rds_identifier"])
             database = self._upsert_provisioned_database({
                 "name": params["rds_identifier"],
                 "account_id": account.id,
@@ -762,42 +890,14 @@ class PrimateCloudEnvironment(models.Model):
     def job_resume_provision(self, params):
         """Job: reintenta la instalación sobre la EC2 YA creada (recuperación).
 
-        Útil cuando el aprovisionamiento creó la instancia pero falló en un paso
-        posterior (p. ej. el agente SSM aún no estaba online). No crea recursos
-        nuevos: reusa la instancia y la base existentes, corre el install y activa.
+        Compat/atajo histórico (pre-R2). Desde R2 delega en
+        :meth:`job_install_instance` con ``resume=True`` (salta la creación de
+        la BD — ya existe de un intento anterior) para que haya UNA sola
+        implementación del install. No crea recursos nuevos.
         """
         self.ensure_one()
-        instance = self.ec2_instance_ids[:1]
-        if not instance:
-            raise UserError(_("El entorno no tiene una instancia EC2 para reanudar."))
-        account = self.account_id
         self.state = "provisioning"
-        bus.provision_start(self.env, self, title=_("Reanudando: %s") % self.name)
-        try:
-            base = account._get_aws_service()
-            region = params.get("region") or instance.region or account.default_region
-            domain = params.get("domain") or self.main_url or self.name
-            db_host = "localhost" if params.get("db_mode") == "local_pg" else (
-                params.get("db_host") or "localhost")
-            bus.provision_step(self.env, self,
-                               _("Instalando Odoo por SSM (puede tardar varios minutos)…"))
-            self._provision_run_install(base, instance, params, region, db_host, domain)
-            bus.provision_step(self.env, self, _("Configurando DNS…"))
-            self._provision_dns(base, account, instance, params, domain)
-        except Exception as error:  # noqa: BLE001 - se normaliza y se audita
-            self.state = "error"
-            self.message_post(body=_("Reintento de aprovisionamiento fallido: %s") % error)
-            self._log("provision", name=_("Reanudar: %s") % self.name,
-                      result="failed", error_message=str(error))
-            bus.provision_done(self.env, self, ok=False,
-                               message=_("Reintento fallido: %s") % error)
-            return False
-        self.write({"state": "active", "main_url": domain})
-        self.message_post(body=_("Entorno aprovisionado (reanudado) y activo en %s.") % domain)
-        self._log("provision", name=_("Reanudar: %s") % self.name, result="success")
-        bus.provision_done(self.env, self, ok=True,
-                           message=_("Entorno activo en %s.") % domain)
-        return True
+        return self.job_install_instance(params, resume=True)
 
     # ==================================================================
     # Staging (Fase 7): botón -> wizard -> flujo de 12 pasos
