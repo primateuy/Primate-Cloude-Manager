@@ -27,6 +27,18 @@ _logger = logging.getLogger(__name__)
 # Rutas (relativas al addons-path) de las plantillas corridas por SSM.
 INSTALL_SCRIPT_PATH = "primate_cloud_manager/data/install_odoo.sh"
 NEUTRALIZATION_SQL_PATH = "primate_cloud_manager/data/neutralization.sql"
+# Multi-Odoo (R3): bootstrap del servidor (una vez) + install por instancia.
+BOOTSTRAP_SCRIPT_PATH = "primate_cloud_manager/data/bootstrap_server.sh"
+INSTANCE_INSTALL_SCRIPT_PATH = "primate_cloud_manager/data/install_instance.sh"
+
+# Slug seguro para dirs/units/sites (validado ANTES de renderizar el script:
+# un slug raro no puede convertirse en una ruta o comando inesperado).
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# Charset de la contraseña PG transitoria (token_urlsafe): sin comillas ni
+# escapes → segura para el CREATE USER inline del script. Se valida igual.
+PG_PASSWORD_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Swap del bootstrap (D-R3.7).
+BOOTSTRAP_SWAP_MB = 2048
 
 # Ventana máxima (horas) para dar por cumplida cada frecuencia esperada.
 # Todo se interpreta y compara en UTC (decisión de Fase 8: los Datetime de Odoo,
@@ -497,20 +509,90 @@ class PrimateCloudEnvironment(models.Model):
         )
 
     @api.model
-    def _render_install_script(self, tokens):
-        """Lee la plantilla install_odoo.sh y reemplaza los tokens %%...%%.
+    def _render_script_template(self, path, tokens):
+        """Lee una plantilla y reemplaza los tokens %%...%% (renderer común).
 
         Args:
+            path (str): ruta relativa al addons-path de la plantilla.
             tokens (dict): ``{"ODOO_VERSION": "19", ...}``.
 
         Returns:
             str: el script listo para correr por SSM.
         """
-        with file_open(INSTALL_SCRIPT_PATH, "r") as script_file:
+        with file_open(path, "r") as script_file:
             script = script_file.read()
         for key, value in tokens.items():
             script = script.replace("%%%%%s%%%%" % key, str(value or ""))
         return script
+
+    @api.model
+    def _render_install_script(self, tokens):
+        """Plantilla LEGACY single-Odoo (servidores pre-R3)."""
+        return self._render_script_template(INSTALL_SCRIPT_PATH, tokens)
+
+    # ------------------------------------------------------------------
+    # Builders multi-Odoo (R3-B1): renderizan los scripts REALES; los jobs
+    # que los corren por SSM llegan en R3-B2.
+    # ------------------------------------------------------------------
+    @api.model
+    def _build_bootstrap_script(self, swap_mb=BOOTSTRAP_SWAP_MB):
+        """Renderiza bootstrap_server.sh (una vez por servidor, idempotente)."""
+        return self._render_script_template(
+            BOOTSTRAP_SCRIPT_PATH, {"SWAP_MB": int(swap_mb)})
+
+    def _build_instance_install_script(self, instance, params, is_default):
+        """Renderiza install_instance.sh para UNA instancia (por slug).
+
+        Valida ANTES de renderizar todo lo que viaja inline al shell: slug y
+        db_name con charset seguro, puertos enteros, contraseña PG con el
+        charset de token_urlsafe (sin comillas → el CREATE USER inline no es
+        inyectable). El conf resultante lleva SIEMPRE el candado multi-tenant
+        (db_filter = ^db$ + list_db = False) — fijado por golden.
+
+        Args:
+            instance (recordset): la primate.cloud.instance a montar.
+            params (dict): parámetros del wizard/job (db_*, dominio, admin, workers).
+            is_default (bool): primera instancia del servidor (default_server).
+
+        Returns:
+            str: el script listo para correr por SSM.
+        """
+        self.ensure_one()
+        instance.ensure_one()
+        slug = instance.slug or ""
+        if not SLUG_RE.match(slug):
+            raise UserError(_("Slug inválido para instalar: %r.") % slug)
+        db_name = params.get("db_name") or ""
+        if not DB_NAME_RE.match(db_name):
+            raise UserError(_("Nombre de base inválido: %r.") % db_name)
+        pg_password = params.get("db_password") or ""
+        db_local = params.get("db_mode") == "local_pg"
+        if db_local and not PG_PASSWORD_RE.match(pg_password):
+            raise UserError(_(
+                "Contraseña PG con caracteres inseguros para el install: "
+                "se espera el charset de token_urlsafe."))
+        pg_user = instance.pg_user or ""
+        if db_local and not SLUG_RE.match(pg_user.replace("_", "-")):
+            raise UserError(_("Usuario PG inválido: %r.") % pg_user)
+        if not instance.odoo_version:
+            raise UserError(_("La instancia no tiene versión de Odoo."))
+        return self._render_script_template(INSTANCE_INSTALL_SCRIPT_PATH, {
+            "SLUG": slug,
+            "ODOO_VERSION": instance.odoo_version,
+            "ODOO_EDITION": instance.odoo_edition or "community",
+            "HTTP_PORT": int(instance.http_port),
+            "GEVENT_PORT": int(instance.gevent_port),
+            "WORKERS": int(params.get("workers") or 0),
+            "DB_HOST": params.get("db_host") or "localhost",
+            "DB_PORT": int(params.get("db_port") or 5432),
+            "DB_NAME": db_name,
+            "PG_USER": pg_user,
+            "PG_PASSWORD": pg_password,
+            "DB_LOCAL": "1" if db_local else "0",
+            "DOMAIN": params.get("domain") or instance.main_url or "",
+            "ADMIN_PASSWORD": params.get("admin_password") or "",
+            "IS_DEFAULT": "1" if is_default else "0",
+        })
 
     # ------------------------------------------------------------------
     # Jobs de aprovisionamiento (flujo 7.1, partido en R2: D6)
