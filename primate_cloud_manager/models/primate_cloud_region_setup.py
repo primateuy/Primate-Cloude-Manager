@@ -172,21 +172,27 @@ class PrimateCloudRegionSetup(models.Model):
         re-descubre → el caché pasa de 'falta SG' a tener ``security_group_id``.
         """
         self.ensure_one()
-        # Lock de transacción: se libera al commit/rollback del job.
-        self.env.cr.execute("SELECT pg_advisory_xact_lock(%s)", (self._lock_key(),))
-        # Necesitamos una VPC usable; si el caché no la tiene, re-descubrir.
-        if self.status != "ok" or not self.vpc_id:
+        # Lock de SESIÓN (no de transacción) con unlock explícito: serializa la
+        # creación del SG (un solo SG) y lo LIBERA apenas termina, sin necesitar
+        # commit ni retener el lock durante el provisioning largo que lo invoca.
+        key = self._lock_key()
+        self.env.cr.execute("SELECT pg_advisory_lock(%s)", (key,))
+        try:
+            # Necesitamos una VPC usable; si el caché no la tiene, re-descubrir.
+            if self.status != "ok" or not self.vpc_id:
+                self.action_discover()
+            if self.status != "ok" or not self.vpc_id:
+                return False   # falta estructural → B1/B2 ya lo marcaron
+            tags = aws_base.build_resource_tags(
+                self.account_id.name or "", "pcm-managed",
+                extra={"Name": aws_discovery.MANAGED_SG_NAME})
+            ec2 = aws_ec2.AwsEc2Service(self.account_id._get_aws_service())
+            ec2.ensure_security_group(self.region, self.vpc_id, tags)
+            # Refresca el caché: SG presente → security_group_id + detalle al día.
             self.action_discover()
-        if self.status != "ok" or not self.vpc_id:
-            return False   # falta estructural → B1/B2 ya lo marcaron, no crear SG
-        tags = aws_base.build_resource_tags(
-            self.account_id.name or "", "pcm-managed",
-            extra={"Name": aws_discovery.MANAGED_SG_NAME})
-        ec2 = aws_ec2.AwsEc2Service(self.account_id._get_aws_service())
-        ec2.ensure_security_group(self.region, self.vpc_id, tags)
-        # Refresca el caché: ahora el SG existe → security_group_id + detalle al día.
-        self.action_discover()
-        return True
+            return True
+        finally:
+            self.env.cr.execute("SELECT pg_advisory_unlock(%s)", (key,))
 
     @api.model
     def get_or_discover(self, account, region):
