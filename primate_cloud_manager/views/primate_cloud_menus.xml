@@ -22,13 +22,19 @@
               sequence="10"/>
 
     <menuitem id="menu_environment"
-              name="Entornos"
+              name="Entornos (servidores)"
               parent="menu_primate_cloud_inventory"
               action="action_environment"
               sequence="10"/>
 
+    <menuitem id="menu_instance"
+              name="Instancias"
+              parent="menu_primate_cloud_inventory"
+              action="action_instance"
+              sequence="15"/>
+
     <menuitem id="menu_ec2_instance"
-              name="Instancias EC2"
+              name="Máquinas AWS (EC2)"
               parent="menu_primate_cloud_inventory"
               action="action_ec2_instance"
               sequence="20"/>

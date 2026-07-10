@@ -67,11 +67,22 @@ class PrimateCloudEnvironment(models.Model):
     _order = "name"
 
     name = fields.Char(string="Nombre", required=True, tracking=True)
+    # D6/R1: el entorno es el SERVIDOR y puede ser COMPARTIDO entre clientes
+    # → deja de pertenecer obligatoriamente a un proyecto. Este campo queda
+    # como "dueño" informativo para servidores dedicados; los clientes reales
+    # del servidor son los proyectos de sus instancias (project_ids).
     project_id = fields.Many2one(
         "primate.cloud.project",
-        string="Proyecto",
-        required=True,
-        ondelete="cascade",
+        string="Proyecto (dueño, dedicados)",
+        required=False,
+        ondelete="set null",
+        help="Dueño informativo para servidores dedicados. Los clientes que "
+             "efectivamente usan el servidor salen de sus instancias.",
+    )
+    project_ids = fields.Many2many(
+        "primate.cloud.project", string="Proyectos hospedados",
+        compute="_compute_project_ids",
+        help="Proyectos (clientes) con instancias en este servidor.",
     )
     account_id = fields.Many2one(
         "primate.cloud.account",
@@ -82,16 +93,13 @@ class PrimateCloudEnvironment(models.Model):
         ondelete="restrict",
         help="Heredada del proyecto; puede sobrescribirse.",
     )
+    # --- Delegación compat R1 (D6): la IDENTIDAD del Odoo vive en la
+    # instancia primaria; el entorno la delega para que flujos/vistas/
+    # serializers sigan funcionando hasta que R2/R4 los recableen.
+    # related store=True → buscable y escribible (write-through).
     env_type = fields.Selection(
-        [
-            ("production", "Producción"),
-            ("staging", "Staging"),
-            ("testing", "Testing"),
-            ("development", "Desarrollo"),
-        ],
-        string="Tipo",
-        required=True,
-        default="production",
+        related="primary_instance_id.env_type", string="Tipo",
+        store=True, readonly=False,
     )
     state = fields.Selection(
         [
@@ -107,17 +115,36 @@ class PrimateCloudEnvironment(models.Model):
         tracking=True,
     )
     odoo_version = fields.Selection(
-        [("17", "17"), ("18", "18"), ("19", "19")],
-        string="Versión Odoo",
+        related="primary_instance_id.odoo_version", string="Versión Odoo",
+        store=True, readonly=False,
     )
     odoo_edition = fields.Selection(
-        [("community", "Community"), ("enterprise", "Enterprise")],
-        string="Edición Odoo",
+        related="primary_instance_id.odoo_edition", string="Edición Odoo",
+        store=True, readonly=False,
     )
-    main_url = fields.Char(string="URL principal", help="Ej.: forum.primate.cloud")
+    main_url = fields.Char(
+        related="primary_instance_id.main_url", string="URL principal",
+        store=True, readonly=False, help="Ej.: forum.primate.cloud",
+    )
 
+    # --- Instancias (D6/R1): los Odoo montados en este servidor ---
+    instance_ids = fields.One2many(
+        "primate.cloud.instance", "environment_id", string="Instancias"
+    )
+    primary_instance_id = fields.Many2one(
+        "primate.cloud.instance", string="Instancia primaria",
+        compute="_compute_primary_instance_id", store=True,
+        help="La primera instancia no archivada del servidor. Sostiene la "
+             "delegación compat de R1; deja de ser especial en R2/R4.",
+    )
+    # La MÁQUINA del servidor (1:1 cuando PCM la gestiona). El One2many
+    # ec2_instance_ids se conserva para historial (máquinas terminadas).
+    ec2_instance_id = fields.Many2one(
+        "primate.cloud.ec2.instance", string="Máquina AWS",
+        ondelete="set null", copy=False,
+    )
     ec2_instance_ids = fields.One2many(
-        "primate.cloud.ec2.instance", "environment_id", string="Instancias EC2"
+        "primate.cloud.ec2.instance", "environment_id", string="Máquinas AWS"
     )
     database_ids = fields.One2many(
         "primate.cloud.database", "environment_id", string="Bases de datos"
@@ -152,12 +179,11 @@ class PrimateCloudEnvironment(models.Model):
         "UNIQUE(pcm_ref)", "El identificador estable (pcm_ref) debe ser único."
     )
 
-    # --- Respaldos (Fase 8) ---
+    # --- Respaldos (Fase 8) — delegados a la instancia primaria desde R1;
+    #     los jobs/crons siguen leyendo/escribiendo por acá hasta R4 ---
     backup_policy_id = fields.Many2one(
-        "primate.cloud.backup.policy",
-        string="Política de respaldo",
-        ondelete="restrict",
-        tracking=True,
+        related="primary_instance_id.backup_policy_id",
+        string="Política de respaldo", store=True, readonly=False,
         help="Política esperada. El validador la compara contra lo detectado en AWS "
              "y los backups ejecutados por PCM.",
     )
@@ -165,22 +191,16 @@ class PrimateCloudEnvironment(models.Model):
         "primate.cloud.backup", "environment_id", string="Backups"
     )
     backup_compliance = fields.Selection(
-        [
-            ("ok", "Cumple"),
-            ("non_compliant", "No cumple"),
-            ("unverifiable", "No verificable"),
-            ("no_policy", "Sin política definida"),
-        ],
-        string="Cumplimiento de respaldo",
-        readonly=True,
-        default="no_policy",
-        copy=False,
+        related="primary_instance_id.backup_compliance",
+        string="Cumplimiento de respaldo", store=True, readonly=False,
     )
     backup_compliance_detail = fields.Text(
-        string="Detalle de cumplimiento", readonly=True, copy=False
+        related="primary_instance_id.backup_compliance_detail",
+        string="Detalle de cumplimiento", store=True, readonly=False,
     )
     last_backup_check = fields.Datetime(
-        string="Última verificación de respaldo", readonly=True, copy=False
+        related="primary_instance_id.last_backup_check",
+        string="Última verificación de respaldo", store=True, readonly=False,
     )
 
     # --- Monitoreo (Fase 9): estado general del entorno por umbrales ---
@@ -268,18 +288,64 @@ class PrimateCloudEnvironment(models.Model):
                 client_ref = False
         return self.pcm_ref, client_ref
 
+    # Campos de identidad del Odoo que desde R1 viven en la instancia. Si
+    # vienen en el create del entorno (flujos/tests previos a D6), se
+    # extraen y se crean EN la instancia primaria que nace con el entorno.
+    INSTANCE_DELEGATED_FIELDS = [
+        "env_type", "odoo_version", "odoo_edition", "main_url",
+        "backup_policy_id", "backup_compliance", "backup_compliance_detail",
+        "last_backup_check",
+    ]
+
     @api.model_create_multi
     def create(self, vals_list):
-        """Asigna el pcm_ref por registro si no viene (único por uuid).
+        """Asigna pcm_ref y hace nacer el entorno CON su instancia primaria.
 
-        Se hace en create, no con un default lambda, para garantizar un valor
-        DISTINTO por cada registro de un create en lote (un default se evaluaría
-        una vez y colisionaría con la constraint de unicidad).
+        pcm_ref: en create, no default lambda, para garantizar un valor
+        DISTINTO por registro en un create en lote.
+
+        D6/R1: "crear un entorno" = servidor + su primer Odoo. Los campos
+        delegados que vengan en vals se mueven a la instancia (la verdad vive
+        ahí; el entorno los expone por related). Si no hay proyecto no se
+        puede crear la instancia (project_id es required en ella): con campos
+        delegados presentes se corta con error claro, no se pierden en
+        silencio.
         """
+        delegated_list = []
         for vals in vals_list:
             if not vals.get("pcm_ref"):
                 vals["pcm_ref"] = self._new_pcm_ref()
-        return super().create(vals_list)
+            delegated_list.append({
+                key: vals.pop(key)
+                for key in list(vals) if key in self.INSTANCE_DELEGATED_FIELDS
+            })
+        records = super().create(vals_list)
+        Instance = self.env["primate.cloud.instance"]
+        for record, delegated in zip(records, delegated_list):
+            if record.project_id:
+                Instance.create(dict(delegated, name=record.name,
+                                     project_id=record.project_id.id,
+                                     environment_id=record.id))
+            elif delegated:
+                raise UserError(_(
+                    "El entorno «%s» trae datos de instancia (%s) pero no "
+                    "tiene proyecto: asigná el proyecto (cliente) o creá la "
+                    "instancia explícitamente."
+                ) % (record.name, ", ".join(delegated)))
+        return records
+
+    @api.depends("instance_ids", "instance_ids.state", "instance_ids.active")
+    def _compute_primary_instance_id(self):
+        """Primera instancia no archivada (por id); sostiene la delegación R1."""
+        for environment in self:
+            instances = environment.instance_ids.filtered(
+                lambda i: i.state != "archived") or environment.instance_ids
+            environment.primary_instance_id = instances[:1]
+
+    @api.depends("instance_ids.project_id")
+    def _compute_project_ids(self):
+        for environment in self:
+            environment.project_ids = environment.instance_ids.project_id
 
     def _save_provision_config(self, values, field="provision_config_encrypted"):
         """Guarda (cifrada) la última config de un wizard en el campo indicado."""
@@ -779,6 +845,11 @@ class PrimateCloudEnvironment(models.Model):
             "staging_origin_instance_id": origin_instance.id,
             "staging_origin_database_id": origin_database.id,
         })
+        # R1 (D6): el vínculo instancia→instancia del staging (la verdad nueva);
+        # los campos de flujo del entorno siguen vigentes hasta R4.
+        if staging.primary_instance_id and self.primary_instance_id:
+            staging.primary_instance_id.origin_instance_id = (
+                self.primary_instance_id.id)
         # Token de idempotencia (ver _enqueue_provision): evita EC2 duplicadas
         # si el job de staging se re-ejecuta tras reiniciar el server.
         params = dict(params, client_token="pcm-%s" % uuid.uuid4().hex)

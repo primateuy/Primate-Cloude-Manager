@@ -57,3 +57,6 @@ access_dns_delete_wizard_admin,dns.delete.wizard admin,model_primate_cloud_dns_d
 access_region_setup_viewer,primate.cloud.region.setup viewer,model_primate_cloud_region_setup,group_cloud_viewer,1,0,0,0
 access_region_setup_operator,primate.cloud.region.setup operator,model_primate_cloud_region_setup,group_cloud_operator,1,0,0,0
 access_region_setup_admin,primate.cloud.region.setup admin,model_primate_cloud_region_setup,group_cloud_admin,1,1,1,1
+access_instance_viewer,primate.cloud.instance viewer,model_primate_cloud_instance,group_cloud_viewer,1,0,0,0
+access_instance_operator,primate.cloud.instance operator,model_primate_cloud_instance,group_cloud_operator,1,1,1,0
+access_instance_admin,primate.cloud.instance admin,model_primate_cloud_instance,group_cloud_admin,1,1,1,1

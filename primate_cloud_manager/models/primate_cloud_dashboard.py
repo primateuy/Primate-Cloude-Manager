@@ -151,7 +151,7 @@ class PrimateCloudDashboard(models.AbstractModel):
         ]
 
         state_labels = dict(Environment._fields["state"].selection)
-        type_labels = dict(Environment._fields["env_type"].selection)
+        type_labels = dict(self.env["primate.cloud.instance"]._fields["env_type"].selection)
         recent_environments = [
             {
                 "id": environment.id,
@@ -177,8 +177,8 @@ class PrimateCloudDashboard(models.AbstractModel):
         """
         Environment = self.env["primate.cloud.environment"]
         state_labels = dict(Environment._fields["state"].selection)
-        type_labels = dict(Environment._fields["env_type"].selection)
-        edition_labels = dict(Environment._fields["odoo_edition"].selection)
+        type_labels = dict(self.env["primate.cloud.instance"]._fields["env_type"].selection)
+        edition_labels = dict(self.env["primate.cloud.instance"]._fields["odoo_edition"].selection)
         result = []
         for environment in Environment.search([]):
             result.append({
@@ -221,8 +221,8 @@ class PrimateCloudDashboard(models.AbstractModel):
         Dns = self.env["primate.cloud.dns.record"]
         Dep = self.env["primate.cloud.deployment"]
         state_labels = dict(Env._fields["state"].selection)
-        type_labels = dict(Env._fields["env_type"].selection)
-        edition_labels = dict(Env._fields["odoo_edition"].selection)
+        type_labels = dict(self.env["primate.cloud.instance"]._fields["env_type"].selection)
+        edition_labels = dict(self.env["primate.cloud.instance"]._fields["odoo_edition"].selection)
         ec2_labels = dict(Ec2._fields["instance_state"].selection)
         db_labels = dict(Db._fields["state"].selection)
         db_type_labels = dict(Db._fields["db_type"].selection)
@@ -234,7 +234,7 @@ class PrimateCloudDashboard(models.AbstractModel):
         dep_state_labels = dict(Dep._fields["state"].selection)
         dep_type_labels = dict(Dep._fields["deployment_type"].selection)
         Backup = self.env["primate.cloud.backup"]
-        compliance_labels = dict(Env._fields["backup_compliance"].selection)
+        compliance_labels = dict(self.env["primate.cloud.instance"]._fields["backup_compliance"].selection)
         backup_state_labels = dict(Backup._fields["state"].selection)
         backup_type_labels = dict(Backup._fields["backup_type"].selection)
         purpose_labels = dict(Backup._fields["purpose"].selection)
@@ -407,7 +407,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             },
             "backup_compliance": env.backup_compliance if env else "",
             "backup_compliance_label": (
-                dict(Env._fields["backup_compliance"].selection).get(
+                dict(self.env["primate.cloud.instance"]._fields["backup_compliance"].selection).get(
                     env.backup_compliance, env.backup_compliance) if env else ""),
             "databases": [{
                 "id": db.id, "name": db.display_name,
@@ -818,7 +818,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             return {}
         Env = self.env["primate.cloud.environment"]
         state_labels = dict(Env._fields["state"].selection)
-        type_labels = dict(Env._fields["env_type"].selection)
+        type_labels = dict(self.env["primate.cloud.instance"]._fields["env_type"].selection)
         return {
             "id": proj.id,
             "name": proj.display_name,

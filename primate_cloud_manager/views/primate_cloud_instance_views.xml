@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Instancia Odoo (D6/R1): un Odoo dentro de un servidor -->
+
+    <record id="view_instance_list" model="ir.ui.view">
+        <field name="name">primate.cloud.instance.list</field>
+        <field name="model">primate.cloud.instance</field>
+        <field name="arch" type="xml">
+            <list class="o_pcm">
+                <field name="name"/>
+                <field name="project_id"/>
+                <field name="environment_id"/>
+                <field name="env_type" widget="pcm_category_chip"/>
+                <field name="odoo_version"/>
+                <field name="odoo_edition" optional="hide"/>
+                <field name="main_url" optional="show"/>
+                <field name="state" widget="pcm_status_badge"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_instance_form" model="ir.ui.view">
+        <field name="name">primate.cloud.instance.form</field>
+        <field name="model">primate.cloud.instance</field>
+        <field name="arch" type="xml">
+            <form class="o_pcm">
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="Nombre de la instancia"/></h1>
+                    </div>
+                    <group>
+                        <group string="Vínculos (los dos ejes)">
+                            <field name="project_id"/>
+                            <field name="environment_id"/>
+                            <field name="account_id"/>
+                            <field name="state" readonly="1" widget="pcm_status_badge"/>
+                        </group>
+                        <group string="Identidad Odoo">
+                            <field name="env_type"/>
+                            <field name="odoo_version"/>
+                            <field name="odoo_edition"/>
+                            <field name="main_url"/>
+                            <field name="database_id"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Runtime en el servidor">
+                            <group>
+                                <group>
+                                    <field name="slug"/>
+                                    <field name="service_name"/>
+                                    <field name="http_port"/>
+                                    <field name="gevent_port"/>
+                                    <field name="pg_user"/>
+                                </group>
+                                <group>
+                                    <field name="conf_path"/>
+                                    <field name="data_dir"/>
+                                    <field name="addons_dir"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Respaldos">
+                            <group>
+                                <field name="backup_policy_id"/>
+                                <field name="backup_compliance" readonly="1" widget="pcm_status_badge"/>
+                                <field name="last_backup_check" readonly="1"/>
+                            </group>
+                            <field name="backup_compliance_detail" readonly="1"/>
+                        </page>
+                        <page string="Staging">
+                            <group>
+                                <field name="origin_instance_id"/>
+                            </group>
+                            <field name="staging_ids" readonly="1">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="environment_id"/>
+                                    <field name="state" widget="pcm_status_badge"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Costos">
+                            <group>
+                                <field name="pcm_ref" readonly="1"/>
+                                <field name="cost_weight"/>
+                            </group>
+                        </page>
+                        <page string="Notas">
+                            <field name="notes"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_instance" model="ir.actions.act_window">
+        <field name="name">Instancias</field>
+        <field name="res_model">primate.cloud.instance</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Sin instancias todavía</p>
+            <p>Una instancia es un Odoo montado dentro de un servidor:
+               pertenece a un proyecto (cliente) y corre en un entorno (servidor).</p>
+        </field>
+    </record>
+
+</odoo>

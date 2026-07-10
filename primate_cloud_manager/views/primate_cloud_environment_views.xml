@@ -120,8 +120,8 @@
                             <group>
                                 <group string="Política">
                                     <field name="backup_policy_id"/>
-                                    <field name="backup_compliance" widget="pcm_status_badge"/>
-                                    <field name="last_backup_check"/>
+                                    <field name="backup_compliance" widget="pcm_status_badge" readonly="1"/>
+                                    <field name="last_backup_check" readonly="1"/>
                                     <button name="action_check_backup_compliance" type="object"
                                             string="Verificar ahora" icon="fa-check-circle-o"
                                             class="btn-secondary" colspan="2"
@@ -132,7 +132,7 @@
                                             invisible="not backup_policy_id"/>
                                 </group>
                                 <group string="Detalle de cumplimiento">
-                                    <field name="backup_compliance_detail" nolabel="1" colspan="2"/>
+                                    <field name="backup_compliance_detail" nolabel="1" colspan="2" readonly="1"/>
                                 </group>
                             </group>
                             <field name="backup_ids">
