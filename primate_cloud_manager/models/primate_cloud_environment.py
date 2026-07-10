@@ -9,6 +9,7 @@ queue_job. La trazabilidad (Fase 5) y el staging (Fase 7) se agregan luego.
 import json
 import logging
 import re
+import secrets
 import shlex
 import uuid
 from datetime import timedelta
@@ -398,9 +399,25 @@ class PrimateCloudEnvironment(models.Model):
         # Token de idempotencia: viaja en los args del job (queue_job los persiste),
         # así un requeue tras reiniciar el server NO crea una EC2 duplicada.
         params = dict(params, client_token="pcm-%s" % uuid.uuid4().hex)
+        params = self._ensure_transient_db_password(params)
         self.with_delay(
             description=_("Aprovisionar entorno: %s") % self.name
         ).job_provision(params)
+
+    @api.model
+    def _ensure_transient_db_password(self, params):
+        """Genera la contraseña PG transitoria del camino cero-config si falta.
+
+        Con PostgreSQL local y sin contraseña dada (el usuario final no la ve),
+        el usuario PG quedaría con password vacía y Odoo no puede autenticarse
+        por TCP (``fe_sendauth: no password supplied`` en loop). Se genera al
+        ENCOLAR (queue_job persiste los args → un requeue reusa la MISMA, igual
+        que el ``client_token``) y NO se guarda en Odoo: vive solo en el
+        ``odoo.conf`` de la instancia.
+        """
+        if params.get("db_mode") == "local_pg" and not params.get("db_password"):
+            params = dict(params, db_password=secrets.token_urlsafe(24))
+        return params
 
     # ------------------------------------------------------------------
     # Helpers de servicios / script
@@ -765,6 +782,7 @@ class PrimateCloudEnvironment(models.Model):
         # Token de idempotencia (ver _enqueue_provision): evita EC2 duplicadas
         # si el job de staging se re-ejecuta tras reiniciar el server.
         params = dict(params, client_token="pcm-%s" % uuid.uuid4().hex)
+        params = self._ensure_transient_db_password(params)
         staging.with_delay(
             description=_("Crear staging: %s") % staging.name
         ).job_create_staging(params)

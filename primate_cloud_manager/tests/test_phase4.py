@@ -330,6 +330,33 @@ class TestEnvironmentProvision(TransactionCase):
         self.assertIn("client_token", params)
         self.assertTrue(params["client_token"].startswith("pcm-"))
 
+    def test_enqueue_provision_genera_db_password_local_pg(self):
+        # Cero-config: local_pg sin contraseña → se genera una transitoria al
+        # encolar (viaja en los args del job; sin ella el usuario PG queda sin
+        # password y Odoo entra en loop de fe_sendauth — visto en el E2E de B5).
+        fake_delay = mock.Mock()
+        with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
+            self.env_rec._enqueue_provision(
+                {"region": "us-east-1", "db_mode": "local_pg", "db_password": ""})
+        params = fake_delay.job_provision.call_args[0][0]
+        self.assertTrue(params["db_password"])
+        self.assertGreaterEqual(len(params["db_password"]), 20)
+
+    def test_enqueue_provision_respeta_db_password_explicita(self):
+        # Una contraseña dada por el admin NUNCA se pisa; y fuera de local_pg
+        # (rds/none) no se inventa ninguna.
+        fake_delay = mock.Mock()
+        with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
+            self.env_rec._enqueue_provision(
+                {"region": "us-east-1", "db_mode": "local_pg", "db_password": "explicita"})
+        self.assertEqual(
+            fake_delay.job_provision.call_args[0][0]["db_password"], "explicita")
+        with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
+            self.env_rec.state = "draft"
+            self.env_rec._enqueue_provision({"region": "us-east-1", "db_mode": "none"})
+        self.assertFalse(
+            fake_delay.job_provision.call_args[0][0].get("db_password"))
+
     def test_action_provision_abre_wizard(self):
         action = self.env_rec.action_provision()
         self.assertEqual(action["res_model"], "primate.cloud.provision.wizard")
