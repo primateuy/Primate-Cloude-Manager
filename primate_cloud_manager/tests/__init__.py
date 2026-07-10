@@ -17,3 +17,4 @@ from . import test_phase9
 from . import test_pcm_app
 from . import test_integration_moto
 from . import test_autodiscovery
+from . import test_r1_modelo

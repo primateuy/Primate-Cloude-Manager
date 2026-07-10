@@ -75,14 +75,23 @@ if not dns_rec:
 from odoo import fields
 region = fake.default_region or "us-east-1"
 Setup = env["primate.cloud.region.setup"]
-if not Setup.search([("account_id", "=", fake.id), ("region", "=", region)], limit=1):
-    Setup.create({
-        "account_id": fake.id, "region": region, "status": "ok",
-        "vpc_id": "vpc-smoke", "subnet_id": "subnet-smoke",
-        "security_group_id": "sg-smoke", "profile_ok": True, "has_igw": True,
-        "detail": "Todo listo (fixture smoke).",
-        "last_discovered_at": fields.Datetime.now(),
-    })
+setup_vals = {
+    "account_id": fake.id, "region": region, "status": "ok",
+    "vpc_id": "vpc-smoke", "subnet_id": "subnet-smoke",
+    "security_group_id": "sg-smoke", "profile_ok": True, "has_igw": True,
+    "detail": "Todo listo (fixture smoke).",
+    # SIEMPRE fresco: el gate re-verifica un caché vencido (TTL 1h, por
+    # diseño) y con la cuenta falsa fallaría contra AWS real. El seed viejo
+    # create-only dejaba el timestamp de la corrida anterior → s04 rompía
+    # en cualquier corrida >1h después de la primera.
+    "last_discovered_at": fields.Datetime.now(),
+}
+existing_setup = Setup.search(
+    [("account_id", "=", fake.id), ("region", "=", region)], limit=1)
+if existing_setup:
+    existing_setup.write(setup_vals)
+else:
+    Setup.create(setup_vals)
 
 env.cr.commit()
 print("FIXTURE_ENV_ID", fx.id, "cuenta", fx.account_id.name, "estado", fx.state)

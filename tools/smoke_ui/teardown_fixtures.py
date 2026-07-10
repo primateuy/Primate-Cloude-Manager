@@ -24,13 +24,16 @@ if fx:
         jobs.filtered(lambda j: set(j.records.ids) & set(fx.ids)).unlink()
     except Exception:  # noqa: BLE001 - limpieza opcional
         pass
+    # R1 (D6): las instancias restringen el borrado del entorno → van primero.
+    fx.instance_ids.unlink()
     fx.unlink()
 
-# Entorno DNS de prueba: borrar sus registros DNS y el entorno.
+# Entorno DNS de prueba: borrar sus registros DNS, instancias y el entorno.
 dns_env = env["primate.cloud.environment"].search(
     [("name", "=", "SMOKE DNS (borrar)")])
 if dns_env:
     dns_env.dns_record_ids.unlink()
+    dns_env.instance_ids.unlink()
     dns_env.unlink()
 env.cr.commit()
 print("TEARDOWN eliminados", removed)
