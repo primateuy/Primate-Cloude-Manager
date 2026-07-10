@@ -320,13 +320,29 @@ class TestEnvironmentProvision(TransactionCase):
         params.update(overrides)
         return params
 
+    def _run_provision_chain(self, params):
+        """Ejecuta la cadena R2 como producción: server → install encadenado.
+
+        job_provision_server encola job_install_instance vía with_delay; acá
+        se captura ese encolado y se ejecuta con los MISMOS params (que es la
+        garantía de la cadena: misma db_password transitoria, mismo token).
+        """
+        fake_delay = mock.Mock()
+        with mock.patch.object(type(self.env_rec), "with_delay",
+                               return_value=fake_delay):
+            ok_server = self.env_rec.job_provision_server(params)
+        if not ok_server:
+            return False
+        chained_params = fake_delay.job_install_instance.call_args[0][0]
+        return self.env_rec.job_install_instance(chained_params)
+
     def test_enqueue_provision_inyecta_client_token(self):
         # El token viaja en los args del job (queue_job los persiste): un requeue
         # tras reiniciar el server reusa el mismo token y NO duplica la EC2.
         fake_delay = mock.Mock()
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
             self.env_rec._enqueue_provision({"region": "us-east-1"})
-        params = fake_delay.job_provision.call_args[0][0]
+        params = fake_delay.job_provision_server.call_args[0][0]
         self.assertIn("client_token", params)
         self.assertTrue(params["client_token"].startswith("pcm-"))
 
@@ -338,7 +354,7 @@ class TestEnvironmentProvision(TransactionCase):
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
             self.env_rec._enqueue_provision(
                 {"region": "us-east-1", "db_mode": "local_pg", "db_password": ""})
-        params = fake_delay.job_provision.call_args[0][0]
+        params = fake_delay.job_provision_server.call_args[0][0]
         self.assertTrue(params["db_password"])
         self.assertGreaterEqual(len(params["db_password"]), 20)
 
@@ -350,12 +366,12 @@ class TestEnvironmentProvision(TransactionCase):
             self.env_rec._enqueue_provision(
                 {"region": "us-east-1", "db_mode": "local_pg", "db_password": "explicita"})
         self.assertEqual(
-            fake_delay.job_provision.call_args[0][0]["db_password"], "explicita")
+            fake_delay.job_provision_server.call_args[0][0]["db_password"], "explicita")
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
             self.env_rec.state = "draft"
             self.env_rec._enqueue_provision({"region": "us-east-1", "db_mode": "none"})
         self.assertFalse(
-            fake_delay.job_provision.call_args[0][0].get("db_password"))
+            fake_delay.job_provision_server.call_args[0][0].get("db_password"))
 
     def test_action_provision_abre_wizard(self):
         action = self.env_rec.action_provision()
@@ -419,7 +435,7 @@ class TestEnvironmentProvision(TransactionCase):
     def test_job_provision_rds_end_to_end(self):
         base, client = _provision_base()
         with mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
-            ok = self.env_rec.job_provision(self._params())
+            ok = self._run_provision_chain(self._params())
         self.assertTrue(ok)
         self.assertEqual(self.env_rec.state, "active")
         # Se crearon y asociaron los recursos.
@@ -444,7 +460,7 @@ class TestEnvironmentProvision(TransactionCase):
         with mock.patch.object(type(self.account), "_get_aws_service", return_value=base), \
              mock.patch.object(type(self.account), "resolve_ubuntu_ami",
                                return_value="ami-auto") as resolver:
-            ok = self.env_rec.job_provision(params)
+            ok = self._run_provision_chain(params)
         self.assertTrue(ok)
         resolver.assert_called()
         _, kwargs = client.run_instances.call_args
@@ -454,7 +470,7 @@ class TestEnvironmentProvision(TransactionCase):
         base, client = _provision_base()
         params = self._params(db_mode="local_pg", create_dns=False)
         with mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
-            ok = self.env_rec.job_provision(params)
+            ok = self._run_provision_chain(params)
         self.assertTrue(ok)
         self.assertEqual(self.env_rec.database_ids.db_type, "local_pg")
         self.assertEqual(self.env_rec.database_ids.ec2_instance_id,
@@ -469,7 +485,7 @@ class TestEnvironmentProvision(TransactionCase):
             "Status": "Failed", "StandardErrorContent": "boom", "ResponseCode": 1,
         }
         with mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
-            ok = self.env_rec.job_provision(self._params())
+            ok = self._run_provision_chain(self._params())
         self.assertFalse(ok)
         self.assertEqual(self.env_rec.state, "error")
         log = self.env["primate.cloud.operation.log"].search(
@@ -484,7 +500,7 @@ class TestEnvironmentProvision(TransactionCase):
         sent = []
         with mock.patch.object(bus, "_send", side_effect=lambda env, p: sent.append(p)), \
              mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
-            self.env_rec.job_provision(self._params())
+            self._run_provision_chain(self._params())
         kinds = [p["kind"] for p in sent]
         self.assertEqual(kinds[0], "provision_start")
         self.assertIn("provision_step", kinds)
@@ -497,10 +513,95 @@ class TestEnvironmentProvision(TransactionCase):
         sent = []
         with mock.patch.object(bus, "_send", side_effect=lambda env, p: sent.append(p)), \
              mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
-            self.env_rec.job_provision(self._params())
+            self._run_provision_chain(self._params())
         done = [p for p in sent if p["kind"] == "provision_done"]
         self.assertTrue(done)
         self.assertFalse(done[-1]["ok"])
+
+    # --- R2: cadena servidor → instancia y recuperación -----------------
+    def test_servidor_ok_encadena_install_con_mismos_params(self):
+        base, _client = _provision_base()
+        fake_delay = mock.Mock()
+        # client_token/db_password los inyecta _enqueue_provision; acá se
+        # simulan para verificar que la CADENA los reenvía intactos.
+        params = self._params(client_token="pcm-test-token")
+        with mock.patch.object(type(self.account), "_get_aws_service", return_value=base), \
+             mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
+            ok = self.env_rec.job_provision_server(params)
+        self.assertTrue(ok)
+        chained = fake_delay.job_install_instance.call_args[0][0]
+        # MISMOS params: la contraseña transitoria y el token viajan intactos.
+        self.assertEqual(chained["client_token"], params["client_token"])
+        self.assertEqual(chained["db_password"], params["db_password"])
+        # El servidor quedó con su máquina 1:1 y el entorno sigue en curso.
+        self.assertTrue(self.env_rec.ec2_instance_id)
+
+    def test_install_falla_servidor_queda_recuperable(self):
+        # El estado "servidor sí, instancia no" NO es un limbo: entorno en
+        # error, máquina viva, instancia primaria en error.
+        base, client = _provision_base()
+        client.get_command_invocation.return_value = {
+            "Status": "Failed", "StandardErrorContent": "boom", "ResponseCode": 1,
+        }
+        with mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
+            ok = self._run_provision_chain(self._params())
+        self.assertFalse(ok)
+        self.assertEqual(self.env_rec.state, "error")
+        self.assertTrue(self.env_rec.ec2_instance_id)
+        self.assertNotEqual(self.env_rec.ec2_instance_id.instance_state, "terminated")
+        self.assertEqual(self.env_rec.primary_instance_id.state, "error")
+
+    def test_retry_install_reencola_el_job_fallido(self):
+        # El retry REUSA el job fallido (mismos args persistidos por queue_job)
+        # y no crea otra EC2: solo re-encola la 2ª mitad de la cadena.
+        params = self._params()
+        job = self.env_rec.with_delay().job_install_instance(params)
+        job.db_record().write({"state": "failed"})
+        self.env_rec.state = "error"
+        self.env_rec.action_retry_install()
+        self.assertEqual(job.db_record().state, "pending")
+        self.assertEqual(self.env_rec.state, "provisioning")
+
+    def test_retry_install_sin_job_fallido_guia_al_wizard(self):
+        self.env_rec.state = "error"
+        with self.assertRaises(UserError):
+            self.env_rec.action_retry_install()
+
+    def test_gate_crear_instancia_visible_y_honesto(self):
+        # R2: la acción existe (visible en la vista) pero explica el porqué
+        # del gate (multi-Odoo = R3) en lugar de fallar críptico u ocultarse.
+        with self.assertRaises(UserError) as ctx:
+            self.env_rec.action_create_instance()
+        self.assertIn("R3", str(ctx.exception))
+
+    def test_rds_ya_existente_se_reusa_en_retry(self):
+        # Idempotencia del paso BD (R2): DBInstanceAlreadyExists → reusar,
+        # mismo patrón que el InvalidGroup.Duplicate del SG.
+        base, client = _provision_base()
+        error = Exception("exists")
+        error.response = {"Error": {"Code": "DBInstanceAlreadyExists"}}
+        client.create_db_instance.side_effect = error
+        with mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
+            ok = self._run_provision_chain(self._params())
+        self.assertTrue(ok)
+        self.assertEqual(self.env_rec.database_ids.rds_endpoint,
+                         "forum-db.rds.amazonaws.com")
+
+    def test_resume_provision_delega_en_install_resume(self):
+        # Compat: job_resume_provision = install con resume=True (salta la BD).
+        base, client = _provision_base()
+        self.env_rec.ec2_instance_id = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id,
+            "aws_instance_id": "i-resume", "instance_state": "running",
+            "region": "us-east-1", "environment_id": self.env_rec.id,
+        })
+        with mock.patch.object(type(self.account), "_get_aws_service", return_value=base):
+            ok = self.env_rec.job_resume_provision(
+                self._params(db_mode="local_pg", create_dns=False))
+        self.assertTrue(ok)
+        self.assertEqual(self.env_rec.state, "active")
+        # resume NO re-crea la base: ni RDS ni upsert local.
+        client.create_db_instance.assert_not_called()
 
     def test_render_install_script_reemplaza_tokens(self):
         script = self.env["primate.cloud.environment"]._render_install_script({
