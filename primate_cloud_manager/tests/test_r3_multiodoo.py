@@ -235,6 +235,26 @@ class TestR3Scripts(TransactionCase):
                            script.index("systemctl reload nginx"))
         self.assertIn("PCM_BOOTSTRAP_OK", script)
 
+    def test_comandos_verbosos_redirigidos_fuera_del_stdout_ssm(self):
+        # SSM (GetCommandInvocation) TRUNCA el stdout a ~24KB — hallazgo
+        # real de B4: el apt del bootstrap se comía el marcador final y el
+        # chequeo estricto daba "Success sin PCM_BOOTSTRAP_OK". Todo comando
+        # verboso va redirigido a un log EN el servidor; el stdout de SSM
+        # queda chico: log() + marcadores PCM_*.
+        def lineas_logicas(script):
+            return script.replace("\\\n", " ").splitlines()
+
+        bootstrap = self.env["primate.cloud.environment"]._build_bootstrap_script()
+        for line in lineas_logicas(bootstrap):
+            if "apt-get " in line or "snap install" in line:
+                self.assertIn('>>"${DETALLE}"', line, line)
+        install = self.server._build_instance_install_script(
+            self.inst_b, self._params("cliente_b_db"), is_default=False)
+        for line in lineas_logicas(install):
+            if ("git clone" in line or "certbot --nginx" in line
+                    or ("pip\" install" in line)):
+                self.assertIn('>>"${RUNTIME_LOG}"', line, line)
+
     def test_scripts_renderizados_pasan_bash_n(self):
         # Validación de sintaxis REAL de bash sobre los renders finales.
         if not shutil.which("bash"):

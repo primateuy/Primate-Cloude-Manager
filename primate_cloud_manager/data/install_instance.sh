@@ -113,16 +113,22 @@ log "Vecinos corriendo antes: ${VECINOS:-ninguno}"
 
 # --- 3. Runtime compartido por versión (on-demand, D-R3.5) --------------------
 mkdir -p "${PCM_ROOT}/runtime"
+# El stdout de SSM se trunca a ~24KB (hallazgo real de B4): el detalle de
+# clone/pip va a un log en el servidor; el stdout queda para log()+marcadores.
+RUNTIME_LOG="/var/log/pcm-runtime-odoo-${ODOO_VERSION}.log"
 (
     flock -w 1800 9
     if [ ! -d "${RUNTIME}/venv" ]; then
-        log "Instalando runtime Odoo ${ODOO_VERSION} (una vez por versión)…"
+        log "Instalando runtime Odoo ${ODOO_VERSION} (una vez por versión; detalle en ${RUNTIME_LOG})…"
         sudo -u "${ODOO_USER}" git clone --depth 1 --branch "${ODOO_VERSION}.0" \
-            https://github.com/odoo/odoo.git "${RUNTIME}/src"
-        sudo -u "${ODOO_USER}" python3 -m venv "${RUNTIME}/venv"
-        sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/pip" install --upgrade pip wheel
+            https://github.com/odoo/odoo.git "${RUNTIME}/src" \
+            >>"${RUNTIME_LOG}" 2>&1
+        sudo -u "${ODOO_USER}" python3 -m venv "${RUNTIME}/venv" \
+            >>"${RUNTIME_LOG}" 2>&1
+        sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/pip" install --upgrade pip wheel \
+            >>"${RUNTIME_LOG}" 2>&1
         sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/pip" install \
-            -r "${RUNTIME}/src/requirements.txt"
+            -r "${RUNTIME}/src/requirements.txt" >>"${RUNTIME_LOG}" 2>&1
     fi
 ) 9>"${PCM_ROOT}/runtime/.lock-${ODOO_VERSION}"
 
@@ -254,7 +260,7 @@ fi
 
 # --- 9. SSL best-effort (D-R3.9) ------------------------------------------------
 certbot --nginx -n --agree-tos --redirect \
-    -m "ops@primate.uy" -d "%%DOMAIN%%" || \
+    -m "ops@primate.uy" -d "%%DOMAIN%%" >>"${RUNTIME_LOG}" 2>&1 || \
     log "ADVERTENCIA: certbot falló (¿DNS aún no propagado?). Reintentar luego."
 
 # --- 10. Re-verificar vecinos: si alguno cayó, esto es un bug y se ve ROJO -----

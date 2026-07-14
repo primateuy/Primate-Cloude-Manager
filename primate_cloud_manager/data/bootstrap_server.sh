@@ -19,6 +19,10 @@ SWAP_MB="%%SWAP_MB%%"
 ODOO_USER="odoo"
 PCM_ROOT="/opt/pcm"
 MARKER="${PCM_ROOT}/.bootstrap-v1"
+# El stdout de SSM (GetCommandInvocation) se TRUNCA a ~24KB (hallazgo real
+# de B4: el apt se comía el marcador final). Todo lo verboso va a este log
+# en el servidor; el stdout de SSM queda chico: log() + marcadores.
+DETALLE="/var/log/pcm-bootstrap.log"
 
 log() { echo "[pcm-bootstrap] $*"; }
 
@@ -29,16 +33,18 @@ if [ -f "${MARKER}" ]; then
 fi
 
 # 1. Dependencias del sistema (las de máquina del install legacy) --------------
-log "Instalando dependencias del sistema…"
+log "Instalando dependencias del sistema… (detalle en ${DETALLE})"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
+apt-get update -y >>"${DETALLE}" 2>&1
 apt-get install -y git python3-pip python3-venv build-essential \
     libxml2-dev libxslt1-dev libldap2-dev libsasl2-dev libpq-dev \
-    libjpeg-dev nginx certbot python3-certbot-nginx wkhtmltopdf
+    libjpeg-dev nginx certbot python3-certbot-nginx wkhtmltopdf \
+    >>"${DETALLE}" 2>&1
 
 # AWS CLI: lo usan backup/staging/restore (aws s3 cp en streaming). En Ubuntu
 # 24.04 el paquete apt no tiene candidato -> snap (hallazgo real de Fase 8).
-command -v aws >/dev/null 2>&1 || snap install aws-cli --classic
+command -v aws >/dev/null 2>&1 || snap install aws-cli --classic \
+    >>"${DETALLE}" 2>&1
 
 # 2. Usuario de servicio (compartido en v1 — aislamiento por instancia es v2) --
 if ! id "${ODOO_USER}" >/dev/null 2>&1; then
@@ -48,7 +54,7 @@ fi
 
 # 3. PostgreSQL SIEMPRE (D-R3.4: también con RDS; un cluster idle es aceptable) -
 log "Instalando PostgreSQL…"
-apt-get install -y postgresql
+apt-get install -y postgresql >>"${DETALLE}" 2>&1
 systemctl enable --now postgresql
 
 # 4. Swap (D-R3.7): multi-Odoo en máquinas chicas lo necesita ------------------
