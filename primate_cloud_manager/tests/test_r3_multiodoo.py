@@ -83,6 +83,11 @@ class TestR3Scripts(TransactionCase):
             self.assertIn("list_db = False", conf,
                           "list_db = False ausente para %s" % instance.slug)
             self.assertIn("db_name = %s" % db_name, conf)
+            # workers = 0 (default multi-Odoo) NO puede colapsar a "" en el
+            # conf: 'workers = ' → int('') → Odoo no arranca (hallazgo del
+            # E2E real). Debe aterrizar literal '0'.
+            self.assertIn("workers = 0", conf)
+            self.assertNotIn("workers = \n", conf + "\n")
             # Credencial PROPIA: el conf usa el pg_user de ESTA instancia.
             self.assertIn("db_user = %s" % instance.pg_user, conf)
             # data_dir/addons/log del slug propio (filestore separado).

@@ -522,7 +522,11 @@ class PrimateCloudEnvironment(models.Model):
         with file_open(path, "r") as script_file:
             script = script_file.read()
         for key, value in tokens.items():
-            script = script.replace("%%%%%s%%%%" % key, str(value or ""))
+            # None → "" (token ausente); pero 0/False NO se colapsan a "" —
+            # un ``workers = 0`` (default multi-Odoo) debe quedar "0" en el
+            # conf, no vacío (int('') revienta el arranque de Odoo).
+            rendered = "" if value is None else str(value)
+            script = script.replace("%%%%%s%%%%" % key, rendered)
         return script
 
     @api.model
