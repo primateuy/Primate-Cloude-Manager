@@ -52,6 +52,12 @@
                                 t-on-click="() => this.runEnvMethod('action_provision')">
                             <i class="fa fa-magic"/> Aprovisionar
                         </button>
+                        <!-- R3-B3: montar OTRO Odoo en este servidor (wizard en
+                             drawer; el gate por layout vive en el server-side). -->
+                        <button t-if="d.state === 'active'" class="o_pcm_btn"
+                                t-on-click="() => this.runEnvMethod('action_create_instance')">
+                            <i class="fa fa-plus-circle"/> Agregar Odoo (instancia)
+                        </button>
                         <button t-if="d.state === 'active'" class="o_pcm_btn"
                                 t-on-click="() => this.runEnvMethod('action_create_staging')">
                             <i class="fa fa-clone"/> Crear staging

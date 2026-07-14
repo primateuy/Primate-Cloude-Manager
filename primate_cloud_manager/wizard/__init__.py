@@ -8,3 +8,4 @@ from . import primate_cloud_backup_restore_wizard
 from . import primate_cloud_staging_refresh_wizard
 from . import primate_cloud_dns_record_wizard
 from . import primate_cloud_dns_delete_wizard
+from . import primate_cloud_instance_create_wizard

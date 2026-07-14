@@ -413,6 +413,13 @@ class TestR3B2Jobs(TransactionCase):
         self.assertTrue(ok)
         self.assertEqual(self.inst_b.state, "active")
         self.assertEqual(self.inst_b.main_url, "b.pcm.test")
+        # El job materializó el layout por slug en el REGISTRO (D-R3.10:
+        # pg_user propio; rutas por instancia para el bookkeeping de R4).
+        self.assertEqual(self.inst_b.service_name, "odoo-cliente-b")
+        self.assertEqual(self.inst_b.pg_user, "odoo_cliente_b")
+        self.assertEqual(self.inst_b.conf_path, "/etc/odoo/cliente-b.conf")
+        self.assertEqual(self.inst_b.data_dir,
+                         "/opt/pcm/instances/cliente-b/data")
         # Snapshot ANTES + re-verificación DESPUÉS del único vecino vivo.
         self.assertEqual(probe.call_count, 2)
         # Orden de las mutaciones por SSM: bootstrap → install (nada más).
@@ -649,3 +656,149 @@ class TestR3B2Cadena(TransactionCase):
             [("action_type", "=", "ssm_command"), ("result", "=", "failed")],
             limit=1, order="id desc")
         self.assertIn("PCM_ERR_PORT_BUSY", log.error_message)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR3B3Wizard(TransactionCase):
+    """Wizard «Agregar instancia» + gate por layout (D-R3.2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project_a = self.env["primate.cloud.project"].create(
+            {"name": "Cliente A", "account_id": self.account.id})
+        self.project_b = self.env["primate.cloud.project"].create(
+            {"name": "Cliente B", "account_id": self.account.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "Servidor compartido", "project_id": self.project_a.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community",
+        })
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id,
+            "aws_instance_id": "i-b3", "instance_state": "running",
+            "region": "us-east-1", "environment_id": self.server.id,
+            "instance_type": "t3.micro",
+        })
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        # Primaria YA instalada con el layout multi-Odoo (unit por slug).
+        self.inst_a = self.server.primary_instance_id
+        self.inst_a.write({"slug": "cliente-a", "state": "active",
+                           "service_name": "odoo-cliente-a",
+                           "main_url": "a.pcm.test"})
+
+    def _wizard(self, **overrides):
+        vals = {
+            "environment_id": self.server.id, "project_id": self.project_b.id,
+            "name": "Odoo Cliente B", "odoo_version": "19",
+            "odoo_edition": "community", "domain": "b.pcm.test",
+            "db_name": "cliente_b_db", "admin_password": "admin-x",
+            "workers": 0,
+        }
+        vals.update(overrides)
+        return self.env["primate.cloud.instance.create.wizard"].create(vals)
+
+    # --- Gate por layout -------------------------------------------------
+    def test_gate_multiodoo_abre_el_wizard(self):
+        action = self.server.action_create_instance()
+        self.assertEqual(action["res_model"],
+                         "primate.cloud.instance.create.wizard")
+        self.assertEqual(action["context"]["default_environment_id"],
+                         self.server.id)
+
+    def test_gate_servidor_virgen_abre_el_wizard(self):
+        # Sin ningún Odoo instalado (primaria draft con defaults legacy) el
+        # servidor NO es legacy: es virgen y puede nacer multi-Odoo.
+        self.inst_a.write({"state": "draft", "service_name": "odoo"})
+        action = self.server.action_create_instance()
+        self.assertEqual(action["res_model"],
+                         "primate.cloud.instance.create.wizard")
+
+    def test_gate_legacy_sigue_gated_con_motivo_nuevo(self):
+        # Un Odoo ACTIVO con la unit compartida 'odoo' = layout pre-R3
+        # (D-R3.2: adopción in-place pendiente, no se le monta un segundo).
+        self.inst_a.service_name = "odoo"
+        with self.assertRaises(UserError) as ctx:
+            self.server.action_create_instance()
+        self.assertIn("legacy", str(ctx.exception))
+
+    def test_gate_exige_servidor_activo(self):
+        self.server.state = "error"
+        with self.assertRaises(UserError):
+            self.server.action_create_instance()
+
+    # --- Wizard ----------------------------------------------------------
+    def test_preview_de_puertos_muestra_el_slot_probable(self):
+        wizard = self._wizard()
+        self.assertEqual(wizard.http_port_preview, 8079)
+        self.assertEqual(wizard.gevent_port_preview, 8082)
+
+    def test_ram_warning_advisoria(self):
+        # t3.micro (1 GB) con 1 Odoo vivo: el 2º dispara la advertencia.
+        wizard = self._wizard()
+        self.assertTrue(wizard.ram_warning)
+        self.assertIn("t3.micro", wizard.ram_warning)
+        # Con RAM de sobra (o tipo desconocido), sin advertencia.
+        self.machine.instance_type = "t3.large"
+        self.assertFalse(self._wizard().ram_warning)
+        self.machine.instance_type = "x9.desconocido"
+        self.assertFalse(self._wizard().ram_warning)
+
+    def test_valida_nombre_de_base(self):
+        with self.assertRaises(UserError):
+            self._wizard(db_name="malo;drop").action_add_instance()
+
+    def test_valida_base_duplicada_en_el_servidor(self):
+        self.env["primate.cloud.database"].create({
+            "name": "cliente_b_db", "account_id": self.account.id,
+            "environment_id": self.server.id, "db_type": "local_pg",
+        })
+        with self.assertRaises(UserError) as ctx:
+            self._wizard().action_add_instance()
+        self.assertIn("cliente_b_db", str(ctx.exception))
+
+    def test_valida_slug_duplicado_incluye_archivadas(self):
+        # "Cliente A" slugifica a "cliente-a" (la primaria) → choque claro.
+        with self.assertRaises(UserError):
+            self._wizard(name="Cliente A").action_add_instance()
+        # También contra archivadas (los slots/slugs no se reciclan).
+        self.inst_a.write({"state": "archived", "active": False})
+        with self.assertRaises(UserError):
+            self._wizard(name="Cliente A").action_add_instance()
+
+    def test_valida_legacy_tambien_server_side(self):
+        # La defensa no vive solo en el gate del botón: el confirm re-valida.
+        self.inst_a.service_name = "odoo"
+        with self.assertRaises(UserError):
+            self._wizard().action_add_instance()
+
+    def test_confirma_crea_instancia_con_slot_y_encola(self):
+        fake_delay = mock.Mock()
+        with mock.patch.object(type(self.server), "with_delay",
+                               return_value=fake_delay):
+            result = self._wizard().action_add_instance()
+        instance = self.env["primate.cloud.instance"].search(
+            [("environment_id", "=", self.server.id),
+             ("slug", "=", "odoo-cliente-b")])
+        self.assertTrue(instance)
+        self.assertEqual(instance.state, "draft")
+        self.assertEqual(instance.project_id, self.project_b)
+        self.assertEqual((instance.http_port, instance.gevent_port),
+                         (8079, 8082))
+        self.assertEqual(instance.main_url, "b.pcm.test")
+        # Encolado con la contraseña PG transitoria generada al encolar.
+        args = fake_delay.job_add_instance.call_args[0]
+        self.assertEqual(args[0], instance.id)
+        self.assertEqual(args[1]["db_mode"], "local_pg")
+        self.assertEqual(args[1]["db_name"], "cliente_b_db")
+        self.assertTrue(args[1]["db_password"])
+        # Cierra con notificación (en el drawer: toast, no modal).
+        self.assertEqual(result["tag"], "display_notification")
+
+    def test_dns_exige_hosted_zone(self):
+        with self.assertRaises(UserError):
+            self._wizard(create_dns=True).action_add_instance()

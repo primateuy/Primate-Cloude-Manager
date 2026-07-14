@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_instance_create_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.instance.create.wizard.form</field>
+        <field name="model">primate.cloud.instance.create.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Agregar instancia">
+                <div class="alert alert-info" role="alert">
+                    Monta OTRO Odoo dentro de este servidor, sin tocar los que
+                    ya corren (conf, unit, sitio nginx, credencial PostgreSQL
+                    y filestore propios por instancia). No lanza ninguna EC2.
+                </div>
+                <group>
+                    <group string="Servidor">
+                        <field name="environment_id" readonly="1"/>
+                        <field name="http_port_preview"/>
+                        <field name="gevent_port_preview"/>
+                    </group>
+                    <group string="Instancia">
+                        <field name="project_id"/>
+                        <field name="name"/>
+                        <field name="odoo_version"/>
+                        <field name="odoo_edition"/>
+                        <field name="domain"/>
+                        <field name="workers"/>
+                    </group>
+                </group>
+                <group>
+                    <group string="Base de datos (PostgreSQL del servidor)">
+                        <field name="db_name"/>
+                        <field name="admin_password" password="True"/>
+                    </group>
+                    <group string="DNS (opcional)">
+                        <field name="create_dns"/>
+                        <field name="hosted_zone_id"
+                               invisible="not create_dns"
+                               required="create_dns"/>
+                        <field name="ttl" invisible="not create_dns"/>
+                    </group>
+                </group>
+                <div class="alert alert-warning" role="alert"
+                     invisible="not ram_warning">
+                    <field name="ram_warning" readonly="1" nolabel="1"/>
+                </div>
+                <footer>
+                    <button name="action_add_instance" type="object"
+                            string="Agregar instancia" class="btn-primary"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

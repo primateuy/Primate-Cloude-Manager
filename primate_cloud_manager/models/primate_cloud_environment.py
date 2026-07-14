@@ -24,6 +24,7 @@ from odoo.tools import file_open
 from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm, github_api
 from ..tools import bus, crypto, dates
 from .primate_cloud_ec2_instance import CUSTOM_ADDONS_DIR
+from .primate_cloud_instance import LEGACY_SERVICE
 
 _logger = logging.getLogger(__name__)
 
@@ -557,7 +558,7 @@ class PrimateCloudEnvironment(models.Model):
             self.env.cr.rollback()
             self.env.cr.execute("SELECT pg_advisory_unlock(%s)", (key,))
 
-    def _allocate_ports(self):
+    def _allocate_ports(self, lock=True):
         """Primer slot de puertos libre del servidor (atómico, D-R3.8).
 
         Slots de a 10 desde (8069, 8072). Cuenta TODAS las instancias del
@@ -571,14 +572,17 @@ class PrimateCloudEnvironment(models.Model):
         commit) — dos asignaciones concurrentes se serializan y la segunda
         ve lo commiteado por la primera. Llamar SOLO desde transacciones
         cortas (crear instancia + encolar), nunca dentro del trabajo largo
-        de un job.
+        de un job. ``lock=False`` es SOLO para previews informativos (el
+        wizard muestra el slot probable sin retener el lock); toda
+        asignación REAL va con lock.
 
         Returns:
             tuple[int, int]: ``(http_port, gevent_port)`` del slot asignado.
         """
         self.ensure_one()
-        self.env.cr.execute("SELECT pg_advisory_xact_lock(%s)",
-                            (self._server_lock_key("port-alloc"),))
+        if lock:
+            self.env.cr.execute("SELECT pg_advisory_xact_lock(%s)",
+                                (self._server_lock_key("port-alloc"),))
         instances = self.env["primate.cloud.instance"].with_context(
             active_test=False).search([("environment_id", "=", self.id)])
         used = set()
@@ -910,20 +914,45 @@ class PrimateCloudEnvironment(models.Model):
             },
         }
 
-    def action_create_instance(self):
-        """Agregar OTRO Odoo a este servidor — gate honesto hasta R3.
+    def _is_legacy_layout(self):
+        """¿Este servidor corre un Odoo instalado con el layout legacy (pre-R3)?
 
-        La acción es visible para que el modelo destino se entienda desde ya,
-        pero el install multi-Odoo (puertos/unit/nginx por slug sin tocar los
-        Odoo vivos) es la fase R3 del recableo: hasta entonces se explica el
-        porqué en lugar de ocultar el botón.
+        Criterio: alguna instancia NO archivada, YA instalada (activa), cuya
+        unit es la legacy compartida ``odoo`` (un solo Odoo en /opt/odoo).
+        Las instancias draft no cuentan: nacen con los defaults legacy hasta
+        materializarse al instalar.
         """
         self.ensure_one()
-        raise UserError(_(
-            "Todavía no disponible: montar un segundo Odoo en un servidor "
-            "existente requiere el layout multi-Odoo (fase R3 del recableo, "
-            "en curso). Hoy cada servidor hospeda su instancia primaria; para "
-            "un Odoo nuevo, creá un entorno."))
+        return any(
+            inst.state == "active" and inst.service_name == LEGACY_SERVICE
+            for inst in self.instance_ids)
+
+    def action_create_instance(self):
+        """Agregar OTRO Odoo a este servidor — abre el wizard real (R3-B3).
+
+        Gate por layout (D-R3.2): un servidor LEGACY sigue gated con el
+        motivo nuevo (la adopción in-place al layout /opt/pcm es una
+        mini-fase posterior si hace falta). Los servidores multi-Odoo — o
+        vírgenes de instalación — abren el wizard.
+        """
+        self.ensure_one()
+        if self.state != "active":
+            raise UserError(_(
+                "Solo se agregan instancias a un servidor activo."))
+        if self._is_legacy_layout():
+            raise UserError(_(
+                "Este servidor tiene layout legacy (un solo Odoo pre-R3): "
+                "montarle un segundo Odoo requiere adoptarlo al layout "
+                "multi-Odoo (mini-fase pendiente del recableo). Para un Odoo "
+                "nuevo hoy, creá un entorno."))
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Agregar instancia"),
+            "res_model": "primate.cloud.instance.create.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_environment_id": self.id},
+        }
 
     # ------------------------------------------------------------------
     # Multi-Odoo (R3-B2): bootstrap del servidor + agregar instancia
@@ -1032,6 +1061,11 @@ class PrimateCloudEnvironment(models.Model):
                 region = (params.get("region") or machine.region
                           or self.account_id.default_region)
                 instance.state = "installing"
+                # Layout por slug en el REGISTRO (rutas + pg_user propio,
+                # D-R3.10): sin esto la instancia llegaría al install con los
+                # defaults legacy (pg_user 'odoo' compartido) y el bookkeeping
+                # de R4 (logs/config/backups por instancia) apuntaría mal.
+                self._materialize_multiodoo_layout(instance, params)
 
                 # 2. Bootstrap fresco (no-op barato si el marker ya está).
                 bus.provision_step(self.env, self,

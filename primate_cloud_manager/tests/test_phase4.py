@@ -571,12 +571,12 @@ class TestEnvironmentProvision(TransactionCase):
         with self.assertRaises(UserError):
             self.env_rec.action_retry_install()
 
-    def test_gate_crear_instancia_visible_y_honesto(self):
-        # R2: la acción existe (visible en la vista) pero explica el porqué
-        # del gate (multi-Odoo = R3) en lugar de fallar críptico u ocultarse.
-        with self.assertRaises(UserError) as ctx:
-            self.env_rec.action_create_instance()
-        self.assertIn("R3", str(ctx.exception))
+    def test_gate_crear_instancia_exige_servidor_activo(self):
+        # R3-B3 reemplazó el gate "todavía no" de R2 por el wizard real; lo
+        # que queda acá es la guarda de estado (el gate por layout legacy y
+        # el wizard se fijan en test_r3_multiodoo.TestR3B3Wizard).
+        with self.assertRaises(UserError):
+            self.env_rec.action_create_instance()  # entorno draft
 
     def test_rds_ya_existente_se_reusa_en_retry(self):
         # Idempotencia del paso BD (R2): DBInstanceAlreadyExists → reusar,
