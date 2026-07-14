@@ -12,7 +12,10 @@ import re
 import secrets
 import shlex
 import uuid
+import zlib
 from datetime import timedelta
+
+import requests
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -39,6 +42,15 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PG_PASSWORD_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # Swap del bootstrap (D-R3.7).
 BOOTSTRAP_SWAP_MB = 2048
+# Puertos por slots de a 10 (D-R3.8): slot k → (8069+10k, 8072+10k). Los
+# slots asignados NO se reciclan en v1 (una instancia archivada retiene el
+# suyo: evita colisiones con units residuales en el servidor).
+PORT_SLOT_BASE_HTTP = 8069
+PORT_SLOT_BASE_GEVENT = 8072
+PORT_SLOT_STRIDE = 10
+# Timeout del health-probe HTTP a una instancia viva (segundos): corto, es
+# lectura pura dentro de un job.
+HEALTH_PROBE_TIMEOUT = 10
 
 # Ventana máxima (horas) para dar por cumplida cada frecuencia esperada.
 # Todo se interpreta y compara en UTC (decisión de Fase 8: los Datetime de Odoo,
@@ -157,6 +169,15 @@ class PrimateCloudEnvironment(models.Model):
     )
     ec2_instance_ids = fields.One2many(
         "primate.cloud.ec2.instance", "environment_id", string="Máquinas AWS"
+    )
+    # Caché de UI del bootstrap multi-Odoo (R3). La VERDAD es el marker
+    # /opt/pcm/.bootstrap-v1 en disco: toda operación que dependa del
+    # bootstrap lo re-verifica por SSM (regla permanente: ninguna decisión
+    # de seguridad/operación se toma de un caché).
+    multiodoo_ready = fields.Boolean(
+        string="Multi-Odoo listo", default=False, copy=False, readonly=True,
+        help="El servidor pasó el bootstrap multi-Odoo (informativo; se "
+             "re-verifica contra el marker en disco en cada operación).",
     )
     database_ids = fields.One2many(
         "primate.cloud.database", "environment_id", string="Bases de datos"
@@ -498,6 +519,122 @@ class PrimateCloudEnvironment(models.Model):
         return params
 
     # ------------------------------------------------------------------
+    # Concurrencia por servidor (R3-B2): lock + asignación de puertos
+    # ------------------------------------------------------------------
+    def _server_lock_key(self, scope):
+        """Clave estable del advisory lock por (servidor, alcance) → bigint.
+
+        Determinista entre procesos (crc32, no ``hash()`` que varía por seed
+        — mismo patrón que el SG del auto-discovery). Alcances distintos
+        (``instance-install`` vs ``port-alloc``) usan claves distintas: la
+        asignación de puertos no debe esperar los minutos de un install.
+        """
+        self.ensure_one()
+        crc = zlib.crc32(scope.encode("utf-8")) & 0xFFFFFFFF
+        return (self.id << 32) | crc
+
+    def _acquire_server_lock(self, scope):
+        """Toma el lock de SESIÓN del servidor (unlock explícito del caller).
+
+        Serializa dos «agregar instancia» sobre la MISMA máquina; servidores
+        distintos no se bloquean entre sí. Devuelve la clave para el release.
+        """
+        key = self._server_lock_key(scope)
+        self.env.cr.execute("SELECT pg_advisory_lock(%s)", (key,))
+        return key
+
+    def _release_server_lock(self, key):
+        """Libera el lock de sesión, tolerando una transacción abortada.
+
+        Si un error SQL dejó la transacción en estado aborted, el UNLOCK
+        directo fallaría y el lock quedaría colgado en la conexión del pool
+        (serializaría PARA SIEMPRE los installs de este servidor): se hace
+        rollback (la transacción ya estaba perdida) y se libera igual.
+        """
+        try:
+            self.env.cr.execute("SELECT pg_advisory_unlock(%s)", (key,))
+        except Exception:  # noqa: BLE001 - transacción abortada
+            self.env.cr.rollback()
+            self.env.cr.execute("SELECT pg_advisory_unlock(%s)", (key,))
+
+    def _allocate_ports(self):
+        """Primer slot de puertos libre del servidor (atómico, D-R3.8).
+
+        Slots de a 10 desde (8069, 8072). Cuenta TODAS las instancias del
+        servidor **incluidas las archivadas** (los slots no se reciclan en
+        v1: una unit residual en el servidor no puede chocar con un slot
+        re-asignado). Redes de seguridad: la constraint
+        ``UNIQUE(environment_id, http_port)`` de R1 (atrás) y el ``ss -ltn``
+        del script (adelante, puertos ocupados por fuera de PCM).
+
+        **Atomicidad**: toma ``pg_advisory_xact_lock`` (se libera solo al
+        commit) — dos asignaciones concurrentes se serializan y la segunda
+        ve lo commiteado por la primera. Llamar SOLO desde transacciones
+        cortas (crear instancia + encolar), nunca dentro del trabajo largo
+        de un job.
+
+        Returns:
+            tuple[int, int]: ``(http_port, gevent_port)`` del slot asignado.
+        """
+        self.ensure_one()
+        self.env.cr.execute("SELECT pg_advisory_xact_lock(%s)",
+                            (self._server_lock_key("port-alloc"),))
+        instances = self.env["primate.cloud.instance"].with_context(
+            active_test=False).search([("environment_id", "=", self.id)])
+        used = set()
+        for inst in instances:
+            used.update(p for p in (inst.http_port, inst.gevent_port) if p)
+        slot = 0
+        while True:
+            http = PORT_SLOT_BASE_HTTP + PORT_SLOT_STRIDE * slot
+            gevent = PORT_SLOT_BASE_GEVENT + PORT_SLOT_STRIDE * slot
+            if http not in used and gevent not in used:
+                return http, gevent
+            slot += 1
+
+    def _create_instance_with_ports(self, vals):
+        """Crea una instancia del servidor con su slot de puertos asignado.
+
+        Único camino válido para crear instancias que se van a instalar en
+        el layout multi-Odoo (el wizard de B3 pasa por acá): la asignación
+        y el INSERT quedan bajo el mismo ``xact_lock`` de
+        :meth:`_allocate_ports`, así dos creaciones simultáneas no pueden
+        agarrar el mismo slot.
+        """
+        self.ensure_one()
+        http_port, gevent_port = self._allocate_ports()
+        return self.env["primate.cloud.instance"].create(dict(
+            vals, environment_id=self.id,
+            http_port=http_port, gevent_port=gevent_port,
+        ))
+
+    def _enqueue_add_instance(self, instance, params):
+        """Valida y encola el montaje de OTRO Odoo en este servidor (R3-B2).
+
+        Como en la cadena R2, lo transitorio se genera al ENCOLAR (queue_job
+        persiste los args): la contraseña PG propia de la instancia viaja en
+        los params y un requeue reusa la MISMA.
+        """
+        self.ensure_one()
+        instance.ensure_one()
+        if instance.environment_id != self:
+            raise UserError(_("La instancia no pertenece a este servidor."))
+        if self.state != "active":
+            raise UserError(_(
+                "Solo se agregan instancias a un servidor activo."))
+        if params.get("db_mode", "local_pg") != "local_pg":
+            raise UserError(_(
+                "Agregar instancia soporta PostgreSQL local del servidor en "
+                "v1 (una RDS propia por instancia queda anotada en backlog)."))
+        params = dict(params, db_mode="local_pg")
+        params = self._ensure_transient_db_password(params)
+        instance.state = "draft"
+        self.with_delay(
+            description=_("Agregar instancia: %s") % instance.display_name
+        ).job_add_instance(instance.id, params)
+        return True
+
+    # ------------------------------------------------------------------
     # Helpers de servicios / script
     # ------------------------------------------------------------------
     def _log(self, action_type, result="success", error_message=None,
@@ -695,10 +832,24 @@ class PrimateCloudEnvironment(models.Model):
                 db_host = self._provision_database(
                     base, account, machine, params, region)
 
-            # 2. install_odoo.sh por SSM (instala Odoo, nginx, SSL) -----------
+            # 2. Layout multi-Odoo (R3, D-R3.1): los servidores NUEVOS nacen
+            #    multi-Odoo desde su primera instancia — bootstrap del
+            #    servidor + install POR SLUG (install_odoo.sh queda solo
+            #    como camino legacy, hoy lo usa staging hasta R4).
+            if not instance_rec:
+                raise UserError(_(
+                    "El entorno no tiene instancia primaria: no hay qué "
+                    "instalar (¿se archivó?)."))
+            ssm = aws_ssm.AwsSsmService(base)
+            bus.provision_step(self.env, self,
+                               _("Preparando el servidor (bootstrap multi-Odoo)…"))
+            self._ensure_server_bootstrap(ssm, machine, region)
             bus.provision_step(self.env, self,
                                _("Instalando Odoo por SSM (puede tardar varios minutos)…"))
-            self._provision_run_install(base, machine, params, region, db_host, domain)
+            self._materialize_multiodoo_layout(instance_rec, params)
+            self._provision_run_instance_install(
+                ssm, machine, instance_rec, dict(params, db_host=db_host),
+                region, domain, is_default=True)
 
             # 3. Registro DNS (A -> IP pública) -------------------------------
             bus.provision_step(self.env, self, _("Configurando DNS…"))
@@ -773,6 +924,385 @@ class PrimateCloudEnvironment(models.Model):
             "existente requiere el layout multi-Odoo (fase R3 del recableo, "
             "en curso). Hoy cada servidor hospeda su instancia primaria; para "
             "un Odoo nuevo, creá un entorno."))
+
+    # ------------------------------------------------------------------
+    # Multi-Odoo (R3-B2): bootstrap del servidor + agregar instancia
+    # ------------------------------------------------------------------
+    def _active_machine(self):
+        """La máquina viva del servidor (o recordset vacío)."""
+        self.ensure_one()
+        machine = self.ec2_instance_id or self.ec2_instance_ids.filtered(
+            lambda m: m.instance_state != "terminated")[:1]
+        if machine and machine.instance_state == "terminated":
+            return machine.browse()
+        return machine
+
+    def job_bootstrap_server(self):
+        """Job: prepara el servidor para multi-Odoo (bootstrap idempotente).
+
+        El script sale enseguida si el marker ya está; correrlo de nuevo es
+        barato y es la ÚNICA forma válida de saber que el servidor está
+        listo (el campo ``multiodoo_ready`` es caché de UI).
+        """
+        self.ensure_one()
+        try:
+            machine = self._active_machine()
+            if not machine:
+                raise UserError(_(
+                    "El servidor no tiene una máquina activa para bootstrapear."))
+            base = self.account_id._get_aws_service()
+            ssm = aws_ssm.AwsSsmService(base)
+            region = machine.region or self.account_id.default_region
+            self._ensure_server_bootstrap(ssm, machine, region)
+            return True
+        except Exception as error:  # noqa: BLE001 - se audita, no se relanza
+            self.message_post(body=_("Bootstrap multi-Odoo fallido: %s") % error)
+            self._log("server_bootstrap",
+                      name=_("Bootstrap multi-Odoo: %s") % self.name,
+                      result="failed", error_message=str(error))
+            return False
+
+    def _ensure_server_bootstrap(self, ssm, machine, region):
+        """Corre bootstrap_server.sh por SSM y exige el marker REAL.
+
+        Regla permanente: la decisión «este servidor está listo para montar
+        otro Odoo» se toma del marker en disco (el script lo chequea y
+        no-opea si ya está), NUNCA del caché ``multiodoo_ready``. Levanta
+        UserError si el bootstrap no terminó bien (el caller audita).
+        """
+        self.ensure_one()
+        script = self._build_bootstrap_script()
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm bootstrap: %s" % self.name, timeout=900,
+        )
+        stdout = output.get("stdout") or ""
+        ok = output.get("status") == "Success" and "PCM_BOOTSTRAP_OK" in stdout
+        if not ok:
+            raise UserError(_(
+                "El bootstrap multi-Odoo no terminó bien (estado: %(status)s"
+                "%(detail)s).",
+                status=output.get("status"),
+                detail=self._pcm_error_detail(stdout, output.get("stderr")),
+            ))
+        # Solo se audita la aplicación REAL (el no-op por marker es ruido).
+        if "ya aplicado" not in stdout:
+            self._log("server_bootstrap",
+                      name=_("Bootstrap multi-Odoo: %s") % self.name,
+                      result="success", aws_request_id=output.get("command_id"))
+        if not self.multiodoo_ready:
+            self.multiodoo_ready = True
+        return True
+
+    def job_add_instance(self, instance_id, params):
+        """Job R3-B2: monta OTRO Odoo en este servidor SIN tocar los vivos.
+
+        Orden (diseño R3 §8, con las dos reglas permanentes en el centro):
+
+        1. **Lock por servidor** (sesión + unlock en finally): dos «agregar
+           instancia» sobre la misma máquina se serializan.
+        2. **Bootstrap fresco**: el marker en disco es la verdad, no el caché.
+        3. **Snapshot HTTP de TODAS las instancias vivas** del servidor.
+        4. ``install_instance.sh`` por SSM (guardas + trap clean-slate).
+        5. **Re-snapshot**: lo que servía ANTES tiene que servir DESPUÉS
+           (patrón PCM_HTTP_WAS: lo ya muerto antes no bloquea, se anota).
+           Si un vecino vivo dejó de responder, se DESMONTA la instancia
+           nueva (teardown por slug) y el job queda failed con nombre y
+           apellido en la bitácora.
+        """
+        self.ensure_one()
+        instance = self.env["primate.cloud.instance"].browse(instance_id).exists()
+        if not instance or instance.environment_id != self:
+            self._log("instance_install", result="failed",
+                      name=_("Agregar instancia a %s") % self.name,
+                      error_message=_("La instancia no existe o no pertenece "
+                                      "a este servidor."))
+            return False
+        title = _("Agregar instancia: %s") % instance.name
+        lock_key = self._acquire_server_lock("instance-install")
+        try:
+            bus.provision_start(self.env, self, title=title)
+            try:
+                machine = self._active_machine()
+                if not machine:
+                    raise UserError(_(
+                        "El servidor no tiene una máquina activa."))
+                base = self.account_id._get_aws_service()
+                ssm = aws_ssm.AwsSsmService(base)
+                region = (params.get("region") or machine.region
+                          or self.account_id.default_region)
+                instance.state = "installing"
+
+                # 2. Bootstrap fresco (no-op barato si el marker ya está).
+                bus.provision_step(self.env, self,
+                                   _("Verificando el bootstrap multi-Odoo…"))
+                self._ensure_server_bootstrap(ssm, machine, region)
+
+                # 3. Salud de los vecinos ANTES (desde afuera).
+                bus.provision_step(self.env, self,
+                                   _("Salud de las instancias vivas (antes)…"))
+                before = self._instances_health_snapshot(
+                    ssm, machine, region, exclude=instance)
+                alive_before = [i for i, ok in before.items() if ok]
+                dead_before = [i for i, ok in before.items() if not ok]
+                if dead_before:
+                    # No se les achaca al install un muerto previo; se anota.
+                    self.message_post(body=_(
+                        "Instancias que YA no respondían antes del install "
+                        "(no bloquean): %s.") % ", ".join(
+                            i.display_name for i in dead_before))
+
+                # 4. Install por slug (el trap del script desmonta lo propio).
+                bus.provision_step(self.env, self, _(
+                    "Instalando Odoo por SSM (puede tardar varios minutos)…"))
+                others = self.instance_ids.filtered(
+                    lambda i: i.id != instance.id and i.state != "archived")
+                self._provision_run_instance_install(
+                    ssm, machine, instance, params, region,
+                    params.get("domain") or instance.main_url or instance.slug,
+                    is_default=not others)
+
+                # 5. Re-snapshot: vivo-antes DEBE seguir vivo-después.
+                bus.provision_step(self.env, self,
+                                   _("Re-verificando la salud de los vecinos…"))
+                broken = [i for i in alive_before
+                          if not self._instance_http_alive(ssm, machine,
+                                                           region, i)]
+                if broken:
+                    self._teardown_instance_artifacts(
+                        ssm, machine, region, instance, params)
+                    raise UserError(_(
+                        "Vecinos que servían ANTES dejaron de responder tras "
+                        "el install: %s. Se desmontó la instancia nueva; los "
+                        "vecinos no se tocaron.") % ", ".join(
+                            i.display_name for i in broken))
+            except Exception as error:  # noqa: BLE001 - se audita, no se relanza
+                instance.state = "error"
+                self.message_post(body=_("Agregar instancia fallido: %s") % error)
+                self._log("instance_install", name=title, result="failed",
+                          error_message=str(error), record=instance)
+                bus.provision_done(self.env, self, ok=False,
+                                   message=_("Instalación fallida: %s") % error)
+                return False
+
+            # Éxito: activar + registrar la BD de la instancia.
+            database = self._upsert_provisioned_database({
+                "name": params.get("db_name"),
+                "account_id": self.account_id.id,
+                "environment_id": self.id,
+                "instance_id": instance.id,
+                "db_type": "local_pg",
+                "ec2_instance_id": machine.id,
+                "state": "available",
+            })
+            instance.write({
+                "state": "active",
+                "main_url": params.get("domain") or instance.main_url,
+                "database_id": database.id,
+            })
+            # DNS best-effort: el Odoo ya está montado y sano; un fallo de
+            # Route53 no debe dejar la instancia en error (un retry completo
+            # chocaría con PCM_ERR_DIRTY_SLUG). Se anota y se reintenta a mano.
+            if params.get("create_dns"):
+                try:
+                    self._provision_dns(base, self.account_id, machine, params,
+                                        params.get("domain"), instance=instance)
+                except Exception as error:  # noqa: BLE001 - best-effort
+                    self.message_post(body=_(
+                        "ADVERTENCIA: la instancia quedó activa pero el DNS "
+                        "falló: %s. Crearlo a mano desde Registros DNS.") % error)
+            self._log("instance_install", name=title, result="success",
+                      record=instance)
+            bus.provision_done(self.env, self, ok=True,
+                               message=_("Instancia %s activa.") % instance.name)
+            return True
+        finally:
+            self._release_server_lock(lock_key)
+
+    def _provision_run_instance_install(self, ssm, machine, instance, params,
+                                        region, domain, is_default):
+        """Renderiza y corre install_instance.sh por SSM (chatter + bitácora).
+
+        Exige estado Success **y** el marcador ``PCM_INSTALL_OK`` (un run
+        truncado por timeout puede quedar Success a medias). Ante fallo,
+        levanta UserError con el marcador ``PCM_ERR_*`` accionable si vino.
+        """
+        script = self._build_instance_install_script(
+            instance, dict(params, domain=domain), is_default=is_default)
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm instance install: %s" % instance.slug,
+            timeout=params.get("install_timeout") or 900,
+        )
+        stdout = output.get("stdout") or ""
+        ok = output.get("status") == "Success" and "PCM_INSTALL_OK" in stdout
+        self.message_post(body=_(
+            "Instalación de la instancia %(slug)s (SSM) — estado: %(status)s.",
+            slug=instance.slug, status=output.get("status")))
+        self._log("ssm_command",
+                  name=_("Instalar instancia: %s") % instance.display_name,
+                  result="success" if ok else "failed",
+                  error_message=None if ok else (
+                      self._pcm_error_detail(stdout, output.get("stderr"))
+                      or output.get("status")),
+                  aws_request_id=output.get("command_id"), record=instance)
+        if not ok:
+            raise UserError(_(
+                "La instalación por SSM no terminó con éxito (estado: "
+                "%(status)s%(detail)s).",
+                status=output.get("status"),
+                detail=self._pcm_error_detail(stdout, output.get("stderr")),
+            ))
+
+    @staticmethod
+    def _pcm_error_detail(stdout, stderr=None):
+        """Primera línea ``PCM_ERR_*`` del stdout (o stderr), para mensajes
+        accionables; '' si no hay nada que citar."""
+        for line in (stdout or "").splitlines():
+            if line.strip().startswith("PCM_ERR"):
+                return " — %s" % line.strip()
+        stderr = (stderr or "").strip()
+        return (" — %s" % stderr.splitlines()[0]) if stderr else ""
+
+    # ------------------------------------------------------------------
+    # Salud de instancias vivas (patrón PCM_HTTP_WAS a nivel job)
+    # ------------------------------------------------------------------
+    def _instances_health_snapshot(self, ssm, machine, region, exclude=None):
+        """HTTP de cada instancia ACTIVA del servidor → {instancia: bool}.
+
+        Es la referencia del contrato no-romper-lo-ajeno: lo que servía
+        ANTES del install tiene que servir DESPUÉS; lo que ya estaba roto
+        no bloquea (no se le achaca al install un muerto previo).
+        """
+        self.ensure_one()
+        result = {}
+        for inst in self.instance_ids.filtered(
+                lambda i: i.state == "active"
+                and (not exclude or i.id != exclude.id)):
+            result[inst] = self._instance_http_alive(ssm, machine, region, inst)
+        return result
+
+    def _instance_http_alive(self, ssm, machine, region, instance):
+        """¿La instancia responde HTTP? Probe corto, read-only.
+
+        Desde AFUERA (IP del servidor + header Host del dominio: valida
+        también el ruteo nginx) cuando hay IP pública y dominio; si no,
+        fallback por SSM con curl al puerto propio en localhost.
+        """
+        if machine.public_ip and instance.main_url:
+            try:
+                response = requests.get(
+                    "http://%s/web/login" % machine.public_ip,
+                    headers={"Host": instance.main_url},
+                    timeout=HEALTH_PROBE_TIMEOUT, allow_redirects=True)
+                return response.status_code < 500
+            except requests.RequestException:
+                return False
+        if not instance.http_port:
+            return False
+        command = ("curl -s -o /dev/null -m 5 -w '%%{http_code}' "
+                   "http://127.0.0.1:%d/web/login || true") % instance.http_port
+        output = ssm.run_script(
+            machine.aws_instance_id, command, region=region,
+            comment="pcm health probe: %s" % instance.slug,
+            timeout=30, agent_timeout=30)
+        code = (output.get("stdout") or "").strip()
+        # curl imprime 000 cuando NO pudo conectar: eso es muerto, no vivo.
+        return code.isdigit() and 100 <= int(code) < 500
+
+    # ------------------------------------------------------------------
+    # Teardown por slug (rollback orquestado desde el job)
+    # ------------------------------------------------------------------
+    def _build_instance_teardown_script(self, instance, db_name=None,
+                                        drop_db=False):
+        """Desmonta los artefactos POR SLUG de una instancia (orden del trap).
+
+        Para el rollback orquestado desde el job (vecino roto DESPUÉS de un
+        install exitoso — el trap del script ya no corre) y como remedio
+        futuro del ``PCM_ERR_DIRTY_SLUG``. Misma semántica clean-slate que
+        el trap: SOLO lo del slug; ``dropdb`` únicamente con ``drop_db``
+        (la BD nació en la corrida que se desmonta — garantizado por la
+        guarda ``PCM_ERR_DB_EXISTS`` del install); JAMÁS toca el usuario
+        PG compartido ``odoo`` de los servidores legacy.
+        """
+        self.ensure_one()
+        instance.ensure_one()
+        slug = instance.slug or ""
+        if not SLUG_RE.match(slug):
+            raise UserError(_("Slug inválido para desmontar: %r.") % slug)
+        if drop_db and not DB_NAME_RE.match(db_name or ""):
+            raise UserError(_("Nombre de base inválido: %r.") % db_name)
+        pg_user = instance.pg_user or ""
+        drop_user = pg_user.startswith("odoo_") and SLUG_RE.match(
+            pg_user.replace("_", "-"))
+        lines = [
+            "#!/usr/bin/env bash",
+            # Sin -e: el teardown es best-effort, desmonta todo lo que pueda.
+            "set -uo pipefail",
+            'UNIT="odoo-%s.service"' % slug,
+            'systemctl stop "${UNIT}" 2>/dev/null || true',
+            'systemctl disable "${UNIT}" 2>/dev/null || true',
+            'rm -f "/etc/systemd/system/${UNIT}"',
+            "systemctl daemon-reload",
+            'rm -f "/etc/nginx/sites-enabled/pcm-%s.conf" '
+            '"/etc/nginx/sites-available/pcm-%s.conf"' % (slug, slug),
+            "nginx -t && systemctl reload nginx || true",
+        ]
+        if drop_db:
+            lines.append('sudo -u postgres dropdb --if-exists "%s"' % db_name)
+        if drop_user:
+            lines.append('sudo -u postgres dropuser --if-exists "%s"' % pg_user)
+        lines += [
+            'rm -rf "/opt/pcm/instances/%s"' % slug,
+            'rm -f "/etc/odoo/%s.conf" "/etc/logrotate.d/odoo-%s"' % (slug, slug),
+            'echo "PCM_TEARDOWN_DONE"',
+        ]
+        return "\n".join(lines) + "\n"
+
+    def _teardown_instance_artifacts(self, ssm, machine, region, instance,
+                                     params):
+        """Corre el teardown por slug en el servidor y lo deja en el chatter."""
+        script = self._build_instance_teardown_script(
+            instance, db_name=params.get("db_name"), drop_db=True)
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm instance teardown: %s" % instance.slug, timeout=300)
+        done = "PCM_TEARDOWN_DONE" in (output.get("stdout") or "")
+        self.message_post(body=_(
+            "Teardown de la instancia %(slug)s: %(result)s.",
+            slug=instance.slug,
+            result=_("completado") if done else _("INCOMPLETO — revisar el "
+                                                  "servidor a mano")))
+        return done
+
+    def _materialize_multiodoo_layout(self, instance, params):
+        """Escribe en la instancia las rutas/credencial del layout por slug.
+
+        Idempotente (retry con los mismos args → mismos valores). El
+        pg_user propio ``odoo_<slug>`` materializa D-R3.10; con BD remota
+        (RDS) la credencial es la master que viaja en params.
+        """
+        self.ensure_one()
+        instance.ensure_one()
+        slug = instance.slug or ""
+        if not SLUG_RE.match(slug):
+            raise UserError(_("Slug inválido para instalar: %r.") % slug)
+        vals = {
+            "service_name": "odoo-%s" % slug,
+            "conf_path": "/etc/odoo/%s.conf" % slug,
+            "data_dir": "/opt/pcm/instances/%s/data" % slug,
+            "addons_dir": "/opt/pcm/instances/%s/addons" % slug,
+        }
+        if params.get("db_mode") == "local_pg":
+            vals["pg_user"] = "odoo_%s" % slug.replace("-", "_")
+        else:
+            vals["pg_user"] = params.get("db_user") or "odoo"
+        # Puertos: se respetan los ya asignados (el allocator corre al CREAR
+        # la instancia; la primaria nace con el slot 0 = 8069/8072).
+        if not instance.http_port or not instance.gevent_port:
+            vals["http_port"], vals["gevent_port"] = self._allocate_ports()
+        instance.write(vals)
+        return instance
 
     def _provision_ec2(self, base, account, params, region, domain):
         """Crea la EC2 del entorno y registra el recurso. Devuelve la instancia."""
@@ -937,11 +1467,17 @@ class PrimateCloudEnvironment(models.Model):
                 % output.get("status")
             )
 
-    def _provision_dns(self, base, account, instance, params, domain):
-        """Crea el registro DNS A apuntando a la IP pública (si se pidió)."""
+    def _provision_dns(self, base, account, machine, params, domain,
+                       instance=None):
+        """Crea el registro DNS A apuntando a la IP pública (si se pidió).
+
+        ``instance`` (primate.cloud.instance) ata el registro al Odoo real;
+        sin ella, el mixin de R1 resuelve la instancia primaria (correcto
+        para la cadena, donde la primaria ES la instalada).
+        """
         if not params.get("create_dns"):
             return
-        if not instance.public_ip:
+        if not machine.public_ip:
             self.message_post(body=_("Sin IP pública: se omite la creación del registro DNS."))
             return
         route53 = aws_route53.AwsRoute53Service(base)
@@ -949,22 +1485,25 @@ class PrimateCloudEnvironment(models.Model):
             hosted_zone_id=params["hosted_zone_id"],
             name=domain,
             record_type="A",
-            value=instance.public_ip,
+            value=machine.public_ip,
             ttl=params.get("ttl") or 300,
             comment="pcm provision: %s" % self.name,
         )
-        record = self.env["primate.cloud.dns.record"].create({
+        vals = {
             "name": domain,
             "account_id": account.id,
             "environment_id": self.id,
             "hosted_zone_id": params["hosted_zone_id"],
             "record_type": "A",
-            "record_value": instance.public_ip,
+            "record_value": machine.public_ip,
             "ttl": params.get("ttl") or 300,
             "state": "active",
-        })
+        }
+        if instance is not None:
+            vals["instance_id"] = instance.id
+        record = self.env["primate.cloud.dns.record"].create(vals)
         self.message_post(body=_("Registro DNS creado: %s -> %s.")
-                          % (domain, instance.public_ip))
+                          % (domain, machine.public_ip))
         self._log("dns_create", name=_("Crear DNS: %s") % domain,
                   result="success", aws_request_id=change_id, record=record)
 

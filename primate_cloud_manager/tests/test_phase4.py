@@ -277,8 +277,12 @@ def _provision_base():
     client.create_db_instance.return_value = {}
     client.describe_db_instances.return_value = _available_db("forum-db")
     client.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
+    # La cadena R2 sobre layout multi-Odoo (R3-B2) exige los marcadores de
+    # cada script además del Status (un run truncado no puede pasar por OK).
     client.get_command_invocation.return_value = {
-        "Status": "Success", "StandardOutputContent": "ok", "ResponseCode": 0,
+        "Status": "Success",
+        "StandardOutputContent": "PCM_BOOTSTRAP_OK\nPCM_INSTALL_OK",
+        "ResponseCode": 0,
     }
     client.change_resource_record_sets.return_value = {"ChangeInfo": {"Id": "/change/C1"}}
     return base, client

@@ -28,6 +28,8 @@ ACTION_TYPES = [
     ("dns_update", "Actualizar registro DNS"),
     ("dns_delete", "Eliminar registro DNS"),
     ("provision", "Aprovisionar entorno"),
+    ("server_bootstrap", "Bootstrap multi-Odoo del servidor"),
+    ("instance_install", "Instalar instancia (multi-Odoo)"),
     ("commit_sync", "Sincronizar commits"),
     ("repo_check", "Verificar estado de repo"),
     ("module_detect", "Detectar módulos"),
