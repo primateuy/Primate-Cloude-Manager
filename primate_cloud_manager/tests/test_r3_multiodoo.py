@@ -195,12 +195,18 @@ class TestR3Scripts(TransactionCase):
         self.assertIn('IS_DEFAULT="0"', sin)
 
     def test_credenciales_jamas_en_lineas_de_log(self):
+        # Ni la contraseña PG ni el admin_password del conf pueden aparecer
+        # en líneas que van al stdout (el stdout llega al chatter/bitácora).
         script = self.server._build_instance_install_script(
-            self.inst_b, self._params("cliente_b_db"), is_default=False)
+            self.inst_b, self._params(
+                "cliente_b_db", admin_password="AdminSecreto-XYZ"),
+            is_default=False)
         for line in script.splitlines():
             if "log " in line or line.strip().startswith("echo"):
                 self.assertNotIn("PgPass_token-urlsafe-XYZ", line,
                                  "la contraseña PG apareció en una línea de log")
+                self.assertNotIn("AdminSecreto-XYZ", line,
+                                 "el admin_password apareció en una línea de log")
 
     def test_validaciones_de_builder_cortan_input_inseguro(self):
         # Slug raro → corta antes de renderizar (nada viaja al shell).
