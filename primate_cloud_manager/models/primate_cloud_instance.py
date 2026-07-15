@@ -27,6 +27,11 @@ LEGACY_DATA_DIR = "/opt/odoo/.local/share/Odoo"
 LEGACY_ADDONS_DIR = "/opt/odoo/custom-addons"
 LEGACY_HTTP_PORT = 8069
 LEGACY_GEVENT_PORT = 8072
+# Runtime legacy (R4-B1): en multi-Odoo el runtime es compartido por versión
+# bajo /opt/pcm/runtime; estos son los equivalentes del layout viejo.
+LEGACY_PYTHON_BIN = "/opt/odoo/venv/bin/python3"
+LEGACY_ODOO_BIN = "/opt/odoo/odoo/odoo-bin"
+LEGACY_LOG_PATH = "/var/log/odoo/odoo.log"
 
 
 def slugify(name):
@@ -102,6 +107,12 @@ class PrimateCloudInstance(models.Model):
     data_dir = fields.Char(string="Data dir (filestore)", default=LEGACY_DATA_DIR)
     addons_dir = fields.Char(string="Dir de addons custom", default=LEGACY_ADDONS_DIR)
     pg_user = fields.Char(string="Usuario PostgreSQL", default="odoo")
+    # Runtime por instancia (R4-B1): con qué intérprete/odoo-bin se opera este
+    # Odoo (shell, -u, -i) y dónde loguea. Materializados por R3 en multi;
+    # defaults legacy para los servidores pre-R3 — un solo código para ambos.
+    python_bin = fields.Char(string="Python del runtime", default=LEGACY_PYTHON_BIN)
+    odoo_bin = fields.Char(string="odoo-bin", default=LEGACY_ODOO_BIN)
+    log_path = fields.Char(string="Log de Odoo", default=LEGACY_LOG_PATH)
     database_id = fields.Many2one(
         "primate.cloud.database", string="Base de datos principal",
         ondelete="set null",
@@ -194,6 +205,16 @@ class PrimateCloudInstance(models.Model):
             rec.display_name = (
                 "%s @ %s" % (rec.name, server) if server else rec.name or ""
             )
+
+    def _machine(self):
+        """La máquina AWS viva del servidor donde corre esta instancia.
+
+        Cimiento de R4: las operaciones por-instancia (config/logs/addons/
+        impersonación) resuelven acá su destino SSM. Recordset vacío si el
+        servidor no tiene máquina activa.
+        """
+        self.ensure_one()
+        return self.environment_id._active_machine()
 
 
 class PrimateCloudInstanceLinked(models.AbstractModel):

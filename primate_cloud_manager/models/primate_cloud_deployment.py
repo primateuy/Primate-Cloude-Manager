@@ -220,18 +220,42 @@ class PrimateCloudDeployment(models.Model):
             )
         return instance
 
-    def _db_name(self):
-        """Nombre de la base del entorno (para -u de Odoo)."""
+    def _target_odoo_instance(self):
+        """La instancia ODOO objetivo del deploy (R4-B1, mixin de R1).
+
+        Prioridad: la del propio deploy → la del repo → la primaria del
+        entorno. En un servidor multi-Odoo esto decide QUÉ unit se reinicia
+        y con qué runtime/conf corre el ``-u`` — recablearlo acá evita el
+        guard: el deploy opera la instancia correcta en ambos layouts.
+        """
         self.ensure_one()
-        database = self.environment_id.database_ids[:1]
+        instance = (self.instance_id or self.repository_id.instance_id
+                    or self.environment_id.primary_instance_id)
+        if not instance:
+            raise UserError(_(
+                "El deploy no tiene una instancia Odoo objetivo (ni el "
+                "despliegue ni el repo ni el entorno la definen)."))
+        return instance
+
+    def _db_name(self):
+        """Nombre de la base de la instancia objetivo (para -u de Odoo)."""
+        self.ensure_one()
+        target = self._target_odoo_instance()
+        database = target.database_id or self.environment_id.database_ids[:1]
         if not database or not database.name:
-            raise UserError(_("El entorno no tiene una base de datos asociada."))
+            raise UserError(_("La instancia no tiene una base de datos asociada."))
         return database.name
 
     def _build_deploy_script(self):
-        """Construye el script de shell a correr por SSM según el tipo."""
+        """Construye el script de shell a correr por SSM según el tipo.
+
+        R4-B1: unit/runtime/conf salen de la INSTANCIA objetivo (las legacy
+        llevan los valores viejos en sus campos → mismo script que antes).
+        """
         self.ensure_one()
         deploy_type = self.deployment_type
+        target = self._target_odoo_instance()
+        service = shlex.quote(target.service_name or "odoo")
         if deploy_type in GIT_TYPES:
             path = shlex.quote(self.repository_id.local_path or "")
             lines = ["set -e", "cd %s" % path,
@@ -245,19 +269,23 @@ class PrimateCloudDeployment(models.Model):
                 lines.append("git checkout %s" % shlex.quote(self.target_commit or ""))
             lines.append('echo "PCM_TARGET:$(git rev-parse HEAD)"')
             if deploy_type in ("checkout_branch", "checkout_commit"):
-                lines.append("sudo systemctl restart odoo")
+                lines.append("sudo systemctl restart %s" % service)
             return "\n".join(lines)
         if deploy_type == "module_update":
             db = shlex.quote(self._db_name())
             mods = shlex.quote(self.module_names or "all")
             return "\n".join([
                 "set -e",
-                "sudo -u odoo /opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin "
-                "-c /etc/odoo/odoo.conf -d %s -u %s --stop-after-init" % (db, mods),
-                "sudo systemctl restart odoo",
+                "sudo -u odoo %s %s -c %s -d %s -u %s --stop-after-init" % (
+                    shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3"),
+                    shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin"),
+                    shlex.quote(target.conf_path or "/etc/odoo/odoo.conf"),
+                    db, mods),
+                "sudo systemctl restart %s" % service,
             ])
         # service_restart
-        return "set -e\nsudo systemctl restart odoo\nsudo systemctl restart nginx || true"
+        return ("set -e\nsudo systemctl restart %s\n"
+                "sudo systemctl restart nginx || true" % service)
 
     @staticmethod
     def _parse_commits(stdout):

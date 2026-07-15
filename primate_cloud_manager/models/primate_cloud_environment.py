@@ -914,6 +914,53 @@ class PrimateCloudEnvironment(models.Model):
             },
         }
 
+    # Flujos que todavía ESCRIBEN con rutas del layout legacy → bloque de R4
+    # que los recablea (y levanta su guard). Regla permanente: lo destructivo
+    # no-recableado se bloquea en runtime, no se anota en un doc.
+    LEGACY_FLOW_UNBLOCKED_IN = {
+        "config": "R4-B2",
+        "addons": "R4-B2",
+        "impersonate": "R4-B3",
+        "backup": "R4-B4",
+        "restore": "R4-B4",
+        "staging": "R4-B5",
+    }
+
+    def _legacy_flow_blocked_reason(self, flow):
+        """Por qué un flujo legacy-destructivo NO puede correr acá (o None).
+
+        Un flujo aún no recableado que escribe/borra con rutas legacy
+        (`/etc/odoo/odoo.conf`, unit ``odoo``, dropdb por nombre, filestore
+        viejo) solo es seguro sobre un servidor legacy PURO: una única
+        instancia no archivada con la unit compartida. Si hay alguna
+        instancia materializada al layout multi — o más de una (destino
+        ambiguo) — correrlo podría tocar el Odoo de OTRO cliente (el peor
+        caso: el restore dropea por nombre una base viva ajena sin haber
+        parado su servicio). Los jobs usan la razón para fallar honesto;
+        las acciones interactivas usan :meth:`_ensure_legacy_flow_allowed`.
+        """
+        self.ensure_one()
+        instances = self.instance_ids.filtered(lambda i: i.state != "archived")
+        multi = instances.filtered(
+            lambda i: i.service_name and i.service_name != LEGACY_SERVICE)
+        if not multi and len(instances) <= 1:
+            return None
+        return _(
+            "Operación «%(flow)s» bloqueada en este servidor: todavía usa "
+            "rutas del layout legacy y acá conviven %(count)d instancias "
+            "(layout multi-Odoo) — correrla podría tocar el Odoo de OTRO "
+            "cliente. Se libera al recablearse en %(block)s.",
+            flow=flow, count=len(instances),
+            block=self.LEGACY_FLOW_UNBLOCKED_IN.get(flow, "R4"),
+        )
+
+    def _ensure_legacy_flow_allowed(self, flow):
+        """Guard interactivo: levanta UserError si el flujo está bloqueado."""
+        reason = self._legacy_flow_blocked_reason(flow)
+        if reason:
+            raise UserError(reason)
+        return True
+
     def _is_legacy_layout(self):
         """¿Este servidor corre un Odoo instalado con el layout legacy (pre-R3)?
 
@@ -1321,11 +1368,18 @@ class PrimateCloudEnvironment(models.Model):
         slug = instance.slug or ""
         if not SLUG_RE.match(slug):
             raise UserError(_("Slug inválido para instalar: %r.") % slug)
+        if not instance.odoo_version:
+            raise UserError(_("La instancia no tiene versión de Odoo."))
+        runtime = "/opt/pcm/runtime/odoo-%s" % instance.odoo_version
         vals = {
             "service_name": "odoo-%s" % slug,
             "conf_path": "/etc/odoo/%s.conf" % slug,
             "data_dir": "/opt/pcm/instances/%s/data" % slug,
             "addons_dir": "/opt/pcm/instances/%s/addons" % slug,
+            # Runtime por instancia (R4-B1): con esto operan shell/-u/-i y logs.
+            "python_bin": "%s/venv/bin/python3" % runtime,
+            "odoo_bin": "%s/src/odoo-bin" % runtime,
+            "log_path": "/opt/pcm/instances/%s/log/odoo.log" % slug,
         }
         if params.get("db_mode") == "local_pg":
             vals["pg_user"] = "odoo_%s" % slug.replace("-", "_")
@@ -1583,6 +1637,10 @@ class PrimateCloudEnvironment(models.Model):
         self.ensure_one()
         if not self.account_id:
             raise UserError(_("El entorno origen necesita una cuenta AWS."))
+        # GUARD R4: la copia de staging dumpea con filestore/conf legacy y
+        # reinicia la unit legacy sobre el ORIGEN. Bloqueado en orígenes
+        # multi-Odoo hasta R4-B5.
+        self._ensure_legacy_flow_allowed("staging")
         # Origen explícito (Bloque 5): resuelve instancia+BD ya, con fallback
         # solo si es inequívoco, y los persiste en el staging para el refresh.
         origin_instance, origin_database = self._resolve_staging_origin(
@@ -1676,6 +1734,10 @@ class PrimateCloudEnvironment(models.Model):
         account = self.account_id
         bus.provision_start(self.env, self, title=_("Creando staging: %s") % self.name)
         try:
+            # GUARD R4 (también acá: un requeue no debe saltearse el del
+            # enqueue): el pipeline de copia usa rutas legacy sobre el origen.
+            if origin:
+                origin._ensure_legacy_flow_allowed("staging")
             base = account._get_aws_service()
             region = params.get("region") or account.default_region
             domain = params.get("domain") or self.main_url or self.name
@@ -1736,6 +1798,9 @@ class PrimateCloudEnvironment(models.Model):
         origin = self.origin_environment_id
         if not origin:
             raise UserError(_("Este staging no tiene entorno origen registrado."))
+        # GUARD R4: el refresh re-dumpea el origen y reinicia con rutas legacy.
+        origin._ensure_legacy_flow_allowed("staging")
+        self._ensure_legacy_flow_allowed("staging")
         bus.provision_start(self.env, self,
                             title=_("Refrescando staging: %s") % self.name)
         try:
@@ -2281,6 +2346,7 @@ class PrimateCloudEnvironment(models.Model):
                 "El entorno necesita una política de respaldo gestionada por "
                 "PCM (con bucket S3 de destino)."
             ))
+        self._ensure_legacy_flow_allowed("backup")
         self.with_delay(
             description=_("Backup manual: %s") % self.name
         ).job_run_backup(trigger="manual")
@@ -2304,6 +2370,16 @@ class PrimateCloudEnvironment(models.Model):
         policy = self.backup_policy_id
         if not policy or not policy.managed_by_pcm or not policy.s3_bucket:
             raise UserError(_("La política del entorno no está gestionada por PCM."))
+        # GUARD R4: el dump usa el filestore/conf del layout legacy — en un
+        # servidor multi produciría respaldos silenciosamente inválidos (sin
+        # filestore) o con datos mal atribuidos. Falla honesto (no skip):
+        # la ventana queda descubierta y visible. Se libera en R4-B4.
+        reason = self._legacy_flow_blocked_reason("backup")
+        if reason:
+            self._log("backup_run", name=_("Backup: %s") % self.name,
+                      result="failed", error_message=reason)
+            self.message_post(body=_("Backup gestionado bloqueado: %s") % reason)
+            return False
         account = self.account_id
         region = account.default_region
         bucket = policy.s3_bucket
@@ -2558,6 +2634,14 @@ class PrimateCloudEnvironment(models.Model):
                       error_message=message)
             self.message_post(body=_("Restore fallido: %s") % message)
             return False
+
+        # 0. GUARD R4 (el peor caso de todos): este flujo dropea/crea la base
+        #    POR NOMBRE y para/arranca la unit legacy — sobre un servidor
+        #    multi-Odoo destruiría la base VIVA de otro cliente sin haber
+        #    parado su servicio. Bloqueado hasta R4-B4.
+        reason = self._legacy_flow_blocked_reason("restore")
+        if reason:
+            return fail(reason)
 
         # 1. Registro válido + objetos realmente en S3 (¿los borró el lifecycle?).
         if not backup or backup.state != "completed":
@@ -2819,6 +2903,9 @@ class PrimateCloudEnvironment(models.Model):
         self.ensure_one()
         if not self.ec2_instance_ids[:1]:
             raise UserError(_("El entorno no tiene una instancia para clonar el addon."))
+        # GUARD R4: el clone escribe en el dir legacy y edita el conf legacy
+        # (mkdir -p incluso los CREA en un servidor multi). Hasta R4-B2.
+        self._ensure_legacy_flow_allowed("addons")
         url = (vals.get("github_url") or "").strip()
         if not url:
             raise UserError(_("Falta la URL del repositorio."))
@@ -2827,14 +2914,22 @@ class PrimateCloudEnvironment(models.Model):
         repo_name = (slug.split("/")[-1] if slug
                      else url.rstrip("/").split("/")[-1])
         repo_name = repo_name[:-4] if repo_name.endswith(".git") else repo_name
+        # R4-B1: la ruta del clone sale del addons_dir de la INSTANCIA (el
+        # mixin resuelve la primaria si no vino explícita); las legacy llevan
+        # el dir viejo en su campo → mismo path que antes.
+        target = (self.env["primate.cloud.instance"].browse(
+            vals.get("instance_id") or []) or self.primary_instance_id)
+        addons_dir = (target.addons_dir or CUSTOM_ADDONS_DIR) if target \
+            else CUSTOM_ADDONS_DIR
         repo = self.env["primate.cloud.repository"].create({
             "name": vals.get("name") or repo_name,
             "environment_id": self.id,
+            "instance_id": target.id if target else False,
             "github_url": url,
             "organization": vals.get("organization") or False,
             "repo_type": vals.get("repo_type") or "custom_client",
             "configured_branch": vals.get("configured_branch") or False,
-            "local_path": "%s/%s" % (CUSTOM_ADDONS_DIR, repo_name),
+            "local_path": "%s/%s" % (addons_dir, repo_name),
             "sync_state": "unknown",   # 'Sin verificar' hasta clonar + detectar
         })
         if vals.get("github_token"):

@@ -527,6 +527,11 @@ class PrimateCloudEc2Instance(models.Model):
         self.ensure_one()
         if not self.provisioned_by_pcm:
             raise UserError(_("Solo se edita la config de instancias PCM."))
+        # GUARD R4: apply Y ROLLBACK escriben SIEMPRE /etc/odoo/odoo.conf y
+        # reinician la unit legacy — en un servidor multi tocarían el conf
+        # equivocado. Hasta R4-B2.
+        if self.environment_id:
+            self.environment_id._ensure_legacy_flow_allowed("config")
         clean = self._validate_config(edits)
         if not clean:
             raise UserError(_("No hay cambios para guardar."))
@@ -555,6 +560,15 @@ class PrimateCloudEc2Instance(models.Model):
         """
         self.ensure_one()
         title = _("Editar config: %s") % self.name
+        # GUARD R4 (también en el job: un requeue no debe saltearse el del
+        # botón): ver action_save_config.
+        if self.environment_id:
+            reason = self.environment_id._legacy_flow_blocked_reason("config")
+            if reason:
+                self._log("config_edit", result="failed", name=title,
+                          error_message=reason)
+                self._notify_config_done(False, reason)
+                return "blocked"
         ssm = self._get_ssm_service()
         edits_b64 = base64.b64encode(
             json.dumps(edits).encode("utf-8")).decode("ascii")
@@ -900,6 +914,10 @@ class PrimateCloudEc2Instance(models.Model):
         clave PÚBLICA y (opcional) restringe el endpoint a la IP de PCM en nginx.
         NO lo habilita (eso es un acto explícito aparte)."""
         self.ensure_one()
+        # GUARD R4: despliega al dir legacy, instala con el runtime legacy y
+        # reinicia la unit legacy — y es la pieza de seguridad. Hasta R4-B3.
+        if self.environment_id:
+            self.environment_id._ensure_legacy_flow_allowed("impersonate")
         ssm = self._get_ssm_service()
         self._ensure_custom_addons_path()
         quoted = shlex.quote(CUSTOM_ADDONS_DIR)
@@ -941,6 +959,10 @@ class PrimateCloudEc2Instance(models.Model):
         """Habilita o DESHABILITA la impersonación. Al deshabilitar sube el epoch:
         eso corta también las sesiones de soporte YA abiertas (kill-switch)."""
         self.ensure_one()
+        # GUARD R4: escribe los sys-params vía el odoo-shell del runtime
+        # legacy (conf/odoo-bin viejos). Hasta R4-B3.
+        if self.environment_id:
+            self.environment_id._ensure_legacy_flow_allowed("impersonate")
         for db in dbs:
             bump = ("" if enabled else
                     "try:\n ep=int(p.get_param('pcm.impersonate.epoch','0'))\n"
