@@ -14,6 +14,9 @@ from odoo.tools import file_open
 
 from ..services import aws_ec2, aws_ssm
 from ..tools import bus, dates
+from .primate_cloud_instance import (
+    LEGACY_CONF_PATH, LEGACY_LOG_PATH, LEGACY_SERVICE,
+)
 
 # --- Config del odoo.conf (Bloque B3) ---
 CONFIG_READ_SCRIPT_PATH = "primate_cloud_manager/data/config_read.py"
@@ -256,10 +259,31 @@ class PrimateCloudEc2Instance(models.Model):
         self.ensure_one()
         return aws_ssm.AwsSsmService(self.account_id._get_aws_service())
 
+    def _panel_target(self, odoo_instance=None):
+        """La instancia ODOO objetivo de una operación del panel (R4-B2).
+
+        El panel opera INSTANCIAS (D-R4.1). Hasta que el hub gane la pantalla
+        por instancia (R4-B6), el default es la primaria del entorno: en un
+        servidor legacy es EL Odoo; en multi, el flujo recableado opera la
+        primaria con SUS rutas (jamás las de otro cliente).
+        """
+        self.ensure_one()
+        # `or`: un recordset VACÍO (browse de un id None) también cae al
+        # default de la primaria, no solo el None literal.
+        target = odoo_instance or self.environment_id.primary_instance_id
+        if not target:
+            raise UserError(_(
+                "El servidor no tiene una instancia Odoo asociada."))
+        return target
+
     # Fuentes de log (spec §11.1) → comando de lectura. NINGUNO vuelca
     # credenciales ni el odoo.conf: solo se leen archivos/journal de log.
+    # R4-B2 (logs split): "odoo" es POR INSTANCIA — tail de SU log_path
+    # (ambos layouts definen logfile en el conf) con journal de SU unit como
+    # fallback; nginx/postgres/os son del SERVIDOR.
     _LOG_SOURCES = {
-        "odoo": "journalctl -u odoo --no-pager",
+        "odoo": "tail -n %(lines)s %(log_path)s 2>/dev/null || "
+                "journalctl -u %(service)s --no-pager -n %(lines)s",
         "nginx": "tail -n %(lines)s /var/log/nginx/error.log "
                  "/var/log/nginx/access.log 2>/dev/null",
         "postgres": "journalctl -u postgresql --no-pager 2>/dev/null || "
@@ -267,7 +291,8 @@ class PrimateCloudEc2Instance(models.Model):
         "os": "journalctl --no-pager",
     }
 
-    def fetch_logs(self, source, lines=200, since=None, until=None, grep=None):
+    def fetch_logs(self, source, lines=200, since=None, until=None, grep=None,
+                   odoo_instance=None):
         """Trae logs en vivo por SSM (on-demand, NO se persisten).
 
         Los comandos solo LEEN archivos/journal de log — nunca el odoo.conf ni
@@ -290,7 +315,12 @@ class PrimateCloudEc2Instance(models.Model):
             lines = int(lines)
         except (TypeError, ValueError):
             lines = 200
-        base = self._LOG_SOURCES[source] % {"lines": lines}
+        params = {"lines": lines}
+        if source == "odoo":
+            target = self._panel_target(odoo_instance)
+            params["log_path"] = shlex.quote(target.log_path or LEGACY_LOG_PATH)
+            params["service"] = shlex.quote(target.service_name or LEGACY_SERVICE)
+        base = self._LOG_SOURCES[source] % params
         # journalctl acepta rango y --lines; los archivos ya traen -n arriba.
         if base.startswith("journalctl"):
             if since:
@@ -310,11 +340,14 @@ class PrimateCloudEc2Instance(models.Model):
 
     # --- Streaming incremental de logs (Bloque B2) ---
     # Fuentes de journal (usan cursor de journalctl) → unidad systemd.
-    _JOURNAL_STREAM = {"odoo": "-u odoo", "postgres": "-u postgresql", "os": ""}
+    # R4-B2: "odoo" salió de acá — streamea el ARCHIVO log_path de la
+    # instancia (offset de bytes), igual en legacy y multi.
+    _JOURNAL_STREAM = {"postgres": "-u postgresql", "os": ""}
     # Fuentes de archivo (usan offset de bytes como cursor).
     _FILE_STREAM = {"nginx": "/var/log/nginx/error.log"}
 
-    def fetch_logs_stream(self, source, from_cursor=False, lines=200, grep=None):
+    def fetch_logs_stream(self, source, from_cursor=False, lines=200, grep=None,
+                          odoo_instance=None):
         """Trae SOLO lo nuevo desde ``from_cursor`` (streaming incremental por SSM).
 
         Lectura interactiva read-only y ACOTADA → corre síncrona con timeout
@@ -338,8 +371,13 @@ class PrimateCloudEc2Instance(models.Model):
         except (TypeError, ValueError):
             lines = 200
         journal = source in self._JOURNAL_STREAM
+        if source == "odoo":
+            target = self._panel_target(odoo_instance)
+            path = target.log_path or LEGACY_LOG_PATH
+        else:
+            path = self._FILE_STREAM.get(source)
         cmd = (self._journal_stream_cmd(source, from_cursor, lines, grep) if journal
-               else self._file_stream_cmd(source, from_cursor, lines, grep))
+               else self._file_stream_cmd(path, from_cursor, lines, grep))
         output = self._get_ssm_service().run_script(
             self.aws_instance_id, cmd, region=self.region,
             comment="pcm logs stream: %s" % source, timeout=45, agent_timeout=20)
@@ -361,16 +399,35 @@ class PrimateCloudEc2Instance(models.Model):
             base += " | grep -a -i -e '^-- cursor:' -e %s" % shlex.quote(grep)
         return base
 
-    def _file_stream_cmd(self, source, from_cursor, lines, grep):
-        """Comando tail por offset de bytes; emite el tamaño actual como cursor."""
-        path = shlex.quote(self._FILE_STREAM[source])
-        if from_cursor:
-            body = "tail -c +%d %s 2>/dev/null" % (int(from_cursor) + 1, path)
-        else:
-            body = "tail -n %d %s 2>/dev/null" % (lines, path)
-        if grep:
-            body += " | grep -a -i -- %s" % shlex.quote(grep)
-        return '%s; echo "PCM_OFFSET:$(wc -c < %s 2>/dev/null || echo 0)"' % (body, path)
+    def _file_stream_cmd(self, file_path, from_cursor, lines, grep):
+        """Comando tail por offset de bytes; emite el tamaño actual como cursor.
+
+        **Rotación de log (R4-B2):** R3 instala logrotate por slug, así que
+        el archivo rota seguro. Al rotar, el nuevo arranca en 0 y el offset
+        guardado queda MAYOR que el tamaño actual → un ``tail -c +offset``
+        leería mal o nada. El comando compara el tamaño ACTUAL contra el
+        offset (atómico con la lectura, mismo ``wc``): si es menor, asume
+        rotación, lee desde el principio y emite ``PCM_ROTATED`` para que el
+        front lo avise. Sin cursor (primer poll) no aplica.
+        """
+        path = shlex.quote(file_path)
+        grep_pipe = (" | grep -a -i -- %s" % shlex.quote(grep)) if grep else ""
+        offset_line = 'echo "PCM_OFFSET:$(wc -c < %s 2>/dev/null || echo 0)"' % path
+        if not from_cursor:
+            body = "tail -n %d %s 2>/dev/null%s" % (lines, path, grep_pipe)
+            return "%s; %s" % (body, offset_line)
+        offset = int(from_cursor)
+        # SZ una sola vez; si el archivo achicó respecto al offset → rotó.
+        return "\n".join([
+            "SZ=$(wc -c < %s 2>/dev/null || echo 0)" % path,
+            'if [ "$SZ" -lt %d ]; then' % offset,
+            "  echo PCM_ROTATED:1",
+            "  tail -c +1 %s 2>/dev/null%s" % (path, grep_pipe),
+            "else",
+            "  tail -c +%d %s 2>/dev/null%s" % (offset + 1, path, grep_pipe),
+            "fi",
+            'echo "PCM_OFFSET:$SZ"',
+        ])
 
     @staticmethod
     def _parse_journal_stream(text, status, prev_cursor):
@@ -388,15 +445,23 @@ class PrimateCloudEc2Instance(models.Model):
 
     @staticmethod
     def _parse_file_stream(text, status):
-        """Separa las líneas nuevas del marcador de offset (``PCM_OFFSET:``)."""
+        """Separa las líneas nuevas del offset (``PCM_OFFSET:``) y la rotación.
+
+        ``rotated`` (bool) se propaga al front para avisar "el log rotó" — el
+        offset ya viene reseteado desde el comando (leyó desde 0).
+        """
         cursor = False
+        rotated = False
         kept = []
         for line in text.splitlines():
             if line.startswith("PCM_OFFSET:"):
                 cursor = line.split(":", 1)[1].strip()
+            elif line.startswith("PCM_ROTATED:"):
+                rotated = True
             else:
                 kept.append(line)
-        return {"status": status, "text": "\n".join(kept), "cursor": cursor}
+        return {"status": status, "text": "\n".join(kept), "cursor": cursor,
+                "rotated": rotated}
 
     # --- Configuración del odoo.conf (Bloque B3) ---
     def _render_config_script(self, path, tokens):
@@ -455,8 +520,8 @@ class PrimateCloudEc2Instance(models.Model):
         return {"editable": editable, "readonly": readonly,
                 "config_hash": config_hash}
 
-    def fetch_config(self):
-        """Lee el odoo.conf por SSM (allowlist + hash). Read-only, SÍNCRONO.
+    def fetch_config(self, odoo_instance=None):
+        """Lee el odoo.conf DE LA INSTANCIA por SSM (allowlist + hash). Read-only, SÍNCRONO.
 
         Solo emite parámetros de la allowlist: ``db_password``/``admin_passwd``
         NUNCA se leen. Del archivo completo solo sale el hash (para el CAS de
@@ -467,7 +532,9 @@ class PrimateCloudEc2Instance(models.Model):
             raise UserError(_(
                 "La configuración solo se gestiona en instancias aprovisionadas "
                 "por PCM (paths conocidos)."))
-        script = self._render_config_script(CONFIG_READ_SCRIPT_PATH, {})
+        target = self._panel_target(odoo_instance)
+        script = self._render_config_script(CONFIG_READ_SCRIPT_PATH, {
+            "CONF_PATH": target.conf_path or LEGACY_CONF_PATH})
         output = self._get_ssm_service().run_script(
             self.aws_instance_id, self._python_heredoc(script),
             region=self.region, comment="pcm config read", timeout=45,
@@ -522,16 +589,17 @@ class PrimateCloudEc2Instance(models.Model):
                     "limit_memory_hard debe ser ≥ limit_memory_soft."))
         return clean
 
-    def action_save_config(self, edits, expected_hash, typed_name=None):
-        """Valida, exige confirmación en prod y encola el guardado (reinicia)."""
+    def action_save_config(self, edits, expected_hash, typed_name=None,
+                           odoo_instance=None):
+        """Valida, exige confirmación en prod y encola el guardado (reinicia).
+
+        R4-B2: opera LA instancia (conf/unit/puerto propios) — el guard de
+        config se levantó acá mismo: el flujo ya es seguro en multi-Odoo.
+        """
         self.ensure_one()
         if not self.provisioned_by_pcm:
             raise UserError(_("Solo se edita la config de instancias PCM."))
-        # GUARD R4: apply Y ROLLBACK escriben SIEMPRE /etc/odoo/odoo.conf y
-        # reinician la unit legacy — en un servidor multi tocarían el conf
-        # equivocado. Hasta R4-B2.
-        if self.environment_id:
-            self.environment_id._ensure_legacy_flow_allowed("config")
+        target = self._panel_target(odoo_instance)
         clean = self._validate_config(edits)
         if not clean:
             raise UserError(_("No hay cambios para guardar."))
@@ -546,36 +614,36 @@ class PrimateCloudEc2Instance(models.Model):
                     "de servicio). Escribí el nombre exacto del entorno para "
                     "confirmar."))
         self.with_delay(
-            description=_("Config EC2: %s") % self.name
-        ).job_save_config(clean, expected_hash)
+            description=_("Config: %s") % target.display_name
+        ).job_save_config(clean, expected_hash, instance_id=target.id)
         return self._notify(_(
             "Guardado de configuración encolado (reinicia Odoo unos segundos)."))
 
-    def job_save_config(self, edits, expected_hash, internal_keys=()):
+    def job_save_config(self, edits, expected_hash, internal_keys=(),
+                        instance_id=None):
         """Job: aplica los cambios, reinicia, verifica salud y hace rollback si falla.
 
         ``internal_keys`` habilita claves vouched por un flujo interno de PCM
         (p. ej. ``addons_path`` en addon-add) — reusa toda la máquina de B3
         (preservación/backup/CAS/restart/health/rollback) sin duplicarla.
+        R4-B2: todo el ciclo (apply/backup/restart/health/rollback) usa el
+        conf_path/service/puerto de LA instancia (``instance_id``; default la
+        primaria) — el guard de config se levantó al recablear esto.
         """
         self.ensure_one()
-        title = _("Editar config: %s") % self.name
-        # GUARD R4 (también en el job: un requeue no debe saltearse el del
-        # botón): ver action_save_config.
-        if self.environment_id:
-            reason = self.environment_id._legacy_flow_blocked_reason("config")
-            if reason:
-                self._log("config_edit", result="failed", name=title,
-                          error_message=reason)
-                self._notify_config_done(False, reason)
-                return "blocked"
+        target = self._panel_target(
+            self.env["primate.cloud.instance"].browse(instance_id or []))
+        title = _("Editar config: %s") % target.display_name
+        conf_path = target.conf_path or LEGACY_CONF_PATH
+        service = target.service_name or LEGACY_SERVICE
         ssm = self._get_ssm_service()
         edits_b64 = base64.b64encode(
             json.dumps(edits).encode("utf-8")).decode("ascii")
         apply_script = self._render_config_script(
             CONFIG_APPLY_SCRIPT_PATH,
             {"EDITS_B64": edits_b64, "EXPECTED_HASH": expected_hash,
-             "EXTRA_ALLOW": ",".join(internal_keys)})
+             "EXTRA_ALLOW": ",".join(internal_keys),
+             "CONF_PATH": conf_path})
         out = ssm.run_script(
             self.aws_instance_id, self._python_heredoc(apply_script),
             region=self.region, comment="pcm config apply", timeout=60,
@@ -605,21 +673,24 @@ class PrimateCloudEc2Instance(models.Model):
             return "error"
 
         backup = self._config_marker(stdout, "PCM_BAK:")
-        port = self._config_marker(stdout, "PCM_HTTP_PORT:") or "8069"
+        port = (self._config_marker(stdout, "PCM_HTTP_PORT:")
+                or str(target.http_port or 8069))
         # ¿Odoo servía HTTP local ANTES del cambio? (capturado por config_apply
         # con la config vieja aún corriendo). Decide degraded vs failed.
         http_was_ok = self._config_marker(stdout, "PCM_HTTP_WAS:") == "ok"
         old_values = self._config_markers(stdout, "PCM_OLD:")
         diff = self._config_diff_text(old_values, edits)
 
-        # Reinicio + health check con timeout generoso.
-        ssm.run_script(self.aws_instance_id, "sudo systemctl restart odoo",
+        # Reinicio + health check con timeout generoso — de LA instancia.
+        ssm.run_script(self.aws_instance_id,
+                       "sudo systemctl restart %s" % shlex.quote(service),
                        region=self.region, comment="pcm config restart",
                        timeout=45, agent_timeout=20)
-        health = self._config_health_check(port, http_was_ok=http_was_ok)
+        health = self._config_health_check(port, http_was_ok=http_was_ok,
+                                           service=service)
 
         if health == "failed":
-            self._config_rollback(backup)
+            self._config_rollback(backup, target)
             self._log("config_edit", result="failed", name=title,
                       error_message=_(
                           "El reinicio dejó Odoo caído; se restauró la config "
@@ -637,7 +708,8 @@ class PrimateCloudEc2Instance(models.Model):
             "Configuración guardada y Odoo reiniciado.%s") % note)
         return "saved"
 
-    def _config_health_check(self, port, http_was_ok=False, _sleep=time.sleep):
+    def _config_health_check(self, port, http_was_ok=False, _sleep=time.sleep,
+                             service=LEGACY_SERVICE):
         """Sondea salud tras el restart. Devuelve 'http' | 'degraded' | 'failed'.
 
         - Odoo inactivo tras el timeout → 'failed' (rollback).
@@ -650,9 +722,10 @@ class PrimateCloudEc2Instance(models.Model):
         (``_sleep`` inyectable).
         """
         ssm = self._get_ssm_service()
-        cmd = ("sudo systemctl is-active odoo | sed 's/^/PCM_ACTIVE:/'; "
+        cmd = ("sudo systemctl is-active %s | sed 's/^/PCM_ACTIVE:/'; "
                "curl -sf -m 3 http://127.0.0.1:%s/web/health >/dev/null 2>&1 "
-               "&& echo PCM_HTTP:ok || echo PCM_HTTP:no") % port
+               "&& echo PCM_HTTP:ok || echo PCM_HTTP:no") % (
+                   shlex.quote(service), port)
         waited = 0
         last_active = False
         while True:
@@ -672,14 +745,22 @@ class PrimateCloudEc2Instance(models.Model):
         # Activo pero sin HTTP: si antes servía, el cambio lo rompió → rollback.
         return "failed" if http_was_ok else "degraded"
 
-    def _config_rollback(self, backup):
-        """Restaura el backup del conf y reinicia (la instancia no queda caída)."""
+    def _config_rollback(self, backup, target):
+        """Restaura el backup SOBRE EL CONF DE LA INSTANCIA y reinicia SU unit.
+
+        R4-B2: este era EL caso que pisaba el conf equivocado en multi-Odoo
+        (restauraba siempre a /etc/odoo/odoo.conf y reiniciaba la unit
+        legacy). El destino sale de la instancia, nunca de una constante.
+        """
         if not backup:
             return
-        cmd = ("sudo mv %s /etc/odoo/odoo.conf "
-               "&& sudo chown odoo:odoo /etc/odoo/odoo.conf "
-               "&& sudo chmod 640 /etc/odoo/odoo.conf "
-               "&& sudo systemctl restart odoo") % shlex.quote(backup)
+        conf = shlex.quote(target.conf_path or LEGACY_CONF_PATH)
+        service = shlex.quote(target.service_name or LEGACY_SERVICE)
+        cmd = ("sudo mv %s %s "
+               "&& sudo chown odoo:odoo %s "
+               "&& sudo chmod 640 %s "
+               "&& sudo systemctl restart %s") % (
+                   shlex.quote(backup), conf, conf, conf, service)
         self._get_ssm_service().run_script(
             self.aws_instance_id, cmd, region=self.region,
             comment="pcm config rollback", timeout=45, agent_timeout=20)
@@ -701,32 +782,36 @@ class PrimateCloudEc2Instance(models.Model):
         return True
 
     # --- Addons de cliente (Bloque B4) ---
-    def _ensure_custom_addons_path(self):
-        """Garantiza el dir custom-addons + que esté en el addons_path.
+    def _ensure_custom_addons_path(self, odoo_instance=None):
+        """Garantiza el dir de addons DE LA INSTANCIA + que esté en SU addons_path.
 
         Retroactivo para instancias viejas: crea el dir si falta y, si el
         addons_path no lo incluye, lo agrega REUSANDO B3 (surgical edit + backup
-        + restart + health + rollback), sin duplicar. Devuelve:
+        + restart + health + rollback), sin duplicar. En multi-Odoo el conf del
+        slug YA trae su dir en el addons_path (R3) → devuelve 'ready' sin
+        editar nada. Devuelve:
         'ready' (ya estaba / se creó) | 'restarted' (se editó addons_path y
         reinició) | 'rolled_back' (el cambio de addons_path no levantó) | 'error'.
         """
         self.ensure_one()
+        target = self._panel_target(odoo_instance)
+        addons_dir = target.addons_dir or CUSTOM_ADDONS_DIR
         ssm = self._get_ssm_service()
         ssm.run_script(
             self.aws_instance_id,
             "sudo mkdir -p %s && sudo chown odoo:odoo %s"
-            % (shlex.quote(CUSTOM_ADDONS_DIR), shlex.quote(CUSTOM_ADDONS_DIR)),
+            % (shlex.quote(addons_dir), shlex.quote(addons_dir)),
             region=self.region, comment="pcm addons mkdir", timeout=45,
             agent_timeout=30)
-        cfg = self.fetch_config()
+        cfg = self.fetch_config(odoo_instance=target)
         addons_path = cfg.get("readonly", {}).get("addons_path", "")
         parts = [p.strip() for p in addons_path.split(",") if p.strip()]
-        if CUSTOM_ADDONS_DIR in parts:
+        if addons_dir in parts:
             return "ready"
-        new_path = ",".join(parts + [CUSTOM_ADDONS_DIR])
+        new_path = ",".join(parts + [addons_dir])
         outcome = self.job_save_config(
             {"addons_path": new_path}, cfg.get("config_hash"),
-            internal_keys={"addons_path"})
+            internal_keys={"addons_path"}, instance_id=target.id)
         if outcome == "saved":
             return "restarted"
         if outcome == "rolled_back":
@@ -734,13 +819,15 @@ class PrimateCloudEc2Instance(models.Model):
         return "error"
 
     @staticmethod
-    def _build_addon_clone_script(url, path, ref, token_b64=None):
+    def _build_addon_clone_script(url, path, ref, token_b64=None,
+                                  addons_dir=CUSTOM_ADDONS_DIR):
         """Script de clone por SSM. El token va por askpass temporal (NUNCA en la
-        URL/git-config/argv), con trap que lo borra pase lo que pase."""
+        URL/git-config/argv), con trap que lo borra pase lo que pase.
+        ``addons_dir`` = el dir de LA instancia (R4-B2)."""
         qpath, qurl = shlex.quote(path), shlex.quote(url)
         branch = ("--branch %s " % shlex.quote(ref)) if ref else ""
         lines = ["set -e",
-                 "mkdir -p %s" % shlex.quote(CUSTOM_ADDONS_DIR),
+                 "mkdir -p %s" % shlex.quote(addons_dir),
                  "rm -rf %s" % qpath]
         if token_b64:
             lines += [
@@ -759,22 +846,28 @@ class PrimateCloudEc2Instance(models.Model):
                   "echo PCM_CLONE:ok"]
         return "\n".join(lines)
 
-    def clone_addon(self, url, path, ref=None, token=None):
+    def clone_addon(self, url, path, ref=None, token=None, odoo_instance=None):
         """Clona un repo en la instancia (token seguro). Devuelve True si clonó."""
         self.ensure_one()
+        target = self._panel_target(odoo_instance)
         token_b64 = (base64.b64encode(token.encode("utf-8")).decode("ascii")
                      if token else None)
-        script = self._build_addon_clone_script(url, path, ref, token_b64)
+        script = self._build_addon_clone_script(
+            url, path, ref, token_b64,
+            addons_dir=target.addons_dir or CUSTOM_ADDONS_DIR)
         out = self._get_ssm_service().run_script(
             self.aws_instance_id, script, region=self.region,
             comment="pcm addon clone", timeout=180, agent_timeout=60)
         return "PCM_CLONE:ok" in (out.get("stdout") or "")
 
-    def restart_odoo(self):
-        """Reinicia Odoo (para cargar un addon recién clonado, sin cambio de conf)."""
+    def restart_odoo(self, odoo_instance=None):
+        """Reinicia el Odoo DE LA INSTANCIA (p. ej. para cargar un addon)."""
         self.ensure_one()
+        target = self._panel_target(odoo_instance)
         self._get_ssm_service().run_script(
-            self.aws_instance_id, "sudo systemctl restart odoo",
+            self.aws_instance_id,
+            "sudo systemctl restart %s" % shlex.quote(
+                target.service_name or LEGACY_SERVICE),
             region=self.region, comment="pcm addon restart", timeout=45,
             agent_timeout=20)
 
@@ -1148,13 +1241,19 @@ class PrimateCloudEc2Instance(models.Model):
     # lee UNA línea del odoo.conf, jamás db_password/admin_passwd ni el archivo
     # entero. Los paths son los del layout PCM (install_odoo.sh) → exige
     # provisioned_by_pcm.
-    _RUNTIME_PROBE = (
-        'echo "PCM_PY:$(/opt/odoo/venv/bin/python3 --version 2>&1)"; '
-        'echo "PCM_ODOO:$(sudo -u odoo /opt/odoo/venv/bin/python3 '
-        '/opt/odoo/odoo/odoo-bin --version 2>&1)"; '
-        "echo \"PCM_WORKERS:$(grep -E '^[[:space:]]*workers' "
-        '/etc/odoo/odoo.conf 2>/dev/null | tail -1 | tr -d \'[:space:]\')"'
-    )
+    def _runtime_probe_cmd(self, odoo_instance=None):
+        """Comando de detección de runtime — por INSTANCIA (R4-B2, lectura)."""
+        target = self._panel_target(odoo_instance)
+        python_bin = shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3")
+        odoo_bin = shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin")
+        conf = shlex.quote(target.conf_path or LEGACY_CONF_PATH)
+        return (
+            'echo "PCM_PY:$(%s --version 2>&1)"; '
+            'echo "PCM_ODOO:$(sudo -u odoo %s %s --version 2>&1)"; '
+            "echo \"PCM_WORKERS:$(grep -E '^[[:space:]]*workers' "
+            "%s 2>/dev/null | tail -1 | tr -d '[:space:]')\""
+            % (python_bin, python_bin, odoo_bin, conf)
+        )
 
     def action_probe_runtime(self):
         """Encola la detección de versiones (Python/Odoo) y workers por SSM."""
@@ -1174,7 +1273,7 @@ class PrimateCloudEc2Instance(models.Model):
         """Job: lee versiones y workers por SSM y refresca el cache."""
         self.ensure_one()
         output = self._get_ssm_service().run_script(
-            self.aws_instance_id, self._RUNTIME_PROBE, region=self.region,
+            self.aws_instance_id, self._runtime_probe_cmd(), region=self.region,
             comment="pcm runtime probe", timeout=60, agent_timeout=30)
         self._parse_runtime(output.get("stdout") or "")
         return True

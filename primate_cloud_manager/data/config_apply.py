@@ -36,7 +36,9 @@ import sys
 import tempfile
 import time
 
-CONF = "/etc/odoo/odoo.conf"
+# R4-B2: la ruta del conf es POR INSTANCIA (token; legacy = el viejo
+# /etc/odoo/odoo.conf que la instancia trae en su campo conf_path).
+CONF = "%%CONF_PATH%%"
 BAK_KEEP = 5
 EDITS_B64 = "%%EDITS_B64%%"
 EXPECTED_HASH = "%%EXPECTED_HASH%%"

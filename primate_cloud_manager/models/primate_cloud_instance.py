@@ -17,6 +17,7 @@ import re
 import uuid
 
 from odoo import _, api, fields, models
+from odoo.exceptions import UserError
 
 # Layout LEGACY (single-Odoo, install_odoo.sh actual). Las instancias nuevas
 # nacen con estas rutas hasta que R3 introduzca el layout multi-Odoo por slug;
@@ -215,6 +216,39 @@ class PrimateCloudInstance(models.Model):
         """
         self.ensure_one()
         return self.environment_id._active_machine()
+
+    def _machine_required(self):
+        """Como :meth:`_machine`, pero exige que exista (operaciones SSM)."""
+        machine = self._machine()
+        if not machine:
+            raise UserError(_(
+                "El servidor de «%s» no tiene una máquina activa.")
+                % self.display_name)
+        return machine
+
+    # ------------------------------------------------------------------
+    # API canónica del panel POR INSTANCIA (R4-B2, D-R4.1). La mecánica
+    # SSM vive en la máquina (ec2); estos wrappers fijan el contrato que
+    # la pantalla de instancia (R4-B6) consume: siempre MIS rutas.
+    # ------------------------------------------------------------------
+    def fetch_logs(self, source="odoo", **kwargs):
+        """Logs de ESTE Odoo (tail de su log_path; fallback su unit)."""
+        return self._machine_required().fetch_logs(
+            source, odoo_instance=self, **kwargs)
+
+    def fetch_logs_stream(self, source="odoo", **kwargs):
+        """Streaming incremental de logs de ESTE Odoo."""
+        return self._machine_required().fetch_logs_stream(
+            source, odoo_instance=self, **kwargs)
+
+    def fetch_config(self):
+        """Lee MI odoo.conf (allowlist + hash), read-only síncrono."""
+        return self._machine_required().fetch_config(odoo_instance=self)
+
+    def action_save_config(self, edits, expected_hash, typed_name=None):
+        """Valida y encola el guardado de MI conf (reinicia MI unit)."""
+        return self._machine_required().action_save_config(
+            edits, expected_hash, typed_name=typed_name, odoo_instance=self)
 
 
 class PrimateCloudInstanceLinked(models.AbstractModel):

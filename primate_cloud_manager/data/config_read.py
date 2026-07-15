@@ -17,7 +17,9 @@ import hashlib
 import re
 import sys
 
-CONF = "/etc/odoo/odoo.conf"
+# R4-B2: la ruta del conf es POR INSTANCIA (token; legacy = el viejo
+# /etc/odoo/odoo.conf que la instancia trae en su campo conf_path).
+CONF = "%%CONF_PATH%%"
 
 # Editables (se muestran y se pueden guardar). Ver el modelo para el detalle.
 EDITABLE = [

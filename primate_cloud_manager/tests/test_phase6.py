@@ -152,19 +152,21 @@ class TestDeployment(TransactionCase):
         self.assertIn("workers", cmd)   # solo la línea de workers
 
     # --- Logs streaming incremental (Bloque B2) ---
+    # R4-B2: "odoo" pasó a streaming de ARCHIVO (el log_path de la instancia,
+    # igual en legacy y multi); el mecanismo journal se fija con "postgres".
     def test_logs_stream_journal_parsea_cursor(self):
         """Primer poll (sin cursor): usa -n y --show-cursor; separa el cursor."""
         out = ("2026-01-01T00:00 log line 1\n2026-01-01T00:01 log line 2\n"
                "-- cursor: s=abc123\n")
         patcher, fake = self._patch_ssm({"stdout": out, "status": "Success"})
         with patcher:
-            res = self.instance.fetch_logs_stream("odoo", from_cursor=False)
+            res = self.instance.fetch_logs_stream("postgres", from_cursor=False)
         self.assertEqual(res["cursor"], "s=abc123")
         self.assertIn("log line 1", res["text"])
         self.assertNotIn("-- cursor:", res["text"])
         cmd = fake.run_script.call_args[0][1]
         self.assertIn("--show-cursor", cmd)
-        self.assertIn("-u odoo", cmd)
+        self.assertIn("-u postgresql", cmd)
         self.assertNotIn("--after-cursor", cmd)
 
     def test_logs_stream_journal_incremental(self):
@@ -172,12 +174,25 @@ class TestDeployment(TransactionCase):
         patcher, fake = self._patch_ssm(
             {"stdout": "-- cursor: s=z9\n", "status": "Success"})
         with patcher:
-            res = self.instance.fetch_logs_stream("odoo", from_cursor="s=abc123")
+            res = self.instance.fetch_logs_stream("postgres",
+                                                  from_cursor="s=abc123")
         self.assertEqual(res["cursor"], "s=z9")
         self.assertEqual(res["text"], "")
         cmd = fake.run_script.call_args[0][1]
         self.assertIn("--after-cursor", cmd)
         self.assertIn("s=abc123", cmd)
+
+    def test_logs_stream_odoo_por_archivo_de_la_instancia(self):
+        """R4-B2: "odoo" streamea el log_path de la instancia (offset)."""
+        out = "linea odoo\nPCM_OFFSET:2048\n"
+        patcher, fake = self._patch_ssm({"stdout": out, "status": "Success"})
+        with patcher:
+            res = self.instance.fetch_logs_stream("odoo", from_cursor=False)
+        self.assertEqual(res["cursor"], "2048")
+        cmd = fake.run_script.call_args[0][1]
+        # log_path de la primaria (legacy en este entorno).
+        self.assertIn("/var/log/odoo/odoo.log", cmd)
+        self.assertIn("PCM_OFFSET", cmd)
 
     def test_logs_stream_archivo_offset(self):
         """Fuente de archivo: cursor = offset de bytes; tail -c +(offset+1)."""

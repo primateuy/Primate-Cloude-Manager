@@ -916,10 +916,9 @@ class PrimateCloudEnvironment(models.Model):
 
     # Flujos que todavía ESCRIBEN con rutas del layout legacy → bloque de R4
     # que los recablea (y levanta su guard). Regla permanente: lo destructivo
-    # no-recableado se bloquea en runtime, no se anota en un doc.
+    # no-recableado se bloquea en runtime, no se anota en un doc. El guard se
+    # quita EN EL MISMO commit que recablea el flujo (config y addons: R4-B2).
     LEGACY_FLOW_UNBLOCKED_IN = {
-        "config": "R4-B2",
-        "addons": "R4-B2",
         "impersonate": "R4-B3",
         "backup": "R4-B4",
         "restore": "R4-B4",
@@ -2903,9 +2902,6 @@ class PrimateCloudEnvironment(models.Model):
         self.ensure_one()
         if not self.ec2_instance_ids[:1]:
             raise UserError(_("El entorno no tiene una instancia para clonar el addon."))
-        # GUARD R4: el clone escribe en el dir legacy y edita el conf legacy
-        # (mkdir -p incluso los CREA en un servidor multi). Hasta R4-B2.
-        self._ensure_legacy_flow_allowed("addons")
         url = (vals.get("github_url") or "").strip()
         if not url:
             raise UserError(_("Falta la URL del repositorio."))
@@ -2951,6 +2947,10 @@ class PrimateCloudEnvironment(models.Model):
                       error_message=_("El entorno no tiene instancia."))
             repo.unlink()
             return
+        # R4-B2: el destino es LA instancia Odoo del repo (mixin R1); el
+        # clone/ensure/restart usan SU addons_dir/conf/unit — por eso el
+        # guard de addons se levantó en este mismo cambio.
+        target = repo.instance_id or self.primary_instance_id
         # URL de clone: el token va por askpass (NUNCA en la URL persistida).
         token = repo._get_github_token()
         slug = repo._repo_slug()
@@ -2958,14 +2958,14 @@ class PrimateCloudEnvironment(models.Model):
             "x-access-token@" if token else "", slug)
         cloned = instance.clone_addon(
             clone_url, repo.local_path, ref=repo.configured_branch or None,
-            token=token)
+            token=token, odoo_instance=target)
         if not cloned:
             repo._log("addon_add", result="failed", name=title,
                       error_message=_("El clone del repositorio falló."))
             repo.unlink()   # o-ninguna: ni registro ni clon
             return
         # Activar el addons_path (retroactivo, reusa B3) o reiniciar para cargar.
-        ensure = instance._ensure_custom_addons_path()
+        ensure = instance._ensure_custom_addons_path(odoo_instance=target)
         if ensure in ("rolled_back", "error"):
             repo._log("addon_add", result="partial", name=title,
                       error_message=_(
@@ -2974,7 +2974,8 @@ class PrimateCloudEnvironment(models.Model):
             repo.message_post(body=_("Addon clonado pero no cargado (addons_path)."))
             return   # registrado, no verificado — NO éxito mentiroso
         if ensure == "ready":
-            instance.restart_odoo()   # ya estaba en el path → reiniciar y cargar
+            # Ya estaba en el path → reiniciar SU unit y cargar.
+            instance.restart_odoo(odoo_instance=target)
         # 'restarted' → _ensure ya reinició cargando el addon.
         # Verificar: ¿hay módulos (con __manifest__) en el clone?
         count = instance.addon_module_count(repo.local_path)

@@ -438,6 +438,12 @@ export class ServidorDetalle extends Component {
             if (res.cursor !== undefined) {
                 this.logs.cursor = res.cursor;
             }
+            // El log rotó (logrotate por slug de R3): el backend ya reseteó el
+            // offset y leyó desde el archivo nuevo; se avisa en el propio hilo.
+            if (res.rotated) {
+                const sep = this.logs.text ? "\n" : "";
+                this.logs.text += sep + "— el log rotó (archivo nuevo) —";
+            }
             if (res.text) {
                 const sep = this.logs.text ? "\n" : "";
                 let combined = this.logs.text + sep + res.text;
