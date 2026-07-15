@@ -119,16 +119,22 @@ class PrimateCloudDnsRecord(models.Model):
         "Ese registro DNS ya existe para la cuenta y zona.",
     )
 
-    @api.depends("environment_id", "environment_id.env_type")
+    @api.depends("environment_id", "environment_id.env_type",
+                 "instance_id", "instance_id.env_type")
     def _compute_delete_needs_ack(self):
-        """Guardia de borrado. La AUSENCIA de entorno NO baja la guardia: si no
+        """Guardia de borrado. La AUSENCIA de dato NO baja la guardia: si no
         se puede determinar que el registro es seguro de borrar, se trata como
-        potencialmente producción (fricción alta). Solo un entorno explícito y
-        NO productivo habilita la fricción baja.
+        potencialmente producción (fricción alta).
+
+        Mira el env_type de LA INSTANCIA dueña del registro (mixin R1), no el
+        del servidor: borrar el DNS de una instancia PRODUCCIÓN en un servidor
+        de primaria staging DEBE pedir ack igual. Solo una instancia (o, en su
+        defecto, un entorno) explícita y NO productiva baja la fricción.
         """
         for record in self:
-            env = record.environment_id
-            record.delete_needs_ack = (not env) or env.env_type == "production"
+            source = record.instance_id or record.environment_id
+            record.delete_needs_ack = (
+                (not source) or source.env_type == "production")
 
     @api.model
     def _validate_dns_value(self, record_type, values):

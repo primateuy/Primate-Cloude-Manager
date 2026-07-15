@@ -918,9 +918,10 @@ class PrimateCloudEnvironment(models.Model):
     # que los recablea (y levanta su guard). Regla permanente: lo destructivo
     # no-recableado se bloquea en runtime, no se anota en un doc. El guard se
     # quita EN EL MISMO commit que recablea el flujo (config y addons: R4-B2).
-    LEGACY_FLOW_UNBLOCKED_IN = {
-        "staging": "R4-B5",
-    }
+    # Vacío: R4-B1..B5 recablearon todos los flujos legacy-destructivos (cada
+    # bloque levantó su guard al recablear). Se conserva la maquinaria del
+    # guard (por si un flujo futuro la necesita) aunque hoy no bloquee nada.
+    LEGACY_FLOW_UNBLOCKED_IN = {}
 
     def _legacy_flow_blocked_reason(self, flow):
         """Por qué un flujo legacy-destructivo NO puede correr acá (o None).
@@ -1633,10 +1634,8 @@ class PrimateCloudEnvironment(models.Model):
         self.ensure_one()
         if not self.account_id:
             raise UserError(_("El entorno origen necesita una cuenta AWS."))
-        # GUARD R4: la copia de staging dumpea con filestore/conf legacy y
-        # reinicia la unit legacy sobre el ORIGEN. Bloqueado en orígenes
-        # multi-Odoo hasta R4-B5.
-        self._ensure_legacy_flow_allowed("staging")
+        # R4-B5: el guard de staging se levantó — la copia usa el backup/
+        # restore por instancia de B4 (conf/filestore del slug de origen).
         # Origen explícito (Bloque 5): resuelve instancia+BD ya, con fallback
         # solo si es inequívoco, y los persiste en el staging para el refresh.
         origin_instance, origin_database = self._resolve_staging_origin(
@@ -1645,6 +1644,14 @@ class PrimateCloudEnvironment(models.Model):
             self.env["primate.cloud.database"].browse(
                 params.get("origin_database_id") or []),
         )
+        # R4-B5 (D-R4.6): destino = servidor EXISTENTE → el staging es una
+        # INSTANCIA nueva en ese servidor (job_add_instance de R3 + copia B4),
+        # no un servidor nuevo. Sin target → comportamiento actual (EC2 nueva).
+        target_server = self.env["primate.cloud.environment"].browse(
+            params.get("target_server_id") or []).exists()
+        if target_server:
+            return self._enqueue_staging_instance(
+                target_server, params, origin_instance, origin_database)
         staging = self.create({
             "name": params["name"],
             "project_id": self.project_id.id,
@@ -1671,6 +1678,141 @@ class PrimateCloudEnvironment(models.Model):
             description=_("Crear staging: %s") % staging.name
         ).job_create_staging(params)
         return staging
+
+    def _enqueue_staging_instance(self, target_server, params,
+                                  origin_instance, origin_database):
+        """Staging = una INSTANCIA nueva en un servidor EXISTENTE (R4-B5).
+
+        ``self`` es el entorno ORIGEN; ``target_server`` es dónde se monta el
+        staging (por default, el mismo servidor del origen — el caso barato
+        que R3 habilitó). Crea la instancia staging con su slot de puertos,
+        la vincula al origen (``origin_instance_id``, R1) y encola el montaje
+        + copia. NO crea un entorno ni una EC2 nuevos.
+        """
+        self.ensure_one()
+        if target_server.state != "active":
+            raise UserError(_(
+                "El servidor destino del staging debe estar activo."))
+        if target_server._is_legacy_layout():
+            raise UserError(_(
+                "El servidor destino tiene layout legacy: no se le puede "
+                "montar un staging como instancia (requiere multi-Odoo)."))
+        from .primate_cloud_instance import slugify
+        db_name = (params.get("db_name")
+                   or ("%s_staging" % (self.name or "")).lower())
+        # El origen del staging es la INSTANCIA Odoo dueña de la base que se
+        # copia (inequívoco por B4: origin_database.instance_id), NO
+        # máquina→servidor→primaria (eso era el "[:1]" de Fase 8: stageando la
+        # instancia B de un servidor multi, el staging diría que vino de A).
+        # Fallback a la primaria solo en origen legacy (base sin instance_id).
+        origin_odoo = origin_database.instance_id or self.primary_instance_id
+        instance = target_server._create_instance_with_ports({
+            "name": params["name"],
+            "project_id": self.project_id.id,
+            "slug": slugify(params["name"]),
+            "env_type": "staging",
+            "odoo_version": self.odoo_version,
+            "odoo_edition": self.odoo_edition,
+            "main_url": params.get("domain"),
+            "origin_instance_id": origin_odoo.id or False,
+        })
+        job_params = dict(
+            params, client_token="pcm-%s" % uuid.uuid4().hex,
+            db_mode="local_pg", db_name=db_name,
+            origin_environment_id=self.id,
+            origin_instance_id=origin_instance.id if origin_instance else False,
+            origin_database_id=origin_database.id if origin_database else False,
+        )
+        job_params = target_server._ensure_transient_db_password(job_params)
+        target_server.with_delay(
+            description=_("Crear staging (instancia): %s") % params["name"]
+        ).job_create_staging_instance(instance.id, job_params)
+        return instance
+
+    def job_create_staging_instance(self, instance_id, params):
+        """Job R4-B5: monta el staging como instancia + copia la base del origen.
+
+        ``self`` es el SERVIDOR destino. Pasos: (1) ``job_add_instance`` de R3
+        monta el Odoo (bootstrap+install, aislado por slug, sin tocar vecinos);
+        (2) copia la base del origen por el pipeline backup/restore de B4
+        (por instancia) sobre la BD del staging, con neutralización; (3) clona
+        los repos del origen al ``addons_dir`` del slug.
+        """
+        self.ensure_one()
+        instance = self.env["primate.cloud.instance"].browse(instance_id).exists()
+        if not instance:
+            return False
+        origin = self.env["primate.cloud.environment"].browse(
+            params.get("origin_environment_id") or []).exists()
+        # 1. Montar el Odoo (R3): bootstrap + install por slug, health de vecinos.
+        if not self.job_add_instance(instance_id, params):
+            return False   # job_add_instance ya auditó y dejó la instancia en error
+        try:
+            region = params.get("region") or self.account_id.default_region
+            machine = self._active_machine()
+            # 2. Copiar la base del origen sobre la del staging (pipeline B4).
+            origin_instance = self.env["primate.cloud.ec2.instance"].browse(
+                params.get("origin_instance_id") or []).exists()
+            origin_db = self.env["primate.cloud.database"].browse(
+                params.get("origin_database_id") or []).exists()
+            source = self._staging_source_backup(
+                origin, origin_instance, origin_db, region,
+                use_last_backup=params.get("use_last_backup"),
+                bucket=params.get("transfer_bucket"))
+            ok = self.job_restore_backup({
+                "backup_id": source.id, "db_name": params["db_name"],
+                "instance_id": machine.id, "odoo_instance_id": instance.id,
+                "pre_backup": False, "neutralize": True})
+            if not ok:
+                raise UserError(_("Falló la copia de la base al staging."))
+            # 3. Repos del origen → addons_dir del slug del staging.
+            if origin:
+                self._staging_clone_repos_to_instance(
+                    origin, machine, instance, region)
+        except Exception as error:  # noqa: BLE001 - se audita, no re-lanza
+            instance.state = "error"
+            self.message_post(body=_("Staging (instancia) fallido: %s") % error)
+            self._log("staging_create", record=instance, result="failed",
+                      name=_("Crear staging: %s") % instance.name,
+                      error_message=str(error))
+            return False
+        instance.write({"database_id": self.env["primate.cloud.database"].search(
+            [("environment_id", "=", self.id), ("name", "=", params["db_name"])],
+            limit=1).id})
+        self._log("staging_create", record=instance, result="success",
+                  name=_("Crear staging: %s") % instance.name)
+        self.message_post(body=_(
+            "Staging montado como instancia %s.") % instance.display_name)
+        return True
+
+    def _staging_clone_repos_to_instance(self, origin, machine, instance, region):
+        """Clona los repos del origen al addons_dir del slug del staging (B5)."""
+        Repo = self.env["primate.cloud.repository"]
+        ssm = machine._get_ssm_service()
+        addons_dir = instance.addons_dir or CUSTOM_ADDONS_DIR
+        for source in origin.repository_ids:
+            if not source.github_url or not source.local_path:
+                continue
+            # Ruta en el slug del staging (no la del origen).
+            name = source.local_path.rstrip("/").split("/")[-1]
+            dest_path = "%s/%s" % (addons_dir, name)
+            ref = source.current_commit or source.configured_branch or ""
+            output = ssm.run_script(
+                machine.aws_instance_id,
+                self._build_clone_script(source.github_url, dest_path, ref),
+                region=region, comment="pcm staging clone: %s" % source.name,
+                timeout=900)
+            ok = output.get("status") == "Success"
+            Repo.create({
+                "name": source.name, "environment_id": self.id,
+                "instance_id": instance.id, "repo_type": source.repo_type,
+                "github_url": source.github_url,
+                "organization": source.organization,
+                "configured_branch": source.configured_branch,
+                "local_path": dest_path,
+                "current_commit": source.current_commit if ok else False,
+            })
+        self.message_post(body=_("Repositorios clonados al staging."))
 
     def action_refresh_staging(self):
         """Abre el wizard de refresco (opciones de la spec §14.5)."""
@@ -1730,10 +1872,6 @@ class PrimateCloudEnvironment(models.Model):
         account = self.account_id
         bus.provision_start(self.env, self, title=_("Creando staging: %s") % self.name)
         try:
-            # GUARD R4 (también acá: un requeue no debe saltearse el del
-            # enqueue): el pipeline de copia usa rutas legacy sobre el origen.
-            if origin:
-                origin._ensure_legacy_flow_allowed("staging")
             base = account._get_aws_service()
             region = params.get("region") or account.default_region
             domain = params.get("domain") or self.main_url or self.name
@@ -1794,9 +1932,7 @@ class PrimateCloudEnvironment(models.Model):
         origin = self.origin_environment_id
         if not origin:
             raise UserError(_("Este staging no tiene entorno origen registrado."))
-        # GUARD R4: el refresh re-dumpea el origen y reinicia con rutas legacy.
-        origin._ensure_legacy_flow_allowed("staging")
-        self._ensure_legacy_flow_allowed("staging")
+        # R4-B5: guard levantado (la copia/restore es por instancia, B4).
         bus.provision_start(self.env, self,
                             title=_("Refrescando staging: %s") % self.name)
         try:
@@ -2800,11 +2936,16 @@ class PrimateCloudEnvironment(models.Model):
         # 6. Neutralización: por default siempre que el destino NO sea
         # producción; el refresh de staging puede saltearla explícitamente
         # (spec §14.5). Sobre producción JAMÁS se neutraliza, pida lo que pida.
+        # R4-B5: el "producción" que importa es el de la INSTANCIA destino,
+        # NO el del servidor — un staging (env_type=staging) montado en un
+        # servidor de producción DEBE neutralizarse (si mirara self.env_type
+        # del servidor, se saltearía y el staging quedaría con mail/crons de
+        # prod: el peor accidente de staging).
         neutralize = params.get("neutralize")
         if neutralize is None:
             neutralize = True
-        if neutralize and self.env_type != "production":
-            url = "https://%s" % (self.main_url or self.name)
+        if neutralize and odoo_instance.env_type != "production":
+            url = "https://%s" % (odoo_instance.main_url or db_name)
             try:
                 self._staging_neutralize(
                     instance, {"db_name": db_name},

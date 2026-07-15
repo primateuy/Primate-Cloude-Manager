@@ -87,12 +87,29 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
                 res.setdefault("target_db_name", backup.database_id.name)
         return res
 
-    @api.depends("target_environment_id")
+    @api.depends("target_environment_id", "target_db_name")
     def _compute_target_is_production(self):
+        """¿El DESTINO es producción? Mira la INSTANCIA Odoo dueña de la base
+        destino, no el env_type del servidor (arbitrario en multi).
+
+        Dirección peligrosa que esto cierra: restaurar sobre la producción de
+        un cliente que vive en un servidor cuya primaria es staging → sin
+        esto el gate no se dispararía y se pisaría prod sin tipear el nombre.
+        Default SEGURO (como el ack de DNS): si no se puede determinar la
+        instancia destino, se trata como producción (fricción alta).
+        """
         for wizard in self:
+            env = wizard.target_environment_id
+            if not env:
+                wizard.target_is_production = True
+                continue
+            target_db = self.env["primate.cloud.database"].search(
+                [("environment_id", "=", env.id),
+                 ("name", "=", wizard.target_db_name)], limit=1)
+            odoo_inst = target_db.instance_id or env.primary_instance_id
+            # Sin instancia resoluble (base nueva sin instancia clara) → prod.
             wizard.target_is_production = (
-                wizard.target_environment_id.env_type == "production"
-            )
+                odoo_inst.env_type == "production" if odoo_inst else True)
 
     @api.onchange("target_environment_id")
     def _onchange_target_environment(self):

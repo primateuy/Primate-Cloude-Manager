@@ -606,8 +606,12 @@ class PrimateCloudEc2Instance(models.Model):
         if not expected_hash:
             raise UserError(_(
                 "Falta la referencia del archivo; recargá la configuración."))
+        # La fricción de PRODUCCIÓN mira el env_type de LA INSTANCIA que se
+        # edita, NO el del servidor (que es el de la primaria, arbitrario en
+        # un servidor compartido): editar la config de una instancia prod
+        # sobre un servidor de primaria staging DEBE pedir el nombre igual.
         environment = self.environment_id
-        if environment and environment.env_type == "production":
+        if target.env_type == "production":
             if (typed_name or "").strip() != (environment.name or "").strip():
                 raise UserError(_(
                     "Editar la configuración en PRODUCCIÓN reinicia Odoo (corte "

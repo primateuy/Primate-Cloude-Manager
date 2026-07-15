@@ -60,6 +60,17 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
     domain = fields.Char(string="Subdominio", required=True,
                          help="Ej.: staging.forum.primate.cloud")
     region = fields.Selection(AWS_REGIONS, string="Región", required=True)
+    # R4-B5 (D-R4.6): dónde vive el staging. Vacío = servidor NUEVO (cadena
+    # R2, comportamiento actual). Con un servidor multi-Odoo activo = el
+    # staging se monta como una INSTANCIA ahí (el caso barato de R3; default
+    # el mismo servidor del origen). Con destino existente no hacen falta los
+    # campos de cómputo/red (se ocultan en la vista).
+    target_server_id = fields.Many2one(
+        "primate.cloud.environment", string="Servidor destino",
+        domain="[('state', '=', 'active')]",
+        help="Servidor multi-Odoo donde montar el staging como instancia. "
+             "Vacío = crear un servidor nuevo dedicado.",
+    )
 
     # --- Cómputo (EC2) ---
     instance_name = fields.Char(string="Nombre de la instancia")
@@ -136,6 +147,11 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
             self.domain = "staging.%s" % origin.main_url
         if not self.db_name:
             self.db_name = ("%s_staging" % (origin.name or "")).lower().replace(" ", "_")
+        # Default D-R4.6: montar el staging en el MISMO servidor del origen si
+        # es multi-Odoo (no legacy) — el caso barato que R3 habilitó.
+        if not self.target_server_id and origin.state == "active" \
+                and not origin._is_legacy_layout():
+            self.target_server_id = origin
         # Origen explícito: preselección solo cuando es inequívoco.
         if not self.origin_instance_id and len(origin.ec2_instance_ids) == 1:
             self.origin_instance_id = origin.ec2_instance_ids
@@ -153,6 +169,8 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
             "account_id": self.account_id.id,
             "region": self.region,
             "domain": self.domain,
+            # Destino (R4-B5): servidor existente (staging=instancia) o nuevo.
+            "target_server_id": self.target_server_id.id,
             # Origen explícito (Bloque 5)
             "origin_instance_id": self.origin_instance_id.id,
             "origin_database_id": self.origin_database_id.id,

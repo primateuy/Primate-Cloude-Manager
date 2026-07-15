@@ -13,7 +13,7 @@ from unittest import mock
 from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 
-from odoo.addons.primate_cloud_manager.services import aws_s3
+from odoo.addons.primate_cloud_manager.services import aws_s3, aws_ssm
 
 
 @tagged("post_install", "-at_install", "primate_cloud")
@@ -97,26 +97,12 @@ class TestR4B1(TransactionCase):
             {"state": "archived", "active": False})
         self.assertFalse(archivada._legacy_flow_blocked_reason("backup"))
 
-    def test_guards_interactivos_bloquean_en_multi(self):
-        # Config/addons (B2), impersonate (B3) y backup/restore (B4) ya se
-        # recablearon; sus inversos viven en sus clases. Acá queda staging.
-        server, machine = self._server("g-int", multi=True)
-        with self.assertRaises(UserError):
-            server._enqueue_staging({"name": "stg"})
-
-    def test_guard_staging_job_falla_honesto(self):
-        # El guard aún vigente (staging, R4-B5): el job del origen falla con la
-        # razón en bitácora, no skip silencioso.
-        server, machine = self._server("g-job", multi=True)
-        Log = self.env["primate.cloud.operation.log"]
-        staging = self.env["primate.cloud.environment"].create({
-            "name": "stg", "project_id": self.project.id,
-            "env_type": "staging", "odoo_version": "19"})
-        staging.origin_environment_id = server
-        self.assertFalse(staging.job_create_staging({"name": "stg"}))
-        log = Log.search([("action_type", "=", "staging_create"),
-                          ("result", "=", "failed")], limit=1, order="id desc")
-        self.assertIn("bloqueada", log.error_message)
+    def test_todos_los_guards_levantados(self):
+        # R4-B1..B5 recablearon todos los flujos legacy-destructivos: el dict
+        # de guards quedó vacío (la maquinaria se conserva por si un flujo
+        # futuro la necesita). El inverso de cada flujo vive en su clase.
+        self.assertEqual(type(self.env["primate.cloud.environment"])
+                         .LEGACY_FLOW_UNBLOCKED_IN, {})
 
     def test_guard_no_bloquea_legacy_puro(self):
         server, machine = self._server("g-ok")
@@ -677,7 +663,6 @@ class TestR4B4Backups(TransactionCase):
         d = type(self.server).LEGACY_FLOW_UNBLOCKED_IN
         self.assertNotIn("backup", d)
         self.assertNotIn("restore", d)
-        self.assertIn("staging", d)   # el que sigue
 
     # --- backup: filestore y conf por instancia -----------------------
     def test_backup_paths_por_instancia(self):
@@ -859,3 +844,299 @@ class TestR4B4Backups(TransactionCase):
         pre = self.env["primate.cloud.backup"].search(
             [("purpose", "=", "pre_restore"), ("database_id", "=", self.db_b.id)])
         self.assertTrue(pre)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR4B5Staging(TransactionCase):
+    """Staging = instancia en un servidor EXISTENTE (D-R4.6) + guard levantado.
+    La prueba real (staging conviviendo + neutralización) va en B7."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Cliente A", "account_id": self.account.id})
+        # Servidor origen (multi-Odoo), producción, con su instancia + BD.
+        self.origin = self.env["primate.cloud.environment"].create({
+            "name": "Prod", "project_id": self.project.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community"})
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id,
+            "aws_instance_id": "i-b5", "instance_state": "running",
+            "region": "us-east-1", "environment_id": self.origin.id,
+            "provisioned_by_pcm": True})
+        self.origin.ec2_instance_id = self.machine
+        self.origin.state = "active"
+        self.origin_inst = self.origin.primary_instance_id
+        self.origin_inst.write({"slug": "prod", "state": "active",
+                                "main_url": "prod.pcm.test"})
+        self.origin.backup_policy_id = self.env["primate.cloud.backup.policy"].create({
+            "name": "P", "expected_frequency": "daily", "managed_by_pcm": True,
+            "s3_bucket": "pcm-bucket"})
+        self.origin._materialize_multiodoo_layout(
+            self.origin_inst, {"db_mode": "local_pg"})
+        self.origin_db = self.env["primate.cloud.database"].create({
+            "name": "prod_db", "account_id": self.account.id,
+            "environment_id": self.origin.id, "db_type": "local_pg",
+            "instance_id": self.origin_inst.id,
+            "ec2_instance_id": self.machine.id})
+
+    def test_wizard_default_mismo_servidor_si_multi(self):
+        wiz = self.env["primate.cloud.staging.create.wizard"].new({
+            "origin_environment_id": self.origin.id})
+        wiz._onchange_origin()
+        # D-R4.6: el default es montar en el MISMO servidor (multi) del origen.
+        self.assertEqual(wiz.target_server_id, self.origin)
+
+    def test_enqueue_ramifica_a_instancia_en_servidor_existente(self):
+        # Con target_server → crea una INSTANCIA staging (no un entorno/EC2).
+        fake_delay = mock.Mock()
+        params = {"name": "Prod (Staging)", "domain": "stg.pcm.test",
+                  "target_server_id": self.origin.id,
+                  "origin_instance_id": self.machine.id,
+                  "origin_database_id": self.origin_db.id,
+                  "db_name": "prod_staging", "admin_password": "x",
+                  "transfer_bucket": "pcm-bucket"}
+        n_envs = self.env["primate.cloud.environment"].search_count([])
+        with mock.patch.object(type(self.origin), "with_delay",
+                               return_value=fake_delay):
+            inst = self.origin._enqueue_staging(params)
+        # NO se creó un entorno nuevo; sí una instancia staging en el origen.
+        self.assertEqual(
+            self.env["primate.cloud.environment"].search_count([]), n_envs)
+        self.assertEqual(inst.environment_id, self.origin)
+        self.assertEqual(inst.env_type, "staging")
+        self.assertEqual(inst.origin_instance_id, self.origin_inst)
+        # Puerto propio asignado por el allocator (no choca con la primaria).
+        self.assertNotEqual(inst.http_port, self.origin_inst.http_port)
+        # Se encoló el job por instancia con el origen en params.
+        args = fake_delay.job_create_staging_instance.call_args[0]
+        self.assertEqual(args[0], inst.id)
+        self.assertEqual(args[1]["origin_environment_id"], self.origin.id)
+        self.assertEqual(args[1]["db_mode"], "local_pg")
+        self.assertTrue(args[1]["db_password"])   # transitoria al encolar
+
+    def test_enqueue_origen_no_primaria_no_asume_la_primera(self):
+        # El "[:1]" de Fase 8: stageando la instancia NO-primaria de un
+        # servidor multi, el staging debe decir que vino de ESA instancia,
+        # no de la primaria. El dato correcto = origin_database.instance_id.
+        inst_b = self.origin._create_instance_with_ports({
+            "name": "Odoo B", "project_id": self.project.id, "slug": "b",
+            "odoo_version": "19", "state": "active"})
+        self.origin._materialize_multiodoo_layout(inst_b, {"db_mode": "local_pg"})
+        db_b = self.env["primate.cloud.database"].create({
+            "name": "b_db", "account_id": self.account.id,
+            "environment_id": self.origin.id, "db_type": "local_pg",
+            "instance_id": inst_b.id, "ec2_instance_id": self.machine.id})
+        fake_delay = mock.Mock()
+        params = {"name": "Staging de B", "domain": "stgb.pcm.test",
+                  "target_server_id": self.origin.id,
+                  "origin_instance_id": self.machine.id,   # la MÁQUINA (ambigua)
+                  "origin_database_id": db_b.id,            # la base de B (clara)
+                  "db_name": "b_staging", "admin_password": "x",
+                  "transfer_bucket": "pcm-bucket"}
+        with mock.patch.object(type(self.origin), "with_delay",
+                               return_value=fake_delay):
+            staging_inst = self.origin._enqueue_staging(params)
+        # Vino de la instancia B elegida, NO de la primaria del origen.
+        self.assertEqual(staging_inst.origin_instance_id, inst_b)
+        self.assertNotEqual(staging_inst.origin_instance_id, self.origin_inst)
+
+    def test_enqueue_servidor_nuevo_sin_target_mantiene_path_viejo(self):
+        # Sin target_server → sigue creando un ENTORNO staging (path R2).
+        fake_delay = mock.Mock()
+        params = {"name": "Stg Nuevo", "domain": "stg2.pcm.test",
+                  "origin_instance_id": self.machine.id,
+                  "origin_database_id": self.origin_db.id,
+                  "region": "us-east-1", "db_mode": "local_pg"}
+        with mock.patch.object(type(self.origin), "with_delay",
+                               return_value=fake_delay):
+            staging = self.origin._enqueue_staging(params)
+        self.assertEqual(staging._name, "primate.cloud.environment")
+        self.assertEqual(staging.env_type, "staging")
+        fake_delay.job_create_staging.assert_called_once()
+
+    def test_job_staging_instance_monta_copia_y_neutraliza(self):
+        # Camino feliz completo con SSM/S3 mockeados: monta la instancia,
+        # copia la base del origen y neutraliza (aunque el SERVIDOR sea prod).
+        inst = self.origin._create_instance_with_ports({
+            "name": "Stg", "project_id": self.project.id, "slug": "stg",
+            "env_type": "staging", "odoo_version": "19",
+            "main_url": "stg.pcm.test", "origin_instance_id": self.origin_inst.id})
+        fake = mock.Mock()
+        fake.run_script.return_value = {
+            "status": "Success",
+            "stdout": ("PCM_BOOTSTRAP_OK\nPCM_INSTALL_OK\n"
+                       "PCM_DUMP_SIZE_BYTES=1\nPCM_FS_SIZE_BYTES=1\n"
+                       "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_RESTORE_OK")}
+        params = {"region": "us-east-1", "db_name": "prod_staging",
+                  "db_password": "PgPass_x", "domain": "stg.pcm.test",
+                  "admin_password": "x", "transfer_bucket": "pcm-bucket",
+                  "origin_environment_id": self.origin.id,
+                  "origin_instance_id": self.machine.id,
+                  "origin_database_id": self.origin_db.id}
+        neutralized = {}
+        with mock.patch.object(type(self.account), "_get_aws_service",
+                               return_value=mock.Mock()), \
+                mock.patch.object(aws_ssm, "AwsSsmService", return_value=fake), \
+                mock.patch.object(type(self.machine), "_get_ssm_service",
+                                  return_value=fake), \
+                mock.patch.object(aws_s3.AwsS3Service, "ensure_bucket"), \
+                mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                                  return_value={"key": "k"}), \
+                mock.patch.object(type(self.origin), "_instance_http_alive",
+                                  return_value=True), \
+                mock.patch.object(type(self.origin), "_staging_neutralize",
+                                  side_effect=lambda *a, **k:
+                                  neutralized.update(done=True)):
+            ok = self.origin.job_create_staging_instance(inst.id, params)
+        self.assertTrue(ok)
+        self.assertEqual(inst.state, "active")
+        # Neutralizó aunque el servidor es producción (mira la INSTANCIA).
+        self.assertTrue(neutralized.get("done"))
+
+    def test_restore_neutraliza_por_instancia_no_por_servidor(self):
+        # El fix clave de B5: un staging (env_type=staging) en un servidor de
+        # PRODUCCIÓN debe neutralizarse — el check mira odoo_instance.env_type.
+        stg_inst = self.origin._create_instance_with_ports({
+            "name": "Stg2", "project_id": self.project.id, "slug": "stg2",
+            "env_type": "staging", "odoo_version": "19",
+            "main_url": "stg2.pcm.test"})
+        self.origin._materialize_multiodoo_layout(
+            stg_inst, {"db_mode": "local_pg"})
+        db = self.env["primate.cloud.database"].create({
+            "name": "stg2_db", "account_id": self.account.id,
+            "environment_id": self.origin.id, "db_type": "local_pg",
+            "instance_id": stg_inst.id, "ec2_instance_id": self.machine.id})
+        rec = self.env["primate.cloud.backup"].create({
+            "name": "b", "environment_id": self.origin.id,
+            "database_id": self.origin_db.id, "backup_type": "pcm_dump",
+            "s3_bucket": "pcm-bucket", "s3_key": "k.dump", "size_mb": 1})
+        rec.write({"state": "completed"})
+        fake = mock.Mock()
+        fake.run_script.return_value = {
+            "status": "Success", "stdout": "PCM_DROP_STARTED\nPCM_RESTORE_OK"}
+        called = {}
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value={"key": "k"}), \
+                mock.patch.object(type(self.origin), "_staging_neutralize",
+                                  side_effect=lambda *a, **k:
+                                  called.update(done=True)), \
+                mock.patch.object(type(self.machine), "_get_ssm_service",
+                                  return_value=fake):
+            ok = self.origin.job_restore_backup({
+                "backup_id": rec.id, "db_name": "stg2_db",
+                "instance_id": self.machine.id,
+                "odoo_instance_id": stg_inst.id, "pre_backup": False})
+        self.assertTrue(ok)
+        # Servidor = producción, pero la instancia destino es staging → NEUTRALIZA.
+        self.assertTrue(called.get("done"))
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestEnvTypeFriction(TransactionCase):
+    """Barrido de env_type: las fricciones de PRODUCCIÓN miran la INSTANCIA,
+    no el servidor. El caso peligroso: una instancia que ES producción en un
+    servidor cuya PRIMARIA es staging → sin este fix la barrera no se dispara
+    y alguien opera producción sin fricción."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "P", "account_id": self.account.id})
+        # Servidor cuya PRIMARIA es STAGING (env_type del servidor = staging,
+        # arbitrario post-R1) pero que hospeda una instancia de PRODUCCIÓN.
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "Compartido", "project_id": self.project.id,
+            "env_type": "staging", "odoo_version": "19",
+            "odoo_edition": "community"})
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id,
+            "aws_instance_id": "i-f", "instance_state": "running",
+            "region": "us-east-1", "environment_id": self.server.id,
+            "provisioned_by_pcm": True})
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        self.stg_primary = self.server.primary_instance_id   # env_type=staging
+        self.stg_primary.write({"slug": "stg", "state": "active"})
+        self.server._materialize_multiodoo_layout(
+            self.stg_primary, {"db_mode": "local_pg"})
+        # La instancia PROD hospedada (NO primaria).
+        self.prod_inst = self.server._create_instance_with_ports({
+            "name": "Prod Cliente", "project_id": self.project.id,
+            "slug": "prod", "env_type": "production", "odoo_version": "19",
+            "state": "active", "main_url": "prod.pcm.test"})
+        self.server._materialize_multiodoo_layout(
+            self.prod_inst, {"db_mode": "local_pg"})
+
+    def test_servidor_dice_staging_pero_instancia_es_prod(self):
+        # La premisa del barrido: el env_type del servidor NO refleja la prod.
+        self.assertEqual(self.server.env_type, "staging")
+        self.assertEqual(self.prod_inst.env_type, "production")
+
+    def test_config_prod_pide_nombre_por_instancia(self):
+        # Editar la config de la instancia PROD exige tipear el nombre aunque
+        # el servidor diga staging. (Sin el fix, no pediría nada.)
+        with self.assertRaises(UserError) as ctx:
+            self.machine.action_save_config(
+                {"workers": "2"}, "hash-x", odoo_instance=self.prod_inst)
+        self.assertIn("PRODUCCIÓN", str(ctx.exception))
+        # Con el nombre correcto (del entorno) pasa a encolar.
+        with mock.patch.object(type(self.machine), "with_delay") as wd:
+            self.machine.action_save_config(
+                {"workers": "2"}, "hash-x", typed_name=self.server.name,
+                odoo_instance=self.prod_inst)
+            wd.assert_called_once()
+        # Editar la instancia STAGING (primaria) NO exige nombre.
+        with mock.patch.object(type(self.machine), "with_delay") as wd:
+            self.machine.action_save_config(
+                {"workers": "2"}, "hash-x", odoo_instance=self.stg_primary)
+            wd.assert_called_once()
+
+    def test_impersonar_prod_pide_nombre_por_instancia(self):
+        admin = self.env.ref("primate_cloud_manager.group_cloud_admin")
+        admin.write({"user_ids": [(4, self.env.user.id)]})
+        # Impersonar en la instancia PROD → exige nombre (ya era instance-based).
+        with self.assertRaises(UserError) as ctx:
+            self.machine.action_login_as("db", 5, "ana",
+                                         odoo_instance=self.prod_inst)
+        self.assertIn("PRODUCCIÓN", str(ctx.exception))
+        # En la staging, no.
+        res = self.machine.action_login_as("db", 5, "ana",
+                                           odoo_instance=self.stg_primary)
+        self.assertIn("token=", res["url"])
+
+    def test_restore_wizard_prod_por_instancia(self):
+        db = self.env["primate.cloud.database"].create({
+            "name": "prod_db", "account_id": self.account.id,
+            "environment_id": self.server.id, "db_type": "local_pg",
+            "instance_id": self.prod_inst.id, "ec2_instance_id": self.machine.id})
+        wiz = self.env["primate.cloud.backup.restore.wizard"].new({
+            "target_environment_id": self.server.id, "target_db_name": "prod_db"})
+        wiz._compute_target_is_production()
+        # La base es de la instancia PROD → fricción, aunque el server=staging.
+        self.assertTrue(wiz.target_is_production)
+        # Una base de la instancia staging → sin fricción.
+        db.write({"name": "stg_db", "instance_id": self.stg_primary.id})
+        wiz.target_db_name = "stg_db"
+        wiz._compute_target_is_production()
+        self.assertFalse(wiz.target_is_production)
+
+    def test_dns_delete_ack_por_instancia(self):
+        rec = self.env["primate.cloud.dns.record"].create({
+            "name": "prod.pcm.test", "account_id": self.account.id,
+            "environment_id": self.server.id, "instance_id": self.prod_inst.id,
+            "record_type": "A", "record_value": "1.2.3.4"})
+        rec._compute_delete_needs_ack()
+        self.assertTrue(rec.delete_needs_ack)   # instancia prod → ack
+        rec.instance_id = self.stg_primary
+        rec._compute_delete_needs_ack()
+        self.assertFalse(rec.delete_needs_ack)  # instancia staging → sin ack
