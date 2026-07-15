@@ -169,45 +169,11 @@ class PrimateCloudAccount(models.Model):
             _logger.info("Generada clave de cifrado de credenciales para primate_cloud_manager.")
         return key.encode()
 
-    # ------------------------------------------------------------------
-    # Par de claves de impersonación (Bloque B5). Ed25519: la PRIVADA vive
-    # solo acá (cifrada); la instancia solo recibe la PÚBLICA para verificar.
-    # ------------------------------------------------------------------
-    def _ensure_impersonate_keys(self):
-        """Genera el par Ed25519 si falta. Devuelve (priv_raw_b64, pub_b64)."""
-        self.ensure_one()
-        params = self.env["ir.config_parameter"].sudo()
-        priv_enc = params.get_param("pcm.impersonate.privkey.%s" % self.id)
-        pub_b64 = params.get_param("pcm.impersonate.pubkey.%s" % self.id)
-        if priv_enc and pub_b64:
-            return priv_enc, pub_b64
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PrivateKey)
-        priv = Ed25519PrivateKey.generate()
-        priv_raw_b64 = base64.b64encode(priv.private_bytes_raw()).decode("ascii")
-        pub_b64 = base64.b64encode(
-            priv.public_key().public_bytes_raw()).decode("ascii")
-        key = self._get_encryption_key()
-        params.set_param("pcm.impersonate.privkey.%s" % self.id,
-                         crypto.encrypt(key, priv_raw_b64))
-        params.set_param("pcm.impersonate.pubkey.%s" % self.id, pub_b64)
-        return crypto.encrypt(key, priv_raw_b64), pub_b64
-
-    def impersonate_public_key(self):
-        """Clave pública (base64) para desplegar en la instancia."""
-        self.ensure_one()
-        return self._ensure_impersonate_keys()[1]
-
-    def sign_impersonate_token(self, payload_bytes):
-        """Firma el payload con la privada Ed25519. Devuelve la firma (bytes)."""
-        self.ensure_one()
-        priv_enc, _pub = self._ensure_impersonate_keys()
-        priv_raw = base64.b64decode(
-            crypto.decrypt(self._get_encryption_key(), priv_enc))
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PrivateKey)
-        priv = Ed25519PrivateKey.from_private_bytes(priv_raw)
-        return priv.sign(payload_bytes)
+    # Nota (R4-B3): el par de claves de impersonación pasó a ser POR INSTANCIA
+    # (``primate.cloud.instance``, D-R4.3) — un token de la instancia A no
+    # puede verificar contra la pública de B. La cuenta ya no las guarda; solo
+    # aporta su clave Fernet (``_get_encryption_key``) para cifrar la privada
+    # de cada instancia.
 
     @api.depends("iam_access_key_id_encrypted", "iam_secret_access_key_encrypted")
     def _compute_credentials(self):

@@ -919,7 +919,6 @@ class PrimateCloudEnvironment(models.Model):
     # no-recableado se bloquea en runtime, no se anota en un doc. El guard se
     # quita EN EL MISMO commit que recablea el flujo (config y addons: R4-B2).
     LEGACY_FLOW_UNBLOCKED_IN = {
-        "impersonate": "R4-B3",
         "backup": "R4-B4",
         "restore": "R4-B4",
         "staging": "R4-B5",

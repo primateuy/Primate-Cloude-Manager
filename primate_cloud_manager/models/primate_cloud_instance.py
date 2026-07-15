@@ -13,11 +13,16 @@ compat (related store) hasta que R2/R4 recableen flujos y UI; los modelos
 satélite (repos/deploys/DNS/BD/backups) llevan ``instance_id`` real con
 auto-resolución compat (mixin de abajo).
 """
+import base64
+import json
 import re
+import time
 import uuid
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+from ..tools import crypto
 
 # Layout LEGACY (single-Odoo, install_odoo.sh actual). Las instancias nuevas
 # nacen con estas rutas hasta que R3 introduzca el layout multi-Odoo por slug;
@@ -169,6 +174,22 @@ class PrimateCloudInstance(models.Model):
         help="Peso para el método de reparto 'por peso' (R5).",
     )
 
+    # --- Impersonación (Login-as) POR INSTANCIA (R4-B3, D-R4.3) ---
+    # El par Ed25519 es de ESTA instancia: la privada (cifrada con la Fernet
+    # de la cuenta) firma; la pública se despliega a SU companion. Un token
+    # firmado con la privada de A NO verifica contra la pública de B → el
+    # caso cruzado es estructuralmente imposible, no una validación a agregar.
+    # copy=False: un staging/duplicado JAMÁS hereda la clave de producción; y
+    # NO se generan en create (D-R4.9): nacen en el primer deploy/enable.
+    impersonate_privkey_encrypted = fields.Char(
+        string="Clave privada de impersonación (cifrada)",
+        copy=False, groups="primate_cloud_manager.group_cloud_admin",
+    )
+    impersonate_pubkey = fields.Char(
+        string="Clave pública de impersonación",
+        copy=False, groups="primate_cloud_manager.group_cloud_admin",
+    )
+
     active = fields.Boolean(string="Activo", default=True)
     notes = fields.Text(string="Notas")
 
@@ -249,6 +270,107 @@ class PrimateCloudInstance(models.Model):
         """Valida y encola el guardado de MI conf (reinicia MI unit)."""
         return self._machine_required().action_save_config(
             edits, expected_hash, typed_name=typed_name, odoo_instance=self)
+
+    # ------------------------------------------------------------------
+    # Impersonación POR INSTANCIA (R4-B3): claves + firma + token.
+    # La mecánica remota (deploy/enable/list/nginx) vive en la máquina
+    # (ec2) parametrizada por esta instancia; la IDENTIDAD criptográfica
+    # (par de claves, firma, claim instance_ref) vive acá.
+    # ------------------------------------------------------------------
+    def _ensure_impersonate_keys(self):
+        """Genera el par Ed25519 de ESTA instancia si falta (D-R4.9: al primer
+        deploy/enable, NUNCA en create). Devuelve (priv_enc, pub_b64)."""
+        self.ensure_one()
+        if self.impersonate_privkey_encrypted and self.impersonate_pubkey:
+            return self.impersonate_privkey_encrypted, self.impersonate_pubkey
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey)
+        priv = Ed25519PrivateKey.generate()
+        priv_raw_b64 = base64.b64encode(
+            priv.private_bytes_raw()).decode("ascii")
+        pub_b64 = base64.b64encode(
+            priv.public_key().public_bytes_raw()).decode("ascii")
+        priv_enc = crypto.encrypt(
+            self.account_id._get_encryption_key(), priv_raw_b64)
+        # sudo: los campos de clave están restringidos a group_cloud_admin;
+        # el job/flujo puede correr con otro usuario técnico.
+        self.sudo().write({
+            "impersonate_privkey_encrypted": priv_enc,
+            "impersonate_pubkey": pub_b64,
+        })
+        return priv_enc, pub_b64
+
+    def impersonate_public_key(self):
+        """Clave pública (base64) de esta instancia (para su companion)."""
+        self.ensure_one()
+        return self._ensure_impersonate_keys()[1]
+
+    def _sign_impersonate(self, payload_bytes):
+        """Firma el payload con la privada Ed25519 de ESTA instancia."""
+        self.ensure_one()
+        priv_enc, _pub = self._ensure_impersonate_keys()
+        priv_raw = base64.b64decode(
+            crypto.decrypt(self.account_id._get_encryption_key(), priv_enc))
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey)
+        priv = Ed25519PrivateKey.from_private_bytes(priv_raw)
+        return priv.sign(payload_bytes)
+
+    def _make_impersonate_token(self, db, uid, login, admin_ack=False):
+        """Arma y FIRMA (Ed25519) el token de un solo uso, corto (60 s).
+
+        Lleva el claim ``instance_ref`` (el pcm_ref inmutable de ESTA
+        instancia): el companion lo valida contra su sys-param local además
+        de la firma → defensa en profundidad del aislamiento cruzado.
+        """
+        self.ensure_one()
+        payload = {
+            "db": db, "uid": int(uid), "login": login,
+            "instance_ref": self.pcm_ref,
+            "env_id": self.environment_id.id,
+            "exp": time.time() + 60,
+            "nonce": uuid.uuid4().hex,
+            "admin": self.env.user.login,
+        }
+        if admin_ack:
+            payload["admin_ack"] = True
+        payload_bytes = json.dumps(
+            payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        signature = self._sign_impersonate(payload_bytes)
+
+        def b64url(raw):
+            return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        return "%s.%s" % (b64url(payload_bytes), b64url(signature))
+
+    def _impersonate_base_url(self):
+        """URL base de ESTE Odoo (su dominio https, o la IP pública http)."""
+        self.ensure_one()
+        if self.main_url:
+            return "https://%s" % self.main_url.rstrip("/")
+        machine = self._machine()
+        return "http://%s" % (machine.public_ip or "")
+
+    # --- Wrappers canónicos remotos (la mecánica SSM vive en la máquina) ---
+    def deploy_impersonate(self, dbs, pcm_ip=None):
+        """Despliega el companion de ESTA instancia (su pubkey + su ref)."""
+        return self._machine_required().deploy_impersonate(
+            dbs, pcm_ip=pcm_ip, odoo_instance=self)
+
+    def set_impersonate_enabled(self, dbs, enabled):
+        """Habilita/deshabilita (kill-switch) la impersonación de ESTA instancia."""
+        return self._machine_required().set_impersonate_enabled(
+            dbs, enabled, odoo_instance=self)
+
+    def list_db_users(self, db):
+        """Usuarios internos activos de una BD de ESTA instancia (SSM psql)."""
+        return self._machine_required().list_db_users(db, odoo_instance=self)
+
+    def action_login_as(self, db, uid, login, is_admin_target=False,
+                        admin_ack=False, typed_name=None):
+        """Genera el enlace de impersonación de ESTA instancia (auditado)."""
+        return self._machine_required().action_login_as(
+            db, uid, login, is_admin_target=is_admin_target,
+            admin_ack=admin_ack, typed_name=typed_name, odoo_instance=self)
 
 
 class PrimateCloudInstanceLinked(models.AbstractModel):

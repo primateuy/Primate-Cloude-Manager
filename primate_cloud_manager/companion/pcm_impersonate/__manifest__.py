@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "PCM Impersonate (soporte)",
-    "version": "19.0.1.0.0",
+    "version": "19.0.2.0.0",
     "summary": "Endpoint de impersonación controlado por Primate Cloud Manager",
     "description": """
 Addon companion desplegado por Primate Cloud Manager (PCM) en la instancia del

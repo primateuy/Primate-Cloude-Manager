@@ -12,6 +12,11 @@ PARAM_PUBKEY = "pcm.impersonate.public_key"
 PARAM_EPOCH = "pcm.impersonate.epoch"          # se sube para cortar sesiones vivas
 PARAM_BANNER = "pcm.impersonate.banner"        # gancho del banner (off por default)
 PARAM_MAX_HOURS = "pcm.impersonate.session_max_hours"
+# R4-B3 (v2): ref inmutable de la instancia dueña de este companion. El token
+# debe declararla (claim ``instance_ref``); si no coincide → 403. Es defensa
+# en profundidad del aislamiento cruzado: aunque por error operativo dos
+# instancias compartieran clave, el claim corta un token de A usado en B.
+PARAM_INSTANCE_REF = "pcm.impersonate.instance_ref"
 
 
 class PcmImpersonationLog(models.Model):
@@ -59,6 +64,12 @@ class PcmImpersonationLog(models.Model):
     @api.model
     def _public_key(self):
         return self._param(PARAM_PUBKEY, "") or ""
+
+    @api.model
+    def _instance_ref(self):
+        # Fresco (search): PCM lo escribe por SSM al desplegar; identifica de
+        # qué instancia es este companion.
+        return self._param(PARAM_INSTANCE_REF, "") or ""
 
     @api.model
     def _banner_on(self):

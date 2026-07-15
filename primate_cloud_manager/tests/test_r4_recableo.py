@@ -104,10 +104,6 @@ class TestR4B1(TransactionCase):
             server.action_run_backup()
         with self.assertRaises(UserError):
             server._enqueue_staging({"name": "stg"})
-        with self.assertRaises(UserError):
-            machine.deploy_impersonate(["db1"])
-        with self.assertRaises(UserError):
-            machine.set_impersonate_enabled(["db1"], True)
         wizard = self.env["primate.cloud.backup.restore.wizard"].new({
             "target_environment_id": server.id})
         with self.assertRaises(UserError):
@@ -391,3 +387,244 @@ class TestR4B2(TransactionCase):
         self.assertIn("/opt/pcm/runtime/odoo-19/src/odoo-bin", cmd)
         self.assertIn("/etc/odoo/cliente-a.conf", cmd)
         self.assertNotIn("/opt/odoo/", cmd)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR4B3Impersonate(TransactionCase):
+    """Impersonación multi-instancia: claves POR INSTANCIA + claim + allowlist
+    por vhost propio + guard levantado. El caso cruzado en vivo va en B7."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.proj_a = self.env["primate.cloud.project"].create(
+            {"name": "Cliente A", "account_id": self.account.id})
+        self.proj_b = self.env["primate.cloud.project"].create(
+            {"name": "Cliente B", "account_id": self.account.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "Compartido", "project_id": self.proj_a.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community",
+        })
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id,
+            "aws_instance_id": "i-b3", "instance_state": "running",
+            "region": "us-east-1", "environment_id": self.server.id,
+            "provisioned_by_pcm": True, "public_ip": "1.2.3.4",
+        })
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        self.inst_a = self.server.primary_instance_id
+        self.inst_a.write({"slug": "cliente-a", "state": "active",
+                           "main_url": "a.pcm.test"})
+        self.server._materialize_multiodoo_layout(
+            self.inst_a, {"db_mode": "local_pg"})
+        self.inst_b = self.server._create_instance_with_ports({
+            "name": "Odoo B", "project_id": self.proj_b.id, "slug": "cliente-b",
+            "odoo_version": "19", "state": "active", "main_url": "b.pcm.test",
+        })
+        self.server._materialize_multiodoo_layout(
+            self.inst_b, {"db_mode": "local_pg"})
+
+    # --- claves POR INSTANCIA (el corazón del aislamiento) --------------
+    def test_claves_por_instancia_y_no_en_create(self):
+        # D-R4.9: nacen sin par (no en create).
+        self.assertFalse(self.inst_a.impersonate_privkey_encrypted)
+        self.assertFalse(self.inst_b.impersonate_pubkey)
+        # Se generan al pedirlas (primer deploy/enable).
+        pub_a = self.inst_a.impersonate_public_key()
+        pub_b = self.inst_b.impersonate_public_key()
+        self.assertTrue(pub_a and pub_b)
+        # Pares DISTINTOS por instancia (la base del cruzado imposible).
+        self.assertNotEqual(pub_a, pub_b)
+        self.assertNotEqual(self.inst_a.impersonate_privkey_encrypted,
+                            self.inst_b.impersonate_privkey_encrypted)
+        # copy=False: un duplicado no hereda la clave.
+        copia = self.inst_a.copy({"slug": "cliente-a-copia", "name": "copia",
+                                  "http_port": 8099, "gevent_port": 8102})
+        self.assertFalse(copia.impersonate_privkey_encrypted)
+        self.assertFalse(copia.impersonate_pubkey)
+
+    def test_token_de_A_no_verifica_con_la_publica_de_B(self):
+        # EL invariante del cruzado, verificado criptográficamente (sin red):
+        # un token firmado por A NO valida contra la pública de B.
+        import base64 as b64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey)
+        token = self.inst_a._make_impersonate_token("db_a", 3, "juan")
+        payload_b64, sig_b64 = token.split(".")
+
+        def unb64(s):
+            return b64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+        # Contra la pública de A: valida.
+        pub_a = Ed25519PublicKey.from_public_bytes(
+            b64.b64decode(self.inst_a.impersonate_public_key()))
+        pub_a.verify(unb64(sig_b64), unb64(payload_b64))
+        # Contra la pública de B: rompe.
+        pub_b = Ed25519PublicKey.from_public_bytes(
+            b64.b64decode(self.inst_b.impersonate_public_key()))
+        with self.assertRaises(Exception):
+            pub_b.verify(unb64(sig_b64), unb64(payload_b64))
+        # Y el claim declara la instancia dueña (defensa en profundidad).
+        import json
+        payload = json.loads(unb64(payload_b64))
+        self.assertEqual(payload["instance_ref"], self.inst_a.pcm_ref)
+        self.assertNotEqual(payload["instance_ref"], self.inst_b.pcm_ref)
+
+    def test_base_url_por_instancia(self):
+        self.assertEqual(self.inst_a._impersonate_base_url(),
+                         "https://a.pcm.test")
+        self.assertEqual(self.inst_b._impersonate_base_url(),
+                         "https://b.pcm.test")
+
+    # --- guard levantado (inverso del patrón) --------------------------
+    def test_guard_impersonate_levantado(self):
+        self.assertNotIn("impersonate",
+                         type(self.server).LEGACY_FLOW_UNBLOCKED_IN)
+
+    def _patch_ssm(self):
+        fake = mock.Mock()
+        fake.run_script.return_value = {"stdout": "PCM_NGINX:ok",
+                                        "status": "Success"}
+        return mock.patch.object(type(self.machine), "_get_ssm_service",
+                                 return_value=fake), fake
+
+    def test_deploy_por_instancia_addons_runtime_pubkey_y_ref(self):
+        patcher, fake = self._patch_ssm()
+        with patcher, mock.patch.object(
+                type(self.machine), "_ensure_custom_addons_path"), \
+                mock.patch.object(type(self.machine), "restart_odoo"):
+            self.inst_b.deploy_impersonate(["db_b"])
+        scripts = "\n---\n".join(
+            c[0][1] for c in fake.run_script.call_args_list)
+        # Runtime + addons_dir + unit del SLUG de B (no legacy, no de A).
+        self.assertIn("/opt/pcm/instances/cliente-b/addons", scripts)
+        self.assertIn("/opt/pcm/runtime/odoo-19/src/odoo-bin", scripts)
+        self.assertNotIn("cliente-a", scripts)
+        self.assertNotIn("/opt/odoo/", scripts)
+        # Escribió la pública de B y su instance_ref.
+        self.assertIn("public_key", scripts)
+        self.assertIn("instance_ref", scripts)
+        self.assertTrue(self.inst_b.impersonate_pubkey)
+
+    def test_nginx_allowlist_camino_feliz_y_puerto_propio(self):
+        patcher, fake = self._patch_ssm()  # stdout PCM_NGINX:ok
+        with patcher:
+            res = self.machine._nginx_allowlist("9.9.9.9", self.inst_b)
+        self.assertEqual(res, "fixed")
+        script = fake.run_script.call_args[0][1]
+        self.assertIn("PORT = '%d'" % self.inst_b.http_port, script)
+        self.assertNotIn("8069", script)
+
+    def test_nginx_allowlist_novhost_falla_ruidoso(self):
+        # BUG 1: si el needle no matchea ningún vhost, NO se despliega el
+        # endpoint sin allowlist en silencio — falla ruidoso.
+        fake = mock.Mock()
+        fake.run_script.return_value = {"stdout": "PCM_NGINX:novhost",
+                                        "status": "Success"}
+        with mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=fake):
+            with self.assertRaises(UserError) as ctx:
+                self.machine._nginx_allowlist("9.9.9.9", self.inst_b)
+        self.assertIn("allow-list", str(ctx.exception))
+
+    def test_nginx_allowlist_deploy_aborta_si_no_hay_vhost(self):
+        # El fallo del allowlist ABORTA el deploy (no queda endpoint sin la
+        # 2ª capa): _nginx_allowlist real (no mockeado) sobre stdout novhost.
+        fake = mock.Mock()
+
+        def _reply(instance_id, script, **kw):
+            if "glob.glob" in script:   # el script del allowlist
+                return {"stdout": "PCM_NGINX:novhost", "status": "Success"}
+            return {"stdout": "", "status": "Success"}
+        fake.run_script.side_effect = _reply
+        with mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=fake), \
+                mock.patch.object(type(self.machine),
+                                  "_ensure_custom_addons_path"), \
+                mock.patch.object(type(self.machine), "restart_odoo") as restart:
+            with self.assertRaises(UserError):
+                self.inst_b.deploy_impersonate(["db_b"], pcm_ip="9.9.9.9")
+        restart.assert_not_called()   # abortó antes del restart
+
+    # --- BUG 2: el transform PURO (fuente única del script remoto) ------
+    def _apply(self, content, ip, port):
+        ns = {}
+        exec(type(self.machine)._NGINX_APPLY_SRC, ns)
+        return ns["pcm_apply"](content, ip, str(port))
+
+    def _vhost(self, port, extra=""):
+        return ("server {\n    server_name x;\n%s"
+                "    location / {\n        proxy_pass http://127.0.0.1:%d;\n"
+                "    }\n}\n" % (extra, port))
+
+    def test_transform_skip_added_ok(self):
+        # skip: no es el vhost de esta instancia.
+        _c, act = self._apply(self._vhost(8079), "9.9.9.9", 8089)
+        self.assertEqual(act, "skip")
+        # added: es su vhost y no tenía bloque.
+        nuevo, act = self._apply(self._vhost(8089), "9.9.9.9", 8089)
+        self.assertEqual(act, "added")
+        self.assertIn("location = /pcm/impersonate", nuevo)
+        self.assertIn("proxy_pass http://127.0.0.1:8089;", nuevo)
+        # ok: idempotente (ya tiene el bloque correcto).
+        _c2, act = self._apply(nuevo, "9.9.9.9", 8089)
+        self.assertEqual(act, "ok")
+
+    def test_transform_reescribe_bloque_viejo_mal_apuntado(self):
+        # BUG 2: deploy pre-B3 dejó el bloque de ESTE vhost (8089) apuntando a
+        # 8069 → NO se saltea, se REESCRIBE al puerto correcto.
+        viejo = self._apply(self._vhost(8089), "9.9.9.9", 8069)[0]  # mal: 8069
+        # (simulo el escenario: el vhost de B con un bloque que va a 8069)
+        vhost_b_con_bloque_malo = self._vhost(8089).replace(
+            "    location / {",
+            "    location = /pcm/impersonate {\n"
+            "        allow 9.9.9.9;\n        deny all;\n"
+            "        proxy_pass http://127.0.0.1:8069;\n"
+            "        proxy_set_header Host $host;\n"
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            "        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n\n"
+            "    location / {", 1)
+        fijado, act = self._apply(vhost_b_con_bloque_malo, "9.9.9.9", 8089)
+        self.assertEqual(act, "fixed")
+        self.assertIn("proxy_pass http://127.0.0.1:8089;", fijado)
+        self.assertNotIn("127.0.0.1:8069", fijado)   # el puerto ajeno se fue
+        self.assertEqual(fijado.count("location = /pcm/impersonate"), 1)
+
+    def test_transform_reescribe_si_cambia_la_ip(self):
+        # Mismo puerto pero IP distinta (rotó la IP de egreso de PCM) → fixed.
+        con_ip_vieja = self._apply(self._vhost(8089), "1.1.1.1", 8089)[0]
+        fijado, act = self._apply(con_ip_vieja, "9.9.9.9", 8089)
+        self.assertEqual(act, "fixed")
+        self.assertIn("allow 9.9.9.9;", fijado)
+        self.assertNotIn("allow 1.1.1.1;", fijado)
+
+    def test_enable_y_killswitch_por_instancia(self):
+        patcher, fake = self._patch_ssm()
+        with patcher:
+            self.inst_a.set_impersonate_enabled(["db_a"], False)
+        script = fake.run_script.call_args[0][1]
+        # Deshabilitar sube el epoch (kill-switch) por el runtime de A.
+        self.assertIn("pcm.impersonate.epoch", script)
+        self.assertIn("/etc/odoo/cliente-a.conf", script)
+        self.assertNotIn("cliente-b", script)
+
+    def test_login_as_audita_sobre_la_instancia(self):
+        admin_grp = self.env.ref("primate_cloud_manager.group_cloud_admin")
+        admin_grp.write({"user_ids": [(4, self.env.user.id)]})
+        # prod exige nombre exacto (fricción intacta).
+        with self.assertRaises(UserError):
+            self.inst_b.action_login_as("db_b", 5, "ana", typed_name="mal")
+        res = self.inst_b.action_login_as("db_b", 5, "ana",
+                                          typed_name=self.server.name)
+        self.assertIn("https://b.pcm.test/pcm/impersonate?token=", res["url"])
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "impersonate"),
+             ("resource_id", "=", self.inst_b.id),
+             ("resource_model", "=", "primate.cloud.instance")],
+            order="id desc", limit=1)
+        self.assertTrue(log)
+        self.assertIn("ana", log.error_message)

@@ -428,21 +428,24 @@ class TestDeployment(TransactionCase):
         return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
     def test_impersonate_token_firma_y_verifica(self):
+        # R4-B3: el token lo firma la clave de LA INSTANCIA (no la cuenta) y
+        # lleva el claim instance_ref (su pcm_ref inmutable).
         import json
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey)
-        self.instance.public_ip = "1.2.3.4"
-        token = self.instance._make_impersonate_token("demo", 7, "juan")
+        inst = self.env_rec.primary_instance_id
+        token = inst._make_impersonate_token("demo", 7, "juan")
         payload_b64, sig_b64 = token.split(".")
         payload = json.loads(self._unb64url(payload_b64))
         self.assertEqual(payload["db"], "demo")
         self.assertEqual(payload["uid"], 7)
         self.assertEqual(payload["login"], "juan")
+        self.assertEqual(payload["instance_ref"], inst.pcm_ref)
         self.assertIn("nonce", payload)
         self.assertIn("exp", payload)
-        # La pública de la cuenta valida la firma sobre el payload.
+        # La pública de la INSTANCIA valida la firma sobre el payload.
         pub = Ed25519PublicKey.from_public_bytes(
-            __import__("base64").b64decode(self.account.impersonate_public_key()))
+            __import__("base64").b64decode(inst.impersonate_public_key()))
         pub.verify(self._unb64url(sig_b64), self._unb64url(payload_b64))  # no raise
         with self.assertRaises(Exception):   # payload alterado → firma inválida
             pub.verify(self._unb64url(sig_b64),

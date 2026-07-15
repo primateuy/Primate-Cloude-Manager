@@ -49,7 +49,8 @@ class PcmImpersonateController(Controller):
         with registry.cursor() as cr:
             env = api.Environment(cr, SUPERUSER_ID, {})
             Log = env["pcm.impersonation.log"].sudo()
-            # 1) enabled → 2) firma → 3) exp → 4) nonce → 5) usuario ok
+            # 1) enabled → 2) firma → 3) exp → 4) nonce → 5) instance_ref →
+            # 6) usuario ok. Cada fallo → 403 sin sesión.
             if not Log._is_enabled():
                 return request.make_response("forbidden", status=403)
             if not self._verify(Log._public_key(), payload_bytes, signature):
@@ -57,6 +58,13 @@ class PcmImpersonateController(Controller):
             if float(payload.get("exp", 0)) < time.time():
                 return request.make_response("forbidden", status=403)
             if not env["pcm.impersonation.nonce"]._consume(payload.get("nonce")):
+                return request.make_response("forbidden", status=403)
+            # Claim de aislamiento (R4-B3 v2): el token debe ser PARA esta
+            # instancia. Un token de A pegado en B tiene el instance_ref de A
+            # → no coincide con el de B → 403 (aunque la firma fuese válida,
+            # que no lo es porque la clave también es por instancia).
+            expected_ref = Log._instance_ref()
+            if expected_ref and payload.get("instance_ref") != expected_ref:
                 return request.make_response("forbidden", status=403)
             user = env["res.users"].browse(uid)
             if not user.exists() or not user.active or user.share:
