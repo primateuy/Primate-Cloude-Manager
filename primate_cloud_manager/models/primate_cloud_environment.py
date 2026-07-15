@@ -919,8 +919,6 @@ class PrimateCloudEnvironment(models.Model):
     # no-recableado se bloquea en runtime, no se anota en un doc. El guard se
     # quita EN EL MISMO commit que recablea el flujo (config y addons: R4-B2).
     LEGACY_FLOW_UNBLOCKED_IN = {
-        "backup": "R4-B4",
-        "restore": "R4-B4",
         "staging": "R4-B5",
     }
 
@@ -2344,7 +2342,7 @@ class PrimateCloudEnvironment(models.Model):
                 "El entorno necesita una política de respaldo gestionada por "
                 "PCM (con bucket S3 de destino)."
             ))
-        self._ensure_legacy_flow_allowed("backup")
+        # R4-B4: backup recableado (filestore/conf por instancia) → sin guard.
         self.with_delay(
             description=_("Backup manual: %s") % self.name
         ).job_run_backup(trigger="manual")
@@ -2368,16 +2366,8 @@ class PrimateCloudEnvironment(models.Model):
         policy = self.backup_policy_id
         if not policy or not policy.managed_by_pcm or not policy.s3_bucket:
             raise UserError(_("La política del entorno no está gestionada por PCM."))
-        # GUARD R4: el dump usa el filestore/conf del layout legacy — en un
-        # servidor multi produciría respaldos silenciosamente inválidos (sin
-        # filestore) o con datos mal atribuidos. Falla honesto (no skip):
-        # la ventana queda descubierta y visible. Se libera en R4-B4.
-        reason = self._legacy_flow_blocked_reason("backup")
-        if reason:
-            self._log("backup_run", name=_("Backup: %s") % self.name,
-                      result="failed", error_message=reason)
-            self.message_post(body=_("Backup gestionado bloqueado: %s") % reason)
-            return False
+        # R4-B4: el guard de backup se levantó — el dump usa el conf/filestore
+        # de la instancia Odoo de CADA base (multi-tenant correcto).
         account = self.account_id
         region = account.default_region
         bucket = policy.s3_bucket
@@ -2479,6 +2469,16 @@ class PrimateCloudEnvironment(models.Model):
                                              name=instance.name,
                                              state=instance.instance_state)})
             return record
+        # R4-B4: el conf (credenciales RDS) y el filestore salen de la
+        # instancia ODOO de la base — en multi son los del slug, no legacy.
+        # Si no se resuelve inequívoca, falla HONESTO (registro failed), nunca
+        # cae a paths legacy (respaldaría datos ajenos).
+        try:
+            conf_path, filestore_base = self._backup_instance_paths(database)
+        except UserError as error:
+            record.write({"state": "failed",
+                          "error_message": str(error)})
+            return record
         try:
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id,
@@ -2487,6 +2487,7 @@ class PrimateCloudEnvironment(models.Model):
                     record.s3_key, record.s3_filestore_key,
                     rds_endpoint=(database.rds_endpoint
                                   if database.db_type == "rds" else None),
+                    conf_path=conf_path, filestore_base=filestore_base,
                 ),
                 region=instance.region or region,
                 comment="pcm backup: %s" % database.name,
@@ -2509,10 +2510,52 @@ class PrimateCloudEnvironment(models.Model):
         database.write({"last_backup_date": now})
         return record
 
+    def _backup_odoo_instance(self, database):
+        """La instancia Odoo cuyo runtime respalda esta base — o vacío (R4-B4).
+
+        MISMO criterio que :meth:`_resolve_restore_instance`: NO adivina en
+        multi. La base lleva ``instance_id`` real (mixin R1); si falta, solo
+        es seguro caer a la primaria en un servidor legacy PURO (una única
+        instancia no archivada). En multi, sin ``instance_id`` explícito,
+        devuelve vacío → el backup falla claro en vez de respaldar el conf/
+        filestore de OTRO cliente (exposición cruzada silenciosa por el
+        fallback: exactamente el riesgo (b) que el guard cubría).
+        """
+        self.ensure_one()
+        if database.instance_id:
+            return database.instance_id
+        vivas = self.instance_ids.filtered(lambda i: i.state != "archived")
+        return vivas if len(vivas) == 1 else self.env["primate.cloud.instance"]
+
+    def _backup_instance_paths(self, database):
+        """(conf_path, filestore_base) de la instancia Odoo de la base.
+
+        Levanta si no se puede resolver de forma inequívoca (multi sin
+        ``instance_id``): nunca devuelve paths legacy por defecto en un
+        servidor compartido.
+        """
+        odoo_inst = self._backup_odoo_instance(database)
+        if not odoo_inst:
+            raise UserError(_(
+                "No se pudo determinar la instancia Odoo de la base «%(db)s» "
+                "en un servidor con varias instancias: sin ella el backup "
+                "tomaría el filestore de otro cliente. Asociá la base a su "
+                "instancia.", db=database.name))
+        data_dir = odoo_inst.data_dir or "/opt/odoo/.local/share/Odoo"
+        return (odoo_inst.conf_path or ODOO_CONF_PATH,
+                "%s/filestore" % data_dir.rstrip("/"))
+
     @api.model
     def _build_backup_script(self, db_name, bucket, dump_key, filestore_key,
-                             rds_endpoint=None):
+                             conf_path, filestore_base, rds_endpoint=None):
         """Script SSM del backup gestionado (decisiones del Bloque 3).
+
+        R4-B4: ``conf_path`` (credenciales RDS in-situ) y ``filestore_base``
+        son REQUERIDOS y salen de LA instancia Odoo de la base — en multi el
+        filestore vive en ``/opt/pcm/instances/<slug>/data/filestore``, no en
+        el path legacy. Sin default a propósito (trampa del ``workers=0``): un
+        llamador que se olvide revienta en la firma, no respalda el filestore
+        ajeno en silencio.
 
         - **Streaming a S3**: el dump nunca toca el disco de la instancia
           (elimina el riesgo de llenar el disco de producción); ``aws s3 cp``
@@ -2530,12 +2573,13 @@ class PrimateCloudEnvironment(models.Model):
         bkt = shlex.quote(bucket)
         dump = shlex.quote(dump_key)
         filestore = shlex.quote(filestore_key)
+        conf = shlex.quote(conf_path)
         if rds_endpoint:
             dump_lines = [
                 "DB_USER=$(awk -F' *= *' '/^db_user/ {print $2; exit}' %s)"
-                % ODOO_CONF_PATH,
+                % conf,
                 "DB_PASSWORD=$(awk -F' *= *' '/^db_password/ {print $2; exit}' %s)"
-                % ODOO_CONF_PATH,
+                % conf,
                 'PGPASSWORD="$DB_PASSWORD" pg_dump -h %s -U "$DB_USER" '
                 "-Fc -d %s | aws s3 cp - s3://%s/%s --only-show-errors"
                 % (shlex.quote(rds_endpoint), db, bkt, dump),
@@ -2556,7 +2600,7 @@ class PrimateCloudEnvironment(models.Model):
             *dump_lines,
             'echo "PCM_DUMP_SIZE_BYTES=$(aws s3api head-object --bucket %s '
             '--key %s --query ContentLength --output text)"' % (bkt, dump),
-            'FS_DIR=%s/%s' % (BACKUP_FILESTORE_BASE, db),
+            'FS_DIR=%s/%s' % (shlex.quote(filestore_base), db),
             'if [ -d "$FS_DIR" ]; then',
             '  tar -czf - -C "$(dirname "$FS_DIR")" "$(basename "$FS_DIR")" | '
             "aws s3 cp - s3://%s/%s --only-show-errors" % (bkt, filestore),
@@ -2633,13 +2677,11 @@ class PrimateCloudEnvironment(models.Model):
             self.message_post(body=_("Restore fallido: %s") % message)
             return False
 
-        # 0. GUARD R4 (el peor caso de todos): este flujo dropea/crea la base
-        #    POR NOMBRE y para/arranca la unit legacy — sobre un servidor
-        #    multi-Odoo destruiría la base VIVA de otro cliente sin haber
-        #    parado su servicio. Bloqueado hasta R4-B4.
-        reason = self._legacy_flow_blocked_reason("restore")
-        if reason:
-            return fail(reason)
+        # R4-B4: el guard del restore (el peor caso) se levantó. El script
+        # ahora para/arranca la UNIT de la instancia destino, dropea/crea con
+        # SU pg_user y restaura el filestore en SU data_dir — nunca toca el
+        # Odoo de otro cliente del mismo servidor. La instancia destino se
+        # resuelve explícita (params) o por la BD destino.
 
         # 1. Registro válido + objetos realmente en S3 (¿los borró el lifecycle?).
         if not backup or backup.state != "completed":
@@ -2678,6 +2720,22 @@ class PrimateCloudEnvironment(models.Model):
                           "%s). No se enciende infra para restaurar.")
                         % instance.instance_state)
 
+        # 2b. R4-B4: la instancia ODOO destino (qué unit parar, con qué
+        #     pg_user y en qué filestore) debe ser INEQUÍVOCA — es la
+        #     salvaguarda que reemplaza al guard: sin esto, en un servidor
+        #     multi se pararía/dropearía el Odoo equivocado. Explícita
+        #     (params) → la de la BD destino → única del servidor; si no,
+        #     falla claro (el selector llega en R4-B6).
+        odoo_instance = self._resolve_restore_instance(
+            params.get("odoo_instance_id"), target_db=self.env[
+                "primate.cloud.database"].search(
+                [("environment_id", "=", self.id), ("name", "=", db_name)],
+                limit=1))
+        if not odoo_instance:
+            return fail(_(
+                "No se pudo determinar de forma inequívoca la instancia Odoo "
+                "destino (el servidor hospeda varias): indicá la instancia."))
+
         # 3. Pre-backup del destino (red de seguridad): si falla, se ABORTA.
         pre_record = None
         target_db = self.env["primate.cloud.database"].search(
@@ -2701,10 +2759,12 @@ class PrimateCloudEnvironment(models.Model):
 
         # 4-5. Script: valida espacio y versión PG ANTES del drop; después
         # stop Odoo → terminar conexiones → drop → restore → filestore → start.
+        # (todo sobre la unit/pg_user/filestore de la instancia ODOO destino).
         try:
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id,
-                self._build_backup_restore_script(db_name, backup, has_filestore),
+                self._build_backup_restore_script(
+                    db_name, backup, has_filestore, odoo_instance),
                 region=instance.region or region,
                 comment="pcm restore: %s" % db_name,
                 timeout=3600,
@@ -2762,6 +2822,7 @@ class PrimateCloudEnvironment(models.Model):
                 "name": db_name, "account_id": self.account_id.id,
                 "environment_id": self.id, "db_type": "local_pg",
                 "ec2_instance_id": instance.id,
+                "instance_id": odoo_instance.id,
             })
         extra = "" if has_filestore else _(" (sin filestore: el backup no "
                                            "tenía o el objeto ya no está)")
@@ -2772,8 +2833,27 @@ class PrimateCloudEnvironment(models.Model):
             instance=instance.name, extra=extra))
         return True
 
+    def _resolve_restore_instance(self, odoo_instance_id=None, target_db=None):
+        """Instancia Odoo destino del restore, INEQUÍVOCA o recordset vacío.
+
+        Prioridad: explícita (params) → la de la BD destino (si existe) →
+        única instancia no archivada del servidor. Si el servidor hospeda
+        varias y no hay pista, devuelve vacío (el caller falla): es la
+        salvaguarda que reemplaza al guard — jamás se para/dropea a ciegas.
+        """
+        self.ensure_one()
+        Instance = self.env["primate.cloud.instance"]
+        if odoo_instance_id:
+            inst = Instance.browse(odoo_instance_id).exists()
+            return inst if inst and inst.environment_id == self else Instance
+        if target_db and target_db.instance_id:
+            return target_db.instance_id
+        vivas = self.instance_ids.filtered(lambda i: i.state != "archived")
+        return vivas if len(vivas) == 1 else Instance
+
     @api.model
-    def _build_backup_restore_script(self, db_name, backup, has_filestore):
+    def _build_backup_restore_script(self, db_name, backup, has_filestore,
+                                     odoo_instance):
         """Script SSM del restore (orden aprobado en el diseño del Bloque 4).
 
         Valida TODO antes de dropear (espacio en disco, versión PostgreSQL);
@@ -2781,7 +2861,16 @@ class PrimateCloudEnvironment(models.Model):
         createdb → pg_restore → filestore → start Odoo. ``PCM_DROP_STARTED``
         marca el punto de no retorno: si el script falla después, el job arma
         el mensaje de recuperación con la key del pre-backup.
+
+        R4-B4: la unit (``service_name``), el dueño de la base (``pg_user``) y
+        el filestore destino (``data_dir``) salen de ``odoo_instance`` — en
+        multi se para/crea/restaura SOLO lo de esa instancia, jamás el Odoo
+        vecino.
         """
+        service = shlex.quote(odoo_instance.service_name or LEGACY_SERVICE)
+        pg_user = shlex.quote(odoo_instance.pg_user or "odoo")
+        data_dir = (odoo_instance.data_dir
+                    or "/opt/odoo/.local/share/Odoo").rstrip("/")
         db = shlex.quote(db_name)
         bkt = shlex.quote(backup._resolve_bucket())
         dump_key = shlex.quote(backup.s3_key)
@@ -2813,20 +2902,20 @@ class PrimateCloudEnvironment(models.Model):
             'if [ -n "$SRC_VER" ] && [ "$SRC_VER" -gt "$DST_VER" ]; then '
             'echo "PCM_ERROR_PG_MISMATCH origen=$SRC_VER destino=$DST_VER" '
             ">&2; exit 1; fi",
-            # Orden aprobado: 1) detener Odoo, 2) terminar conexiones
-            # residuales, 3) recién ahí el drop.
-            "systemctl stop odoo",
-            # Desde acá, CUALQUIER salida (éxito o fallo) re-arranca Odoo: la
-            # EC2 puede hospedar más bases y un restore fallido no puede dejar
-            # el servicio abajo para todas. El start vive en el trap EXIT.
-            "trap 'systemctl start odoo || true; rm -rf \"$FNAME\" \"$FS_TAR\" "
-            "\"$FS_TMP\" 2>/dev/null || true' EXIT",
+            # Orden aprobado: 1) detener Odoo (SOLO la unit de esta instancia),
+            # 2) terminar conexiones residuales, 3) recién ahí el drop.
+            "systemctl stop %s" % service,
+            # Desde acá, CUALQUIER salida (éxito o fallo) re-arranca ESTA unit:
+            # el servidor puede hospedar más Odoo y un restore fallido no puede
+            # dejar el servicio abajo. El start vive en el trap EXIT.
+            "trap 'systemctl start %s || true; rm -rf \"$FNAME\" \"$FS_TAR\" "
+            "\"$FS_TMP\" 2>/dev/null || true' EXIT" % service,
             'sudo -u postgres psql -tAc "SELECT pg_terminate_backend(pid) '
             "FROM pg_stat_activity WHERE datname = '%s' AND pid <> "
             'pg_backend_pid();" || true' % db_name,
             'echo "PCM_DROP_STARTED"',
             "sudo -u postgres dropdb --if-exists %s" % db,
-            "sudo -u postgres createdb -O odoo %s" % db,
+            "sudo -u postgres createdb -O %s %s" % (pg_user, db),
             'sudo -u postgres pg_restore -d %s "$FNAME" || true' % db,
             # pg_restore devuelve != 0 por avisos ignorables (owners, etc.):
             # la sanidad real es que la base restaurada sea un Odoo.
@@ -2835,12 +2924,13 @@ class PrimateCloudEnvironment(models.Model):
         ]
         if has_filestore:
             filestore_key = shlex.quote(backup.s3_filestore_key)
-            target_dir = "%s/%s" % (BACKUP_FILESTORE_BASE, db)
+            target_dir = "%s/filestore/%s" % (shlex.quote(data_dir), db)
             lines += [
                 'aws s3 cp s3://%s/%s "$FS_TAR" --only-show-errors'
                 % (bkt, filestore_key),
                 'mkdir -p "$FS_TMP"',
                 'tar -xzf "$FS_TAR" -C "$FS_TMP"',
+                'mkdir -p "$(dirname %s)"' % target_dir,
                 "rm -rf %s" % target_dir,
                 'mv "$FS_TMP"/%s %s' % (origin_dir, target_dir),
                 "chown -R odoo:odoo %s" % target_dir,

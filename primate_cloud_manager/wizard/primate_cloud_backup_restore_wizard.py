@@ -106,9 +106,8 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
         self.ensure_one()
         backup = self.backup_id
         target = self.target_environment_id
-        # GUARD R4 (feedback temprano; el job re-chequea): el restore dropea
-        # por nombre y para la unit legacy — bloqueado en destinos multi-Odoo.
-        target._ensure_legacy_flow_allowed("restore")
+        # R4-B4: el restore se recableó (para/dropea SOLO la instancia Odoo
+        # destino, resuelta inequívoca en el job). Sin guard.
         if backup.state != "completed":
             raise UserError(_("El backup ya no está disponible (estado: %s).")
                             % backup.state)

@@ -13,6 +13,8 @@ from unittest import mock
 from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 
+from odoo.addons.primate_cloud_manager.services import aws_s3
+
 
 @tagged("post_install", "-at_install", "primate_cloud")
 class TestR4B1(TransactionCase):
@@ -96,35 +98,23 @@ class TestR4B1(TransactionCase):
         self.assertFalse(archivada._legacy_flow_blocked_reason("backup"))
 
     def test_guards_interactivos_bloquean_en_multi(self):
-        # Config y addons se recablearon (y levantaron su guard) en R4-B2:
-        # sus inversos viven en TestR4B2. Acá quedan los aún bloqueados.
+        # Config/addons (B2), impersonate (B3) y backup/restore (B4) ya se
+        # recablearon; sus inversos viven en sus clases. Acá queda staging.
         server, machine = self._server("g-int", multi=True)
-        server.backup_policy_id = self.policy
-        with self.assertRaises(UserError):
-            server.action_run_backup()
         with self.assertRaises(UserError):
             server._enqueue_staging({"name": "stg"})
-        wizard = self.env["primate.cloud.backup.restore.wizard"].new({
-            "target_environment_id": server.id})
-        with self.assertRaises(UserError):
-            wizard.action_restore()
 
-    def test_guard_jobs_fallan_honesto(self):
+    def test_guard_staging_job_falla_honesto(self):
+        # El guard aún vigente (staging, R4-B5): el job del origen falla con la
+        # razón en bitácora, no skip silencioso.
         server, machine = self._server("g-job", multi=True)
-        server.backup_policy_id = self.policy
         Log = self.env["primate.cloud.operation.log"]
-        # Backup gestionado: False + bitácora con la razón (no skip silencioso).
-        self.assertFalse(server.job_run_backup())
-        log = Log.search([("action_type", "=", "backup_run"),
-                          ("result", "=", "failed"),
-                          ("resource_id", "=", server.id)], limit=1,
-                         order="id desc")
-        self.assertIn("bloqueada", log.error_message)
-        # Restore: el peor caso — corta ANTES de tocar nada.
-        self.assertFalse(server.job_restore_backup(
-            {"backup_id": 99999999, "db_name": "x", "instance_id": machine.id,
-             "pre_backup": False}))
-        log = Log.search([("action_type", "=", "backup_restore"),
+        staging = self.env["primate.cloud.environment"].create({
+            "name": "stg", "project_id": self.project.id,
+            "env_type": "staging", "odoo_version": "19"})
+        staging.origin_environment_id = server
+        self.assertFalse(staging.job_create_staging({"name": "stg"}))
+        log = Log.search([("action_type", "=", "staging_create"),
                           ("result", "=", "failed")], limit=1, order="id desc")
         self.assertIn("bloqueada", log.error_message)
 
@@ -628,3 +618,244 @@ class TestR4B3Impersonate(TransactionCase):
             order="id desc", limit=1)
         self.assertTrue(log)
         self.assertIn("ana", log.error_message)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR4B4Backups(TransactionCase):
+    """Backups + restore POR INSTANCIA + guards backup/restore levantados.
+    El restore multi resuelve la instancia Odoo destino INEQUÍVOCA (la
+    salvaguarda que reemplaza al guard del peor caso)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.proj_a = self.env["primate.cloud.project"].create(
+            {"name": "Cliente A", "account_id": self.account.id})
+        self.proj_b = self.env["primate.cloud.project"].create(
+            {"name": "Cliente B", "account_id": self.account.id})
+        self.policy = self.env["primate.cloud.backup.policy"].create({
+            "name": "Diaria", "expected_frequency": "daily",
+            "managed_by_pcm": True, "s3_bucket": "pcm-bucket",
+            "expected_retention_days": 7,
+        })
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "Multi", "project_id": self.proj_a.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community", "backup_policy_id": self.policy.id,
+        })
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id,
+            "aws_instance_id": "i-b4", "instance_state": "running",
+            "region": "us-east-1", "environment_id": self.server.id,
+            "provisioned_by_pcm": True,
+        })
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        self.inst_a = self.server.primary_instance_id
+        self.inst_a.write({"slug": "cliente-a", "state": "active"})
+        self.server._materialize_multiodoo_layout(
+            self.inst_a, {"db_mode": "local_pg"})
+        self.inst_b = self.server._create_instance_with_ports({
+            "name": "Odoo B", "project_id": self.proj_b.id, "slug": "cliente-b",
+            "odoo_version": "19", "state": "active"})
+        self.server._materialize_multiodoo_layout(
+            self.inst_b, {"db_mode": "local_pg"})
+        self.db_a = self.env["primate.cloud.database"].create({
+            "name": "db_a", "account_id": self.account.id,
+            "environment_id": self.server.id, "db_type": "local_pg",
+            "instance_id": self.inst_a.id, "ec2_instance_id": self.machine.id})
+        self.db_b = self.env["primate.cloud.database"].create({
+            "name": "db_b", "account_id": self.account.id,
+            "environment_id": self.server.id, "db_type": "local_pg",
+            "instance_id": self.inst_b.id, "ec2_instance_id": self.machine.id})
+
+    # --- guards levantados --------------------------------------------
+    def test_guards_backup_restore_levantados(self):
+        d = type(self.server).LEGACY_FLOW_UNBLOCKED_IN
+        self.assertNotIn("backup", d)
+        self.assertNotIn("restore", d)
+        self.assertIn("staging", d)   # el que sigue
+
+    # --- backup: filestore y conf por instancia -----------------------
+    def test_backup_paths_por_instancia(self):
+        conf_a, fs_a = self.server._backup_instance_paths(self.db_a)
+        self.assertEqual(conf_a, "/etc/odoo/cliente-a.conf")
+        self.assertEqual(fs_a, "/opt/pcm/instances/cliente-a/data/filestore")
+        conf_b, fs_b = self.server._backup_instance_paths(self.db_b)
+        self.assertEqual(conf_b, "/etc/odoo/cliente-b.conf")
+        self.assertEqual(fs_b, "/opt/pcm/instances/cliente-b/data/filestore")
+
+    def test_backup_script_usa_filestore_del_slug(self):
+        script = self.server._build_backup_script(
+            "db_b", "pcm-bucket", "k.dump", "kf.tar.gz",
+            conf_path="/etc/odoo/cliente-b.conf",
+            filestore_base="/opt/pcm/instances/cliente-b/data/filestore")
+        self.assertIn("/opt/pcm/instances/cliente-b/data/filestore", script)
+        self.assertNotIn("/opt/odoo/.local", script)
+
+    def test_backup_rds_lee_conf_de_la_instancia(self):
+        script = self.server._build_backup_script(
+            "db_b", "pcm-bucket", "k", "kf", rds_endpoint="x.rds.aws",
+            conf_path="/etc/odoo/cliente-b.conf",
+            filestore_base="/opt/pcm/instances/cliente-b/data/filestore")
+        self.assertIn("/etc/odoo/cliente-b.conf", script)
+        self.assertNotIn("/etc/odoo/odoo.conf", script)
+
+    def test_backup_gestionado_en_multi_ya_no_se_bloquea(self):
+        # Antes bloqueaba; ahora corre y respalda cada base con SU filestore.
+        fake = mock.Mock()
+        fake.run_script.return_value = {
+            "status": "Success",
+            "stdout": "PCM_DUMP_SIZE_BYTES=10\nPCM_FS_SIZE_BYTES=5\nPCM_BACKUP_OK"}
+        with mock.patch.object(aws_s3.AwsS3Service, "ensure_bucket"), \
+                mock.patch.object(aws_s3.AwsS3Service, "put_lifecycle_rule"), \
+                mock.patch.object(type(self.machine), "_get_ssm_service",
+                                  return_value=fake):
+            ok = self.server.job_run_backup()
+        self.assertTrue(ok)
+        scripts = [c[0][1] for c in fake.run_script.call_args_list]
+        joined = "\n".join(scripts)
+        # Cada base respaldada con el filestore de SU slug.
+        self.assertIn("/opt/pcm/instances/cliente-a/data/filestore", joined)
+        self.assertIn("/opt/pcm/instances/cliente-b/data/filestore", joined)
+
+    # --- restore: unit/pg_user/filestore por instancia ----------------
+    def _backup_rec(self, db):
+        rec = self.env["primate.cloud.backup"].create({
+            "name": "bk", "environment_id": self.server.id,
+            "database_id": db.id, "backup_type": "pcm_dump",
+            "s3_bucket": "pcm-bucket", "s3_key": "k.dump",
+            "s3_filestore_key": "kf.tar.gz", "size_mb": 5})
+        rec.write({"state": "completed"})
+        return rec
+
+    def test_restore_script_para_la_unit_y_filestore_del_destino(self):
+        script = self.server._build_backup_restore_script(
+            "db_b", self._backup_rec(self.db_b), True, self.inst_b)
+        self.assertIn("systemctl stop odoo-cliente-b", script)
+        self.assertIn("systemctl start odoo-cliente-b", script)
+        self.assertIn("createdb -O odoo_cliente_b", script)
+        self.assertIn("/opt/pcm/instances/cliente-b/data/filestore/db_b", script)
+        # NUNCA la unit ni el filestore de A.
+        self.assertNotIn("cliente-a", script)
+        self.assertNotIn("stop odoo\n", script)
+
+    def test_resolve_restore_instance(self):
+        # explícita gana.
+        self.assertEqual(
+            self.server._resolve_restore_instance(self.inst_b.id), self.inst_b)
+        # por la BD destino.
+        self.assertEqual(
+            self.server._resolve_restore_instance(None, target_db=self.db_a),
+            self.inst_a)
+        # ambiguo sin pista → vacío (el job falla claro).
+        self.assertFalse(
+            self.server._resolve_restore_instance(None, target_db=None))
+
+    def test_restore_multi_sin_instancia_resoluble_falla_claro(self):
+        # Server multi, db_name nuevo, sin odoo_instance_id → no adivina.
+        rec = self._backup_rec(self.db_a)
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value={"key": "k"}):
+            ok = self.server.job_restore_backup({
+                "backup_id": rec.id, "db_name": "nueva_db",
+                "instance_id": self.machine.id, "pre_backup": False})
+        self.assertFalse(ok)
+        log = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "backup_restore"), ("result", "=", "failed")],
+            limit=1, order="id desc")
+        self.assertIn("inequívoca", log.error_message)
+
+    def test_restore_multi_con_instancia_explicita_corre(self):
+        rec = self._backup_rec(self.db_b)
+        fake = mock.Mock()
+        fake.run_script.return_value = {
+            "status": "Success", "stdout": "PCM_DROP_STARTED\nPCM_RESTORE_OK"}
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value={"key": "k"}), \
+                mock.patch.object(type(self.server), "_staging_neutralize"), \
+                mock.patch.object(type(self.machine), "_get_ssm_service",
+                                  return_value=fake):
+            ok = self.server.job_restore_backup({
+                "backup_id": rec.id, "db_name": "db_b",
+                "instance_id": self.machine.id, "pre_backup": False,
+                "odoo_instance_id": self.inst_b.id})
+        self.assertTrue(ok)
+        script = fake.run_script.call_args[0][1]
+        self.assertIn("systemctl stop odoo-cliente-b", script)
+
+    def test_backup_base_sin_instance_id_en_multi_falla_claro(self):
+        # BUG (revisión del usuario): el fallback a primaria haría que el
+        # backup de una base sin instance_id tome el filestore de A. En multi
+        # → falla claro (registro failed), NUNCA cae a la primaria.
+        db_suelta = self.env["primate.cloud.database"].create({
+            "name": "db_suelta", "account_id": self.account.id,
+            "environment_id": self.server.id, "db_type": "local_pg",
+            "ec2_instance_id": self.machine.id})
+        db_suelta.instance_id = False   # explícitamente sin instancia
+        # _backup_instance_paths se niega a adivinar.
+        with self.assertRaises(UserError):
+            self.server._backup_instance_paths(db_suelta)
+        # Y el job marca ESE backup failed sin tumbar el resto ni tocar SSM
+        # con paths ajenos.
+        rec = self.server._run_database_backup(
+            db_suelta, self.policy, "pcm-bucket", "p", "us-east-1")
+        self.assertEqual(rec.state, "failed")
+        self.assertIn("otro cliente", rec.error_message)
+
+    def test_backup_instance_paths_legacy_puro_si_cae_a_primaria(self):
+        # En legacy PURO (una sola instancia) el fallback a primaria es seguro.
+        legacy = self.env["primate.cloud.environment"].create({
+            "name": "Legacy", "project_id": self.proj_a.id,
+            "env_type": "production", "odoo_version": "19"})
+        machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "ml", "account_id": self.account.id,
+            "aws_instance_id": "i-leg", "instance_state": "running",
+            "region": "us-east-1", "environment_id": legacy.id})
+        legacy.ec2_instance_id = machine
+        db = self.env["primate.cloud.database"].create({
+            "name": "leg_db", "account_id": self.account.id,
+            "environment_id": legacy.id, "db_type": "local_pg"})
+        db.instance_id = False
+        conf, fs = legacy._backup_instance_paths(db)
+        self.assertEqual(conf, "/etc/odoo/odoo.conf")
+        self.assertEqual(fs, "/opt/odoo/.local/share/Odoo/filestore")
+
+    def test_build_backup_script_exige_paths(self):
+        # BUG #2 (trampa workers=0): sin conf_path/filestore_base la firma
+        # revienta — no filtra paths legacy en silencio.
+        with self.assertRaises(TypeError):
+            self.server._build_backup_script("db", "b", "k", "kf")
+
+    def test_pre_backup_del_restore_resuelve_paths_por_instancia(self):
+        # #3 (revisión del usuario): el pre-backup es la RED de seguridad del
+        # restore; si tomara el filestore equivocado, la recuperación
+        # restauraría datos de otro cliente. Con pre_backup=True el ejecutor
+        # (reuso de _run_database_backup) usa el filestore del SLUG destino.
+        rec = self._backup_rec(self.db_b)
+        fake = mock.Mock()
+        fake.run_script.return_value = {
+            "status": "Success",
+            "stdout": ("PCM_DUMP_SIZE_BYTES=1\nPCM_FS_SIZE_BYTES=1\n"
+                       "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_RESTORE_OK")}
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value={"key": "k"}), \
+                mock.patch.object(type(self.server), "_staging_neutralize"), \
+                mock.patch.object(type(self.machine), "_get_ssm_service",
+                                  return_value=fake):
+            ok = self.server.job_restore_backup({
+                "backup_id": rec.id, "db_name": "db_b",
+                "instance_id": self.machine.id, "pre_backup": True,
+                "odoo_instance_id": self.inst_b.id})
+        self.assertTrue(ok)
+        # Entre los scripts corridos, el del pre-backup lleva el filestore de B.
+        joined = "\n---\n".join(c[0][1] for c in fake.run_script.call_args_list)
+        self.assertIn("/opt/pcm/instances/cliente-b/data/filestore", joined)
+        self.assertNotIn("cliente-a", joined)
+        # Se registró un backup con propósito pre_restore de db_b.
+        pre = self.env["primate.cloud.backup"].search(
+            [("purpose", "=", "pre_restore"), ("database_id", "=", self.db_b.id)])
+        self.assertTrue(pre)

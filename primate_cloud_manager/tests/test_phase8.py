@@ -747,7 +747,7 @@ class TestManagedBackups(TransactionCase):
     # --- Script de backup (decisiones del Bloque 3) ---
     def test_script_streaming_sin_credenciales(self):
         script = self.Env._build_backup_script(
-            "forum", "bucket", "p/forum/x.dump", "p/forum/x-filestore.tar.gz"
+            "forum", "bucket", "p/forum/x.dump", "p/forum/x-filestore.tar.gz", conf_path="/etc/odoo/odoo.conf", filestore_base="/opt/odoo/.local/share/Odoo/filestore"
         )
         self.assertIn("set -euo pipefail", script)
         # Guard de aws CLI (hallazgo de la prueba real: la AMI no lo trae).
@@ -768,7 +768,7 @@ class TestManagedBackups(TransactionCase):
         """SSM ejecuta con dash (sin pipefail): backup y restore van envueltos
         en un heredoc de bash. Hallazgo de la prueba real de Fase 8."""
         Env = self.env["primate.cloud.environment"]
-        backup_script = Env._build_backup_script("forum", "b", "k", "kf")
+        backup_script = Env._build_backup_script("forum", "b", "k", "kf", conf_path="/etc/odoo/odoo.conf", filestore_base="/opt/odoo/.local/share/Odoo/filestore")
         self.assertTrue(backup_script.startswith("bash <<'PCM_BASH_EOF'"))
         self.assertTrue(backup_script.rstrip().endswith("PCM_BASH_EOF"))
         self.assertIn("set -euo pipefail", backup_script)
@@ -1146,7 +1146,7 @@ class TestBackupRestore(TransactionCase):
     # --- Script (golden, orden aprobado) ---
     def test_script_orden_stop_terminate_drop(self):
         script = self.env["primate.cloud.environment"] \
-            ._build_backup_restore_script("forum_stg", self.backup, True)
+            ._build_backup_restore_script("forum_stg", self.backup, True, self.staging.primary_instance_id)
         stop = script.index("systemctl stop odoo")
         terminate = script.index("pg_terminate_backend")
         drop = script.index("dropdb --if-exists")
@@ -1172,7 +1172,7 @@ class TestBackupRestore(TransactionCase):
         no solo en el camino feliz: la EC2 puede hospedar más bases y un
         restore fallido no puede dejar el servicio abajo para todas."""
         script = self.env["primate.cloud.environment"] \
-            ._build_backup_restore_script("forum_stg", self.backup, True)
+            ._build_backup_restore_script("forum_stg", self.backup, True, self.staging.primary_instance_id)
         restart_trap = script.index("trap 'systemctl start odoo || true;")
         stop = script.index("systemctl stop odoo")
         drop = script.index("dropdb --if-exists")
@@ -1225,13 +1225,13 @@ class TestBackupRestore(TransactionCase):
 
     def test_restore_script_corre_bajo_bash(self):
         script = self.env["primate.cloud.environment"] \
-            ._build_backup_restore_script("forum_stg", self.backup, True)
+            ._build_backup_restore_script("forum_stg", self.backup, True, self.staging.primary_instance_id)
         self.assertTrue(script.startswith("bash <<'PCM_BASH_EOF'"))
         self.assertTrue(script.rstrip().endswith("PCM_BASH_EOF"))
 
     def test_script_sin_filestore(self):
         script = self.env["primate.cloud.environment"] \
-            ._build_backup_restore_script("forum_stg", self.backup, False)
+            ._build_backup_restore_script("forum_stg", self.backup, False, self.staging.primary_instance_id)
         self.assertNotIn("tar -xzf", script)
         self.assertIn("PCM_RESTORE_OK", script)
 
@@ -1424,7 +1424,7 @@ class TestStagingInstanceAware(TransactionCase):
     def test_script_rds_credenciales_in_situ(self):
         script = self.Env._build_backup_script(
             "forum", "bucket", "k.dump", "k-fs.tar.gz",
-            rds_endpoint="forum.abc.us-east-1.rds.amazonaws.com",
+            rds_endpoint="forum.abc.us-east-1.rds.amazonaws.com", conf_path="/etc/odoo/odoo.conf", filestore_base="/opt/odoo/.local/share/Odoo/filestore",
         )
         # El dump apunta al endpoint con credenciales leídas del odoo.conf.
         self.assertIn("-h forum.abc.us-east-1.rds.amazonaws.com", script)
@@ -1439,7 +1439,7 @@ class TestStagingInstanceAware(TransactionCase):
         self.assertIn("| aws s3 cp - s3://bucket/k.dump", script)
 
     def test_script_local_sin_modo_rds(self):
-        script = self.Env._build_backup_script("forum", "bucket", "k", "kf")
+        script = self.Env._build_backup_script("forum", "bucket", "k", "kf", conf_path="/etc/odoo/odoo.conf", filestore_base="/opt/odoo/.local/share/Odoo/filestore")
         self.assertIn("sudo -u postgres pg_dump", script)
         self.assertNotIn("PGPASSWORD", script)
 
