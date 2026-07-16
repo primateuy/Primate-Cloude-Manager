@@ -65,9 +65,13 @@
                                     onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
                     <ServidorDetalle t-elif="current.type === 'serverDetail'"
                                      serverId="current.resId"
-                                     initialTab="current.tab"
-                                     onTabChange="(t) => this.setDetailTab(t)"
-                                     onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
+                                     onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"
+                                     onOpenInstance="(id, n) => this.openRecord('primate.cloud.instance', id, n)"/>
+                    <InstanciaDetalle t-elif="current.type === 'instanceDetail'"
+                                      instanceId="current.resId"
+                                      initialTab="current.tab"
+                                      onTabChange="(t) => this.setDetailTab(t)"
+                                      onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>
                     <BaseDatosDetalle t-elif="current.type === 'dbDetail'"
                                       recordId="current.resId"
                                       onOpenRecord="(m, i, n) => this.openRecord(m, i, n)"/>

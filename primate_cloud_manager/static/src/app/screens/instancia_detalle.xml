@@ -1,0 +1,392 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.InstanciaDetalle">
+        <div class="o_pcm_detalle">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+            <div t-elif="!d.id" class="o_pcm_card o_pcm_muted">No se encontró la instancia.</div>
+
+            <t t-else="">
+                <!-- Cabecera: instancia + cliente + servidor + estado -->
+                <div class="o_pcm_hero o_pcm_card">
+                    <div class="o_pcm_hero_head">
+                        <h1 t-out="d.name"/>
+                        <PcmStatusBadge value="d.state"
+                                        model="'primate.cloud.instance'"
+                                        field="'state'" label="d.state_label"/>
+                        <span class="o_pcm_chip" t-out="d.env_type_label"/>
+                        <span class="o_pcm_spacer"/>
+                    </div>
+                    <div class="o_pcm_hero_meta o_pcm_muted">
+                        <span t-if="d.project_name" class="o_pcm_link"
+                              t-on-click="() => this.openRecord('primate.cloud.project', d.project_id, d.project_name)">
+                            <i class="fa fa-briefcase"/> <t t-out="d.project_name"/>
+                        </span>
+                        <span t-if="d.server_machine_id" class="o_pcm_link"
+                              t-on-click="() => this.openRecord('primate.cloud.ec2.instance', d.server_machine_id, d.environment_name)">
+                            · <i class="fa fa-server"/> <t t-out="d.environment_name"/>
+                        </span>
+                        <a t-if="d.main_url" class="o_pcm_link" t-att-href="'https://' + d.main_url"
+                           target="_blank" rel="noopener"> · <i class="fa fa-link"/> <t t-out="d.main_url"/></a>
+                    </div>
+                    <!-- DNS pendiente (R4-B6.4): aviso + acceso por IP + reintento -->
+                    <div t-if="d.dns_pending" class="o_pcm_note o_pcm_dns_pending">
+                        <i class="fa fa-exclamation-triangle o_pcm_err"/>
+                        <b>DNS pendiente:</b> <t t-out="d.dns_pending.reason"/>
+                        <div class="o_pcm_mono o_pcm_muted" t-if="dnsCurlHint">
+                            Mientras tanto: <t t-out="dnsCurlHint"/>
+                        </div>
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_retry_dns')">
+                            <i class="fa fa-refresh"/> Crear DNS ahora
+                        </button>
+                    </div>
+                </div>
+
+                <div class="o_pcm_tabs">
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'dashboard' }"
+                            t-on-click="() => this.setTab('dashboard')">
+                        <i class="fa fa-tachometer"/> Instancia
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'logs' }"
+                            t-on-click="() => this.setTab('logs')">
+                        <i class="fa fa-file-text-o"/> Logs
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'backups' }"
+                            t-on-click="() => this.setTab('backups')">
+                        <i class="fa fa-database"/> Backups
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'addons' }"
+                            t-on-click="() => this.setTab('addons')">
+                        <i class="fa fa-puzzle-piece"/> Addons
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'config' }"
+                            t-on-click="() => this.setTab('config')">
+                        <i class="fa fa-cogs"/> Config
+                    </button>
+                </div>
+
+                <!-- ================= TAB: INSTANCIA ================= -->
+                <t t-if="state.tab === 'dashboard'">
+                    <div class="o_pcm_cols2">
+                        <div class="o_pcm_card">
+                            <h2>Odoo</h2>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Versión</span><span t-out="d.odoo_version ? ('Odoo ' + d.odoo_version) : '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Edición</span><span t-out="d.odoo_edition or '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Puerto HTTP</span><span class="o_pcm_mono" t-out="paths ? paths.http_port : '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Unit systemd</span><span class="o_pcm_mono" t-out="paths ? paths.service : '—'"/></div>
+                            <div class="o_pcm_kv">
+                                <span class="o_pcm_muted">Base de datos</span>
+                                <span t-if="d.database" class="o_pcm_link"
+                                      t-on-click="() => this.openRecord('primate.cloud.database', d.database.id, d.database.name)"
+                                      t-out="d.database.name"/>
+                                <span t-else="">—</span>
+                            </div>
+                        </div>
+                        <div class="o_pcm_card">
+                            <h2>Infraestructura</h2>
+                            <div class="o_pcm_kv">
+                                <span class="o_pcm_muted">Servidor</span>
+                                <span t-if="d.server_machine_id" class="o_pcm_link"
+                                      t-on-click="() => this.openRecord('primate.cloud.ec2.instance', d.server_machine_id, d.environment_name)"
+                                      t-out="d.environment_name"/>
+                                <span t-else="">—</span>
+                            </div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">IP del servidor</span><span class="o_pcm_mono" t-out="d.public_ip or '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Slug</span><span class="o_pcm_mono" t-out="d.slug or '—'"/></div>
+                            <div class="o_pcm_kv"><span class="o_pcm_muted">Aprovisionada por PCM</span><span t-out="d.provisioned_by_pcm ? 'Sí' : 'No'"/></div>
+                        </div>
+                    </div>
+
+                    <!-- Paths y comandos: RUTAS DEL BACKEND (no PCM_PATHS) -->
+                    <div class="o_pcm_card">
+                        <h2>Paths y comandos</h2>
+                        <t t-if="paths">
+                            <div class="o_pcm_cols2">
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Config</span><span class="o_pcm_mono" t-out="paths.conf"/></div>
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Intérprete Python</span><span class="o_pcm_mono" t-out="paths.python"/></div>
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Log</span><span class="o_pcm_mono" t-out="paths.logfile"/></div>
+                                <div class="o_pcm_kv"><span class="o_pcm_muted">Addons</span><span class="o_pcm_mono" t-out="paths.addons"/></div>
+                            </div>
+                            <div class="o_pcm_cmds">
+                                <div t-foreach="shellCommands" t-as="c" t-key="c.label" class="o_pcm_cmd">
+                                    <div class="o_pcm_cmd_head">
+                                        <span class="o_pcm_muted" t-out="c.label"/>
+                                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                                t-on-click="() => this.copy(c.cmd)">
+                                            <i class="fa fa-clipboard"/> Copiar
+                                        </button>
+                                    </div>
+                                    <pre class="o_pcm_mono o_pcm_cmd_body" t-out="c.cmd"/>
+                                </div>
+                            </div>
+                        </t>
+                        <div t-else="" class="o_pcm_muted">
+                            <i class="fa fa-question-circle"/>
+                            Desconocido (no aprovisionada por PCM). Los paths estándar no aplican
+                            a instancias importadas.
+                        </div>
+                    </div>
+
+                    <!-- Login as / impersonación (Bloque B5) -->
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Login as…</h2>
+                        <button class="o_pcm_btn" t-att-disabled="!d.server_running"
+                                t-on-click="() => this.toggleLoginAs()">
+                            <i class="fa fa-user-secret"/> Iniciar sesión como…
+                        </button>
+                    </div>
+                    <div class="o_pcm_card" t-if="loginas.open">
+                        <div class="o_pcm_actions">
+                            <select class="o_pcm_select" t-model="loginas.db">
+                                <option t-foreach="d.databases or []" t-as="db" t-key="db.id"
+                                        t-att-value="db.name" t-out="db.name"/>
+                            </select>
+                            <button class="o_pcm_btn" t-on-click="() => this.loadLoginAsUsers()">
+                                <i class="fa fa-users"/> Listar usuarios
+                            </button>
+                        </div>
+                        <div t-if="d.is_production" class="o_pcm_kv">
+                            <span class="o_pcm_err">PRODUCCIÓN — escribí el nombre del entorno para confirmar:</span>
+                            <input type="text" class="o_pcm_input"
+                                   t-att-placeholder="d.environment_real_name"
+                                   t-model="loginas.typedName"/>
+                        </div>
+                        <div t-if="loginas.loading" class="o_pcm_muted">Listando usuarios…</div>
+                        <div t-foreach="loginas.users" t-as="u" t-key="u.id" class="o_pcm_line">
+                            <div class="o_pcm_line_main">
+                                <span class="o_pcm_line_name" t-out="u.name"/>
+                                <span class="o_pcm_muted o_pcm_mono" t-out="u.login"/>
+                                <span t-if="u.is_admin" class="o_pcm_err"> · ADMIN</span>
+                            </div>
+                            <button class="o_pcm_btn o_pcm_btn_mini"
+                                    t-att-class="{ o_pcm_btn_danger: u.is_admin }"
+                                    t-on-click="() => this.doLoginAs(u)">
+                                <i class="fa fa-sign-in"/> Entrar
+                            </button>
+                        </div>
+                        <div class="o_pcm_muted o_pcm_note">
+                            <i class="fa fa-info-circle"/>
+                            Abre el Odoo del cliente ya logueado (sesión same-origin, sin leer la
+                            contraseña). Queda registrado en la auditoría de los dos lados.
+                        </div>
+                    </div>
+                </t>
+
+                <!-- ================= TAB: LOGS ================= -->
+                <t t-if="state.tab === 'logs'">
+                    <div class="o_pcm_card">
+                        <div class="o_pcm_actions">
+                            <select t-model="logs.source" class="o_pcm_select"
+                                    t-att-disabled="logs.streaming">
+                                <option value="odoo">Odoo</option>
+                                <option value="nginx">Nginx (servidor)</option>
+                                <option value="postgres">PostgreSQL (servidor)</option>
+                                <option value="os">Sistema (servidor)</option>
+                            </select>
+                            <select t-model.number="logs.lines" class="o_pcm_select">
+                                <option value="100">100 líneas</option>
+                                <option value="500">500 líneas</option>
+                                <option value="1000">1000 líneas</option>
+                            </select>
+                            <input type="text" t-model="logs.grep" class="o_pcm_input"
+                                   t-att-disabled="logs.streaming"
+                                   placeholder="Filtrar texto…"/>
+                            <button class="o_pcm_btn o_pcm_btn_accent"
+                                    t-att-disabled="!d.server_running or logs.loading or logs.streaming"
+                                    t-on-click="() => this.fetchLogs()">
+                                <i class="fa fa-download"/> Traer logs
+                            </button>
+                            <button class="o_pcm_btn"
+                                    t-att-class="{ o_pcm_btn_accent: logs.streaming }"
+                                    t-att-disabled="!d.server_running"
+                                    t-on-click="() => this.toggleStream()">
+                                <i t-att-class="logs.streaming ? 'fa fa-pause' : 'fa fa-play'"/>
+                                <t t-if="logs.streaming"> Pausar</t>
+                                <t t-else=""> En vivo</t>
+                            </button>
+                            <button class="o_pcm_btn" t-if="logs.text"
+                                    t-on-click="() => this.downloadLogs()">
+                                <i class="fa fa-file-text-o"/> Descargar
+                            </button>
+                        </div>
+                        <div class="o_pcm_muted" t-if="logs.streaming">
+                            <i class="fa fa-circle o_pcm_live_dot"/> En vivo — actualiza cada ~5 s
+                        </div>
+                        <div t-if="logs.loading" class="o_pcm_muted">Trayendo logs…</div>
+                        <pre t-elif="logs.text" class="o_pcm_logs" t-out="logs.text"/>
+                        <div t-else="" class="o_pcm_muted">Elegí una fuente y traé los logs, o poné "En vivo".</div>
+                    </div>
+                </t>
+
+                <!-- ================= TAB: BACKUPS ================= -->
+                <t t-if="state.tab === 'backups'">
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Backups de esta instancia</h2>
+                        <button class="o_pcm_btn o_pcm_btn_accent"
+                                t-att-disabled="!d.environment_id"
+                                t-on-click="() => this.backupNow()">
+                            <i class="fa fa-database"/> Respaldar ahora
+                        </button>
+                    </div>
+                    <div class="o_pcm_card">
+                        <div t-if="d.backups and d.backups.length">
+                            <div t-foreach="d.backups" t-as="b" t-key="b.id" class="o_pcm_line">
+                                <div class="o_pcm_line_main">
+                                    <span class="o_pcm_line_name" t-out="b.name"/>
+                                    <span class="o_pcm_muted">
+                                        <t t-out="b.database_name"/> ·
+                                        <t t-out="b.purpose_label"/> ·
+                                        <t t-out="b.backup_date"/> ·
+                                        <t t-out="b.state_label"/>
+                                        <t t-if="b.size_mb"> · <t t-out="b.size_mb"/> MB</t>
+                                    </span>
+                                </div>
+                                <button t-if="b.state === 'completed'" class="o_pcm_btn o_pcm_btn_mini"
+                                        t-on-click="() => this.restoreBackup(b.id)">
+                                    <i class="fa fa-undo"/> Restaurar…
+                                </button>
+                            </div>
+                        </div>
+                        <div t-else="" class="o_pcm_muted">Sin backups para la base de esta instancia.</div>
+                    </div>
+                </t>
+
+                <!-- ================= TAB: ADDONS ================= -->
+                <t t-if="state.tab === 'addons'">
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Addons / repositorios de la instancia</h2>
+                        <button class="o_pcm_btn o_pcm_btn_accent"
+                                t-att-disabled="!d.server_running"
+                                t-on-click="() => this.toggleAddonForm()">
+                            <i class="fa fa-plus"/> Agregar addon
+                        </button>
+                    </div>
+
+                    <div class="o_pcm_card" t-if="addon.open">
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">URL GitHub</span>
+                            <input type="text" class="o_pcm_input" t-model="addon.github_url"
+                                   placeholder="https://github.com/org/repo"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Rama</span>
+                            <input type="text" class="o_pcm_input" t-model="addon.configured_branch"
+                                   placeholder="19.0 (opcional)"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span>
+                            <select class="o_pcm_select" t-model="addon.repo_type">
+                                <option value="custom_client">Custom Cliente</option>
+                                <option value="custom_primate">Custom Primate</option>
+                                <option value="oca">OCA</option>
+                                <option value="odoo_enterprise">Odoo Enterprise</option>
+                            </select></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Token (repo privado)</span>
+                            <input type="password" class="o_pcm_input" t-model="addon.github_token"
+                                   placeholder="opcional; nunca se guarda en claro"/></div>
+                        <div class="o_pcm_actions">
+                            <button class="o_pcm_btn o_pcm_btn_accent"
+                                    t-att-disabled="addon.saving"
+                                    t-on-click="() => this.submitAddon()">
+                                <i class="fa fa-cloud-download"/> Clonar y registrar
+                            </button>
+                            <button class="o_pcm_btn" t-on-click="() => this.toggleAddonForm()">Cancelar</button>
+                        </div>
+                        <div class="o_pcm_muted o_pcm_note">
+                            <i class="fa fa-info-circle"/>
+                            Se clona en el addons_dir de ESTA instancia y se registra. El token de
+                            un repo privado se inyecta por SSM sin quedar en la URL ni persistir.
+                        </div>
+                    </div>
+                    <div class="o_pcm_card">
+                        <div t-if="d.repositories and d.repositories.length">
+                            <div t-foreach="d.repositories" t-as="r" t-key="r.id" class="o_pcm_line">
+                                <div class="o_pcm_line_main o_pcm_line_click"
+                                     t-on-click="() => this.openRecord('primate.cloud.repository', r.id, r.name)">
+                                    <span class="o_pcm_line_name" t-out="r.name"/>
+                                    <span class="o_pcm_muted">
+                                        <t t-out="r.repo_type_label"/>
+                                        <t t-if="r.configured_branch"> · <t t-out="r.configured_branch"/></t>
+                                        <t t-if="r.current_commit"> · <span class="o_pcm_mono" t-out="r.current_commit"/></t>
+                                        · <t t-out="r.sync_state_label"/>
+                                    </span>
+                                </div>
+                                <div class="o_pcm_actions">
+                                    <button class="o_pcm_btn o_pcm_btn_mini"
+                                            t-on-click="() => this.runOn('primate.cloud.repository', r.id, 'action_check_sync_state')">
+                                        <i class="fa fa-refresh"/> Verificar
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div t-else="" class="o_pcm_muted">Sin repositorios registrados en esta instancia.</div>
+                    </div>
+                </t>
+
+                <!-- ================= TAB: CONFIG ================= -->
+                <t t-if="state.tab === 'config'">
+                    <div t-if="config.loading" class="o_pcm_card o_pcm_muted">Leyendo odoo.conf…</div>
+                    <div t-elif="config.status !== 'ok'" class="o_pcm_card o_pcm_muted">
+                        <i class="fa fa-info-circle"/> <t t-out="config.error"/>
+                    </div>
+                    <t t-else="">
+                        <div class="o_pcm_section_head o_pcm_section_bar">
+                            <h2>Parámetros editables</h2>
+                            <button class="o_pcm_btn" t-on-click="() => this.loadConfig()">
+                                <i class="fa fa-refresh"/> Recargar
+                            </button>
+                        </div>
+                        <div class="o_pcm_card">
+                            <div t-foreach="config.meta" t-as="m" t-key="m.key" class="o_pcm_kv o_pcm_cfg_row">
+                                <span class="o_pcm_muted o_pcm_mono" t-out="m.key"/>
+                                <input t-if="m.type === 'bool'" type="checkbox"
+                                       t-att-checked="String(config.work[m.key]) === 'True'"
+                                       t-on-change="(ev) => this.setConfigField(m.key, ev.target.checked ? 'True' : 'False')"/>
+                                <select t-elif="m.type === 'enum'" class="o_pcm_select"
+                                        t-on-change="(ev) => this.setConfigField(m.key, ev.target.value)">
+                                    <option t-foreach="m.options" t-as="opt" t-key="opt"
+                                            t-att-value="opt" t-att-selected="String(config.work[m.key]) === opt"
+                                            t-out="opt"/>
+                                </select>
+                                <input t-else="" type="number" class="o_pcm_input"
+                                       t-att-min="m.min" t-att-max="m.max"
+                                       t-att-value="config.work[m.key]"
+                                       t-on-input="(ev) => this.setConfigField(m.key, ev.target.value)"/>
+                            </div>
+                        </div>
+
+                        <div class="o_pcm_section_head o_pcm_section_bar"><h2>Solo lectura</h2></div>
+                        <div class="o_pcm_card">
+                            <div t-foreach="Object.keys(config.readonly)" t-as="k" t-key="k" class="o_pcm_kv">
+                                <span class="o_pcm_muted o_pcm_mono" t-out="k"/>
+                                <span class="o_pcm_mono" t-out="config.readonly[k]"/>
+                            </div>
+                            <div class="o_pcm_muted o_pcm_note">
+                                <i class="fa fa-info-circle"/>
+                                Estos parámetros no se editan en v1. db_password / admin_passwd no se muestran.
+                            </div>
+                        </div>
+
+                        <div class="o_pcm_card">
+                            <div class="o_pcm_note" t-if="hasConfigChanges">
+                                <i class="fa fa-exclamation-triangle o_pcm_err"/>
+                                Guardar reescribe el odoo.conf y <b>reinicia esta instancia</b> (unos segundos de corte).
+                            </div>
+                            <div t-if="config.isProduction and hasConfigChanges" class="o_pcm_kv">
+                                <span class="o_pcm_err">PRODUCCIÓN — escribí el nombre del entorno para confirmar:</span>
+                                <input type="text" class="o_pcm_input"
+                                       t-att-placeholder="config.envName"
+                                       t-model="config.typedName"/>
+                            </div>
+                            <div class="o_pcm_actions">
+                                <button class="o_pcm_btn o_pcm_btn_accent"
+                                        t-att-disabled="!canSaveConfig"
+                                        t-on-click="() => this.saveConfig()">
+                                    <i class="fa fa-save"/> Guardar y reiniciar
+                                </button>
+                                <span class="o_pcm_muted" t-if="!hasConfigChanges">Sin cambios.</span>
+                            </div>
+                        </div>
+                    </t>
+                </t>
+            </t>
+        </div>
+    </t>
+
+</templates>

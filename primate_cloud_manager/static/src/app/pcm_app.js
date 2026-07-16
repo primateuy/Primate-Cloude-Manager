@@ -13,6 +13,7 @@ import { Costos } from "./screens/costos";
 import { Entornos } from "./screens/entornos";
 import { EntornoDetalle } from "./screens/entorno_detalle";
 import { ServidorDetalle } from "./screens/servidor_detalle";
+import { InstanciaDetalle } from "./screens/instancia_detalle";
 import { BaseDatosDetalle } from "./screens/base_datos_detalle";
 import { RepositorioDetalle } from "./screens/repositorio_detalle";
 import { DespliegueDetalle } from "./screens/despliegue_detalle";
@@ -33,6 +34,7 @@ export const ACCENT_PRESETS = {
 export const MODEL_LABELS = {
     "primate.cloud.environment": "Entorno",
     "primate.cloud.ec2.instance": "Servidor",
+    "primate.cloud.instance": "Instancia",
     "primate.cloud.database": "Base de datos",
     "primate.cloud.repository": "Repositorio",
     "primate.cloud.deployment": "Despliegue",
@@ -46,6 +48,7 @@ export const MODEL_LABELS = {
 export const DETAIL_TYPES = {
     "primate.cloud.environment": "envDetail",
     "primate.cloud.ec2.instance": "serverDetail",
+    "primate.cloud.instance": "instanceDetail",
     "primate.cloud.database": "dbDetail",
     "primate.cloud.repository": "repoDetail",
     "primate.cloud.deployment": "depDetail",
@@ -56,7 +59,8 @@ export const DETAIL_TYPES = {
 
 // Tipo de detalle -> prefijo corto para el hash de deep-link.
 const DETAIL_HASH = {
-    envDetail: "env", serverDetail: "srv", dbDetail: "db", repoDetail: "repo",
+    envDetail: "env", serverDetail: "srv", instanceDetail: "inst",
+    dbDetail: "db", repoDetail: "repo",
     depDetail: "dep", dnsDetail: "dns", accountDetail: "acc", projectDetail: "prj",
 };
 const HASH_DETAIL = Object.fromEntries(
@@ -106,7 +110,7 @@ const NAV_GROUPS = [
 export class PcmApp extends Component {
     static template = "primate_cloud_manager.App";
     static components = {
-        Inicio, Costos, Entornos, EntornoDetalle, ServidorDetalle,
+        Inicio, Costos, Entornos, EntornoDetalle, ServidorDetalle, InstanciaDetalle,
         BaseDatosDetalle, RepositorioDetalle, DespliegueDetalle, DnsDetalle,
         CuentaDetalle, ProyectoDetalle, View, PcmWizardDrawer,
     };

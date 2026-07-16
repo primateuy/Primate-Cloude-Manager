@@ -1229,3 +1229,104 @@ class TestR4B6Shims(TransactionCase):
         # El JS puente pasa el id explícito de la primaria (no el default).
         data = self.Dash.get_server_detail(self.machine.id)
         self.assertEqual(data["primary_instance_id"], self.prim.id)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR4B6Pantallas(TransactionCase):
+    """R4-B6.2: serializer de instancia (rutas del backend) + pantalla de
+    servidor sin acciones por-instancia (el puente JS murió, shim A)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.proj_a = self.env["primate.cloud.project"].create(
+            {"name": "Cliente A", "account_id": self.account.id})
+        self.proj_b = self.env["primate.cloud.project"].create(
+            {"name": "Cliente B", "account_id": self.account.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "Compartido", "project_id": self.proj_a.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community"})
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id, "aws_instance_id": "i-p",
+            "instance_state": "running", "region": "us-east-1",
+            "environment_id": self.server.id, "provisioned_by_pcm": True,
+            "public_ip": "1.2.3.4"})
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        self.inst_a = self.server.primary_instance_id
+        self.inst_a.write({"slug": "cliente-a", "state": "active",
+                           "main_url": "a.pcm.test"})
+        self.server._materialize_multiodoo_layout(
+            self.inst_a, {"db_mode": "local_pg"})
+        self.inst_b = self.server._create_instance_with_ports({
+            "name": "Odoo B", "project_id": self.proj_b.id, "slug": "cliente-b",
+            "odoo_version": "19", "state": "active", "env_type": "staging",
+            "main_url": "b.pcm.test"})
+        self.server._materialize_multiodoo_layout(
+            self.inst_b, {"db_mode": "local_pg"})
+        self.Dash = self.env["primate.cloud.dashboard"]
+
+    # --- serializer de instancia: RUTAS del backend (shim A muerto) ---
+    def test_instance_detail_rutas_del_backend(self):
+        data = self.Dash.get_odoo_instance_detail(self.inst_b.id)
+        self.assertEqual(data["id"], self.inst_b.id)
+        # Las rutas salen del slug de ESTA instancia (no PCM_PATHS legacy).
+        self.assertEqual(data["paths"]["conf"], "/etc/odoo/cliente-b.conf")
+        self.assertEqual(data["paths"]["service"], "odoo-cliente-b")
+        self.assertEqual(data["paths"]["addons"],
+                         "/opt/pcm/instances/cliente-b/addons")
+        self.assertIn("/opt/pcm/runtime/odoo-19", data["paths"]["python"])
+        # Cliente + servidor + env_type de la instancia.
+        self.assertEqual(data["project_name"], self.proj_b.display_name)
+        self.assertEqual(data["env_type"], "staging")
+        self.assertEqual(data["server_machine_id"], self.machine.id)
+
+    def test_instance_detail_is_production_por_instancia(self):
+        # inst_a es production, inst_b staging — cada una su verdad.
+        self.assertTrue(
+            self.Dash.get_odoo_instance_detail(self.inst_a.id)["is_production"])
+        self.assertFalse(
+            self.Dash.get_odoo_instance_detail(self.inst_b.id)["is_production"])
+
+    # --- serializer de servidor: lista de instancias + resumen env_type ---
+    def test_server_detail_lista_instancias_con_cliente(self):
+        data = self.Dash.get_server_detail(self.machine.id)
+        hosted = {h["name"]: h for h in data["hosted_instances"]}
+        self.assertIn("Odoo B", hosted)
+        self.assertEqual(hosted["Odoo B"]["project_name"], self.proj_b.display_name)
+        self.assertEqual(hosted["Odoo B"]["env_type"], "staging")
+
+    def test_server_detail_resumen_env_type_no_miente(self):
+        # D-B6.1: el servidor NO tiene env_type; muestra la MEZCLA honesta.
+        data = self.Dash.get_server_detail(self.machine.id)
+        self.assertIn("producción", data["hosted_summary"].lower())
+        self.assertIn("staging", data["hosted_summary"].lower())
+        self.assertTrue(data["hosts_production"])
+
+    # --- inverso: la pantalla de servidor NO expone acciones por-instancia ---
+    def test_pantalla_servidor_sin_acciones_por_instancia(self):
+        import os
+        base = os.path.dirname(os.path.dirname(__file__))
+        srv_js = open(os.path.join(
+            base, "static/src/app/screens/servidor_detalle.js")).read()
+        # El puente murió: cero wrappers por-instancia y cero PCM_PATHS.
+        for prohibido in ("get_odoo_config", "odoo_login_as", "get_odoo_logs",
+                          "add_odoo_addon", "save_odoo_config",
+                          "primary_instance_id", "PCM_PATHS"):
+            self.assertNotIn(prohibido, srv_js,
+                             "la pantalla de servidor no debe referenciar %s"
+                             % prohibido)
+
+    def test_pcm_paths_constante_no_existe_en_ninguna_pantalla(self):
+        # Shim A muerto: PCM_PATHS ya no es una constante hardcodeada.
+        import os, re
+        base = os.path.dirname(os.path.dirname(__file__))
+        for screen in ("servidor_detalle.js", "instancia_detalle.js"):
+            src = open(os.path.join(
+                base, "static/src/app/screens", screen)).read()
+            self.assertIsNone(
+                re.search(r"const\s+PCM_PATHS\s*=", src),
+                "PCM_PATHS no debe existir como constante en %s" % screen)

@@ -377,8 +377,35 @@ class PrimateCloudDashboard(models.AbstractModel):
         # Los repos cuelgan del ENTORNO (no de la instancia): en un entorno de una
         # instancia es equivalente; se muestran los del entorno con nota en UI.
         repos = Repo.search([("environment_id", "=", env.id)]) if env else Repo.browse()
+        # R4-B6: instancias hospedadas (cada una con su CLIENTE y su env_type —
+        # la verdad vive en la instancia, D-B6.1) + resumen honesto. El servidor
+        # NO tiene "producción": es propiedad de cada instancia.
+        Inst = self.env["primate.cloud.instance"]
+        env_type_labels = dict(Inst._fields["env_type"].selection)
+        inst_state_labels = dict(Inst._fields["state"].selection)
+        hosted = env.instance_ids.filtered(
+            lambda i: i.state != "archived") if env else Inst.browse()
+        env_type_counts = {}
+        for i in hosted:
+            env_type_counts[i.env_type] = env_type_counts.get(i.env_type, 0) + 1
+        hosted_summary = " · ".join(
+            "%d %s" % (n, env_type_labels.get(t, t))
+            for t, n in sorted(env_type_counts.items()))
         return {
             "id": inst.id,
+            "hosted_instances": [{
+                "id": i.id, "name": i.name,
+                "env_type": i.env_type,
+                "env_type_label": env_type_labels.get(i.env_type, ""),
+                "state": i.state,
+                "state_label": inst_state_labels.get(i.state, i.state or ""),
+                "project_id": i.project_id.id,
+                "project_name": i.project_id.display_name or "",
+                "main_url": i.main_url or "",
+                "http_port": i.http_port or 0,
+            } for i in hosted],
+            "hosted_summary": hosted_summary,
+            "hosts_production": bool(env_type_counts.get("production")),
             "name": inst.display_name,
             "state": inst.instance_state,
             "state_label": state_labels.get(inst.instance_state, inst.instance_state or ""),
@@ -447,6 +474,105 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "ram_available": False,
                 "disk_available": False,
             },
+        }
+
+    @api.model
+    def get_odoo_instance_detail(self, instance_id):
+        """Detalle de UNA instancia Odoo para su pantalla (R4-B6, read-only).
+
+        El panel B (config/logs/addons/login-as/backups) SIEMPRE fue de la
+        instancia aunque colgara de la máquina; acá por fin lo refleja. Las
+        **rutas salen del backend** (conf/service/runtime/log/addons del slug)
+        — reemplazan el ``PCM_PATHS`` hardcodeado del JS (shim A muerto).
+        """
+        inst = self.env["primate.cloud.instance"].browse(instance_id).exists()
+        if not inst:
+            return {}
+        Db = self.env["primate.cloud.database"]
+        Repo = self.env["primate.cloud.repository"]
+        Backup = self.env["primate.cloud.backup"]
+        Inst = self.env["primate.cloud.instance"]
+        env = inst.environment_id
+        machine = inst._machine()
+        env_type_labels = dict(Inst._fields["env_type"].selection)
+        edition_labels = dict(Inst._fields["odoo_edition"].selection)
+        db_type_labels = dict(Db._fields["db_type"].selection)
+        repo_type_labels = dict(Repo._fields["repo_type"].selection)
+        sync_labels = dict(Repo._fields["sync_state"].selection)
+        bkp_state_labels = dict(Backup._fields["state"].selection)
+        bkp_purpose_labels = dict(Backup._fields["purpose"].selection)
+        state_labels = dict(Inst._fields["state"].selection)
+        databases = inst.database_id | Db.search(
+            [("instance_id", "=", inst.id)])
+        backups = Backup.search(
+            [("database_id", "in", databases.ids)],
+            order="backup_date desc, id desc", limit=15
+        ) if databases else Backup.browse()
+        repos = Repo.search([("instance_id", "=", inst.id)])
+        return {
+            "id": inst.id,
+            "name": inst.display_name,
+            "state": inst.state,
+            "state_label": state_labels.get(inst.state, inst.state or ""),
+            "env_type": inst.env_type,
+            "env_type_label": env_type_labels.get(inst.env_type, ""),
+            # is_production ES de la instancia (fricción por instancia, B5-audit).
+            "is_production": bool(inst.env_type == "production"),
+            "odoo_version": inst.odoo_version or "",
+            "odoo_edition": edition_labels.get(inst.odoo_edition, ""),
+            "main_url": inst.main_url or "",
+            "slug": inst.slug or "",
+            # Cliente (project) e infraestructura (servidor + máquina).
+            "project_id": inst.project_id.id,
+            "project_name": inst.project_id.display_name or "",
+            "environment_id": env.id,
+            "environment_name": env.display_name or "",
+            "environment_real_name": env.name or "",
+            "server_machine_id": machine.id if machine else False,
+            "server_running": bool(machine and machine.instance_state == "running"),
+            "provisioned_by_pcm": bool(machine and machine.provisioned_by_pcm),
+            "public_ip": machine.public_ip or "" if machine else "",
+            # RUTAS del backend (reemplazan PCM_PATHS): las del slug de ESTA
+            # instancia, no las legacy hardcodeadas.
+            "paths": {
+                "conf": inst.conf_path or "",
+                "service": inst.service_name or "",
+                "python": inst.python_bin or "",
+                "odoobin": inst.odoo_bin or "",
+                "logfile": inst.log_path or "",
+                "addons": inst.addons_dir or "",
+                "data": inst.data_dir or "",
+                "pg_user": inst.pg_user or "",
+                "http_port": inst.http_port or 0,
+            },
+            "database": {
+                "id": inst.database_id.id,
+                "name": inst.database_id.display_name or "",
+            } if inst.database_id else False,
+            "databases": [{
+                "id": db.id, "name": db.display_name,
+                "db_type_label": db_type_labels.get(db.db_type, db.db_type or ""),
+            } for db in databases],
+            "backups": [{
+                "id": b.id, "name": b.display_name,
+                "backup_date": fields.Datetime.to_string(b.backup_date) or "",
+                "state": b.state,
+                "state_label": bkp_state_labels.get(b.state, b.state or ""),
+                "purpose_label": bkp_purpose_labels.get(b.purpose, b.purpose or ""),
+                "size_mb": b.size_mb or 0.0,
+                "database_name": b.database_id.display_name or "",
+            } for b in backups],
+            "repositories": [{
+                "id": r.id, "name": r.display_name,
+                "repo_type_label": repo_type_labels.get(r.repo_type, r.repo_type or ""),
+                "configured_branch": r.configured_branch or "",
+                "current_commit": (r.current_commit or "")[:10],
+                "sync_state": r.sync_state,
+                "sync_state_label": sync_labels.get(r.sync_state, r.sync_state or ""),
+            } for r in repos],
+            # DNS best-effort (R4-B6.4): motivo del DNS pendiente si lo hay.
+            "dns_pending": inst._dns_pending_data() if hasattr(
+                inst, "_dns_pending_data") else False,
         }
 
     # ------------------------------------------------------------------
