@@ -813,11 +813,13 @@ class TestCostOverviewAndLogsPhase9(TransactionCase):
             data["pulled_at"], fields.Datetime.to_string(now))
 
     def test_get_instance_logs_instancia_detenida(self):
-        inst = self.env["primate.cloud.ec2.instance"].create({
+        self.env["primate.cloud.ec2.instance"].create({
             "name": "srv", "account_id": self.account.id,
             "environment_id": self.env_.id, "aws_instance_id": "i-1",
             "instance_state": "stopped", "region": "us-east-1"})
-        res = self.Dash.get_instance_logs(inst.id, "odoo")
+        # R4-B6: el wrapper recibe un id de primate.cloud.instance.
+        res = self.Dash.get_odoo_logs(
+            self.env_.primary_instance_id.id, "odoo")
         self.assertEqual(res["status"], "error")
 
     def test_fetch_logs_comando_sin_credenciales(self):
@@ -831,7 +833,8 @@ class TestCostOverviewAndLogsPhase9(TransactionCase):
         ssm.run_script.side_effect = lambda inst_id, cmd, **kw: (
             captured.update(cmd=cmd) or {"status": "Success", "stdout": "log"})
         with mock.patch.object(type(inst), "_get_ssm_service", return_value=ssm):
-            res = inst.fetch_logs("odoo", lines=100, grep="ERROR")
+            res = inst.fetch_logs("odoo", lines=100, grep="ERROR",
+                                  odoo_instance=self.env_.primary_instance_id)
         self.assertEqual(res["text"], "log")
         for forbidden in ("odoo.conf", "PGPASSWORD", "password", "db_password"):
             self.assertNotIn(forbidden, captured["cmd"])

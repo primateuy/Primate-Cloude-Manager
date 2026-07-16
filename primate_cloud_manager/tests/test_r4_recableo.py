@@ -234,7 +234,8 @@ class TestR4B2(TransactionCase):
                                return_value=fake_delay):
             # typed_name: el entorno es producción (fricción B3, se mantiene).
             self.machine.action_save_config({"workers": "2"}, "hash-x",
-                                            typed_name=self.server.name)
+                                            typed_name=self.server.name,
+                                            odoo_instance=self.prim)
         args, kwargs = fake_delay.job_save_config.call_args
         self.assertEqual(kwargs["instance_id"], self.prim.id)
 
@@ -358,7 +359,7 @@ class TestR4B2(TransactionCase):
 
     # --- probe por instancia ----------------------------------------------
     def test_runtime_probe_por_instancia(self):
-        cmd = self.machine._runtime_probe_cmd()
+        cmd = self.machine._runtime_probe_cmd(self.prim)
         self.assertIn("/opt/pcm/runtime/odoo-19/venv/bin/python3", cmd)
         self.assertIn("/opt/pcm/runtime/odoo-19/src/odoo-bin", cmd)
         self.assertIn("/etc/odoo/cliente-a.conf", cmd)
@@ -1140,3 +1141,91 @@ class TestEnvTypeFriction(TransactionCase):
         rec.instance_id = self.stg_primary
         rec._compute_delete_needs_ack()
         self.assertFalse(rec.delete_needs_ack)  # instancia staging → sin ack
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR4B6Shims(TransactionCase):
+    """R4-B6.1: retiro de shims B (wrappers por EC2-id) y C (default-primaria de
+    _panel_target). El inverso del patrón: los shims YA NO existen y todo camino
+    del panel declara la instancia explícita."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "P", "account_id": self.account.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "S", "project_id": self.project.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community"})
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id, "aws_instance_id": "i-6",
+            "instance_state": "running", "region": "us-east-1",
+            "environment_id": self.server.id, "provisioned_by_pcm": True})
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        self.prim = self.server.primary_instance_id
+        self.prim.write({"slug": "a", "state": "active"})
+        self.server._materialize_multiodoo_layout(self.prim, {"db_mode": "local_pg"})
+        self.inst_b = self.server._create_instance_with_ports({
+            "name": "B", "project_id": self.project.id, "slug": "b",
+            "odoo_version": "19", "state": "active"})
+        self.server._materialize_multiodoo_layout(self.inst_b, {"db_mode": "local_pg"})
+        self.Dash = self.env["primate.cloud.dashboard"]
+
+    # --- shim C: _panel_target requerido ---
+    def test_panel_target_sin_instancia_levanta(self):
+        with self.assertRaises(UserError):
+            self.machine._panel_target(None)
+        with self.assertRaises(UserError):
+            self.machine._panel_target(
+                self.env["primate.cloud.instance"])   # recordset vacío
+        # Con instancia explícita, la devuelve.
+        self.assertEqual(self.machine._panel_target(self.inst_b), self.inst_b)
+
+    def test_fetch_config_sin_instancia_ya_no_resuelve_primaria(self):
+        # Antes: fetch_config() sin instancia caía a la primaria. Ahora levanta.
+        with self.assertRaises(UserError):
+            self.machine.fetch_config()
+
+    # --- shim B: wrappers viejos por EC2-id NO existen ---
+    def test_wrappers_viejos_no_existen(self):
+        for viejo in ("get_instance_logs", "get_instance_config",
+                      "save_instance_config", "list_instance_db_users",
+                      "add_instance_addon", "get_instance_logs_stream"):
+            self.assertFalse(hasattr(self.Dash, viejo),
+                             "el wrapper viejo %s debería estar retirado" % viejo)
+        # login_as viejo tampoco (el nuevo es odoo_login_as).
+        self.assertTrue(hasattr(self.Dash, "odoo_login_as"))
+        self.assertTrue(hasattr(self.Dash, "get_odoo_config"))
+
+    def test_wrapper_nuevo_opera_LA_instancia_no_la_primaria(self):
+        # El wrapper por instancia-id opera las rutas de ESA instancia (B), no
+        # las de la primaria: config de inst_b usa el conf de inst_b.
+        fake = mock.Mock()
+        fake.run_script.return_value = {
+            "status": "Success", "stdout": "PCM_HASH:h"}
+        with mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=fake):
+            self.Dash.get_odoo_config(self.inst_b.id)
+        script = fake.run_script.call_args[0][1]
+        self.assertIn('CONF = "/etc/odoo/b.conf"', script)   # el de B
+        self.assertNotIn("/etc/odoo/a.conf", script)         # NO la primaria
+
+    def test_wrapper_config_is_production_por_instancia(self):
+        # is_production sale del env_type de la instancia (no del servidor).
+        self.inst_b.env_type = "production"
+        self.prim.env_type = "staging"
+        fake = mock.Mock()
+        fake.run_script.return_value = {"status": "Success", "stdout": "PCM_HASH:h"}
+        with mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=fake):
+            data = self.Dash.get_odoo_config(self.inst_b.id)
+        self.assertTrue(data["is_production"])   # la instancia B es prod
+
+    def test_server_detail_expone_primary_instance_id(self):
+        # El JS puente pasa el id explícito de la primaria (no el default).
+        data = self.Dash.get_server_detail(self.machine.id)
+        self.assertEqual(data["primary_instance_id"], self.prim.id)

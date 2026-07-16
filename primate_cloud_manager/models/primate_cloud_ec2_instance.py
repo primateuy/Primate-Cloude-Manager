@@ -259,22 +259,24 @@ class PrimateCloudEc2Instance(models.Model):
         self.ensure_one()
         return aws_ssm.AwsSsmService(self.account_id._get_aws_service())
 
-    def _panel_target(self, odoo_instance=None):
-        """La instancia ODOO objetivo de una operación del panel (R4-B2).
+    def _panel_target(self, odoo_instance):
+        """La instancia ODOO objetivo de una operación del panel (R4-B2/B6).
 
-        El panel opera INSTANCIAS (D-R4.1). Hasta que el hub gane la pantalla
-        por instancia (R4-B6), el default es la primaria del entorno: en un
-        servidor legacy es EL Odoo; en multi, el flujo recableado opera la
-        primaria con SUS rutas (jamás las de otro cliente).
+        R4-B6 (shim C retirado): ``odoo_instance`` es OBLIGATORIA. Antes el
+        default era la primaria del entorno — pero "sin instancia = la
+        primaria" es justo la suposición que el recableo mató: en un servidor
+        compartido operaría el Odoo de otro cliente. Todo llamador declara la
+        instancia; un default silencioso vuelve a ser un error de firma, no un
+        agujero (la lección del ``workers=0``).
         """
         self.ensure_one()
-        # `or`: un recordset VACÍO (browse de un id None) también cae al
-        # default de la primaria, no solo el None literal.
-        target = odoo_instance or self.environment_id.primary_instance_id
-        if not target:
+        if not odoo_instance:
             raise UserError(_(
-                "El servidor no tiene una instancia Odoo asociada."))
-        return target
+                "Falta la instancia Odoo a operar: el panel opera una "
+                "instancia explícita, no 'la del servidor' (que en un servidor "
+                "compartido sería la de otro cliente)."))
+        odoo_instance.ensure_one()
+        return odoo_instance
 
     # Fuentes de log (spec §11.1) → comando de lectura. NINGUNO vuelca
     # credenciales ni el odoo.conf: solo se leen archivos/journal de log.
@@ -1336,10 +1338,17 @@ class PrimateCloudEc2Instance(models.Model):
         return self._notify(_("Detección de runtime encolada."))
 
     def job_probe_runtime(self):
-        """Job: lee versiones y workers por SSM y refresca el cache."""
+        """Job: lee versiones y workers por SSM y refresca el cache.
+
+        R4-B6: el probe es POR INSTANCIA (runtime del slug). Hasta la pantalla
+        de instancia (B6.2/B6.3), sondea la primaria — pasándola EXPLÍCITA a
+        ``_runtime_probe_cmd``, no dejando que resuelva un default.
+        """
         self.ensure_one()
         output = self._get_ssm_service().run_script(
-            self.aws_instance_id, self._runtime_probe_cmd(), region=self.region,
+            self.aws_instance_id,
+            self._runtime_probe_cmd(self.environment_id.primary_instance_id),
+            region=self.region,
             comment="pcm runtime probe", timeout=60, agent_timeout=30)
         self._parse_runtime(output.get("stdout") or "")
         return True

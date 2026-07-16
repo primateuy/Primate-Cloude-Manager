@@ -107,8 +107,8 @@ export class ServidorDetalle extends Component {
         this.config.loading = true;
         this.config.error = "";
         const res = await this.orm.call(
-            "primate.cloud.dashboard", "get_instance_config",
-            [this.props.serverId]
+            "primate.cloud.dashboard", "get_odoo_config",
+            [this.d.primary_instance_id]
         );
         this.config.loading = false;
         this.config.loaded = true;
@@ -164,8 +164,8 @@ export class ServidorDetalle extends Component {
         const edits = this.configChanged;
         this.config.saving = true;
         const res = await this.orm.call(
-            "primate.cloud.dashboard", "save_instance_config",
-            [this.props.serverId, edits, this.config.hash,
+            "primate.cloud.dashboard", "save_odoo_config",
+            [this.d.primary_instance_id, edits, this.config.hash,
              this.config.typedName || false]
         );
         this.config.saving = false;
@@ -277,8 +277,8 @@ export class ServidorDetalle extends Component {
         }
         this.addon.saving = true;
         const res = await this.orm.call(
-            "primate.cloud.dashboard", "add_instance_addon",
-            [this.props.serverId, {
+            "primate.cloud.dashboard", "add_odoo_addon",
+            [this.d.primary_instance_id, {
                 github_url: this.addon.github_url,
                 configured_branch: this.addon.configured_branch || false,
                 repo_type: this.addon.repo_type,
@@ -321,8 +321,8 @@ export class ServidorDetalle extends Component {
         this.loginas.loading = true;
         this.loginas.users = [];
         const res = await this.orm.call(
-            "primate.cloud.dashboard", "list_instance_db_users",
-            [this.props.serverId, this.loginas.db]
+            "primate.cloud.dashboard", "list_odoo_db_users",
+            [this.d.primary_instance_id, this.loginas.db]
         );
         this.loginas.loading = false;
         if (res.status === "ok") {
@@ -345,8 +345,8 @@ export class ServidorDetalle extends Component {
             }
         }
         const res = await this.orm.call(
-            "primate.cloud.dashboard", "login_as",
-            [this.props.serverId, this.loginas.db, user.id, user.login,
+            "primate.cloud.dashboard", "odoo_login_as",
+            [this.d.primary_instance_id, this.loginas.db, user.id, user.login,
              user.is_admin, adminAck, this.loginas.typedName || false]
         );
         if (res.status === "ok") {
@@ -365,8 +365,8 @@ export class ServidorDetalle extends Component {
         this.logs.loading = true;
         this.logs.text = "";
         const res = await this.orm.call(
-            "primate.cloud.dashboard", "get_instance_logs",
-            [this.props.serverId, this.logs.source, this.logs.lines,
+            "primate.cloud.dashboard", "get_odoo_logs",
+            [this.d.primary_instance_id, this.logs.source, this.logs.lines,
              this.logs.grep || false]
         );
         this.logs.text = res.text || "(sin salida)";
@@ -431,8 +431,8 @@ export class ServidorDetalle extends Component {
         this._polling = true;
         try {
             const res = await this.orm.call(
-                "primate.cloud.dashboard", "get_instance_logs_stream",
-                [this.props.serverId, this.logs.source, this.logs.cursor,
+                "primate.cloud.dashboard", "get_odoo_logs_stream",
+                [this.d.primary_instance_id, this.logs.source, this.logs.cursor,
                  this.logs.lines, this.logs.grep || false]
             );
             if (res.cursor !== undefined) {

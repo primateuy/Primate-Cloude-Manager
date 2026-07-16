@@ -187,7 +187,9 @@ class TestDeployment(TransactionCase):
         out = "linea odoo\nPCM_OFFSET:2048\n"
         patcher, fake = self._patch_ssm({"stdout": out, "status": "Success"})
         with patcher:
-            res = self.instance.fetch_logs_stream("odoo", from_cursor=False)
+            res = self.instance.fetch_logs_stream(
+                "odoo", from_cursor=False,
+                odoo_instance=self.env_rec.primary_instance_id)
         self.assertEqual(res["cursor"], "2048")
         cmd = fake.run_script.call_args[0][1]
         # log_path de la primaria (legacy en este entorno).
@@ -209,7 +211,9 @@ class TestDeployment(TransactionCase):
         """El streaming NO referencia el odoo.conf ni credenciales."""
         patcher, fake = self._patch_ssm({"stdout": "", "status": "Success"})
         with patcher:
-            self.instance.fetch_logs_stream("odoo", from_cursor=False)
+            self.instance.fetch_logs_stream(
+                "odoo", from_cursor=False,
+                odoo_instance=self.env_rec.primary_instance_id)
         cmd = fake.run_script.call_args[0][1]
         self.assertNotIn("db_password", cmd)
         self.assertNotIn("odoo.conf", cmd)
@@ -218,8 +222,8 @@ class TestDeployment(TransactionCase):
     def test_logs_stream_instancia_detenida(self):
         """El wrapper del dashboard corta si la instancia no corre (echoa cursor)."""
         self.instance.instance_state = "stopped"
-        res = self.env["primate.cloud.dashboard"].get_instance_logs_stream(
-            self.instance.id, "odoo", "s=prev")
+        res = self.env["primate.cloud.dashboard"].get_odoo_logs_stream(
+            self.env_rec.primary_instance_id.id, "odoo", "s=prev")
         self.assertEqual(res["status"], "error")
         self.assertEqual(res["cursor"], "s=prev")
 
@@ -256,12 +260,13 @@ class TestDeployment(TransactionCase):
         self.instance.provisioned_by_pcm = True
         self.env_rec.env_type = "production"
         self.env_rec.name = "Prod X"
+        prim = self.env_rec.primary_instance_id
         with self.assertRaises(UserError):
             self.instance.action_save_config(
-                {"workers": "2"}, "h", typed_name="mal")
+                {"workers": "2"}, "h", typed_name="mal", odoo_instance=prim)
         # Nombre correcto → encola sin error (no corre el job).
         self.instance.action_save_config(
-            {"workers": "2"}, "h", typed_name="Prod X")
+            {"workers": "2"}, "h", typed_name="Prod X", odoo_instance=prim)
 
     def test_job_save_config_ok_registra_diff(self):
         self.instance.provisioned_by_pcm = True
@@ -271,7 +276,7 @@ class TestDeployment(TransactionCase):
         patcher, fake = self._patch_ssm_routed({"config apply": apply_out})
         with patcher, mock.patch.object(
                 type(self.instance), "_config_health_check", return_value="http"):
-            self.instance.job_save_config({"workers": "2"}, "h")
+            self.instance.job_save_config({"workers": "2"}, "h", instance_id=self.env_rec.primary_instance_id.id)
         log = self._last_config_log()
         self.assertEqual(log.result, "success")
         self.assertIn("workers: 0 → 2", log.error_message)
@@ -285,7 +290,7 @@ class TestDeployment(TransactionCase):
         patcher, fake = self._patch_ssm_routed(
             {"config apply": {"stdout": "PCM_RESULT:stale\n", "status": "Success"}})
         with patcher:
-            self.instance.job_save_config({"workers": "2"}, "viejo")
+            self.instance.job_save_config({"workers": "2"}, "viejo", instance_id=self.env_rec.primary_instance_id.id)
         self.assertEqual(self._last_config_log().result, "failed")
         comments = [c.kwargs.get("comment", "")
                     for c in fake.run_script.call_args_list]
@@ -299,7 +304,7 @@ class TestDeployment(TransactionCase):
         patcher, fake = self._patch_ssm_routed({"config apply": apply_out})
         with patcher, mock.patch.object(
                 type(self.instance), "_config_health_check", return_value="failed"):
-            self.instance.job_save_config({"workers": "2"}, "h")
+            self.instance.job_save_config({"workers": "2"}, "h", instance_id=self.env_rec.primary_instance_id.id)
         self.assertEqual(self._last_config_log().result, "failed")
         comments = [c.kwargs.get("comment", "")
                     for c in fake.run_script.call_args_list]
@@ -458,20 +463,21 @@ class TestDeployment(TransactionCase):
         # Sin grupo admin cloud → rechaza.
         admin_grp.write({"user_ids": [(3, self.env.user.id)]})
         with self.assertRaises(UserError):
-            inst.action_login_as("demo", 7, "juan")
+            inst.action_login_as("demo", 7, "juan", odoo_instance=self.env_rec.primary_instance_id)
         admin_grp.write({"user_ids": [(4, self.env.user.id)]})
         # Prod exige el nombre exacto.
         self.env_rec.env_type = "production"
         self.env_rec.name = "Prod Z"
         with self.assertRaises(UserError):
-            inst.action_login_as("demo", 7, "juan", typed_name="mal")
+            inst.action_login_as("demo", 7, "juan", typed_name="mal", odoo_instance=self.env_rec.primary_instance_id)
         # Destino admin sin ack → rechaza (nunca un click más).
         self.env_rec.env_type = "development"
         with self.assertRaises(UserError):
             inst.action_login_as("demo", 7, "juan",
-                                 is_admin_target=True, admin_ack=False)
+                                 is_admin_target=True, admin_ack=False,
+                                 odoo_instance=self.env_rec.primary_instance_id)
         # Camino normal → URL + auditoría (quién→a quién).
-        res = inst.action_login_as("demo", 7, "juan")
+        res = inst.action_login_as("demo", 7, "juan", odoo_instance=self.env_rec.primary_instance_id)
         self.assertIn("/pcm/impersonate?token=", res["url"])
         log = self.env["primate.cloud.operation.log"].search(
             [("action_type", "=", "impersonate")], order="id desc", limit=1)
@@ -485,7 +491,8 @@ class TestDeployment(TransactionCase):
         admin_grp.write({"user_ids": [(4, self.env.user.id)]})
         self.env_rec.env_type = "development"
         inst.action_login_as("demo", 2, "admin",
-                             is_admin_target=True, admin_ack=True)
+                             is_admin_target=True, admin_ack=True,
+                             odoo_instance=self.env_rec.primary_instance_id)
         log = self.env["primate.cloud.operation.log"].search(
             [("action_type", "=", "impersonate")], order="id desc", limit=1)
         self.assertIn("ADMIN", log.error_message)   # marca distinta en auditoría

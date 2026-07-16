@@ -399,6 +399,10 @@ class PrimateCloudDashboard(models.AbstractModel):
             "environment_real_name": env.name or "" if env else "",
             "is_production": bool(env and env.env_type == "production"),
             "main_url": env.main_url or "" if env else "",
+            # R4-B6: el panel opera una INSTANCIA explícita. Hasta la pantalla
+            # de instancia (B6.2/B6.3) la pantalla actual opera la primaria —
+            # pero pasando SU id explícito, no dejando que el backend adivine.
+            "primary_instance_id": env.primary_instance_id.id if env else False,
             "runtime": {
                 "python": inst.runtime_python_version or "",
                 "odoo": inst.runtime_odoo_version or "",
@@ -445,93 +449,95 @@ class PrimateCloudDashboard(models.AbstractModel):
             },
         }
 
-    @api.model
-    def get_instance_logs(self, instance_id, source, lines=200, grep=None,
-                          since=None, until=None):
-        """Trae logs de una instancia por SSM (on-demand, sin persistir).
+    # ------------------------------------------------------------------
+    # Wrappers de panel POR INSTANCIA (R4-B6, shim B retirado).
+    # Reciben un id de ``primate.cloud.instance`` (NO de la EC2) y delegan en
+    # la API canónica del modelo instancia (que resuelve su máquina y opera
+    # SUS rutas). Antes recibían el id de la EC2 y resolvían "la primaria" —
+    # la suposición que el recableo mató.
+    # ------------------------------------------------------------------
+    def _panel_instance(self, instance_id):
+        """Resuelve la instancia del panel y valida que sea operable.
 
-        Wrapper del ``fetch_logs`` para la app: devuelve texto para
-        mostrar/descargar o un error legible; nada se guarda en BD.
+        Devuelve ``(instance, error_dict)``: si no se puede operar, ``error``
+        trae un dict ``{"status":"error","text":...}`` para devolver tal cual.
         """
-        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        inst = self.env["primate.cloud.instance"].browse(instance_id).exists()
         if not inst:
-            return {"status": "error", "text": _("Instancia no encontrada.")}
-        if inst.instance_state != "running":
-            return {"status": "error",
-                    "text": _("La instancia no está corriendo.")}
+            return inst, {"status": "error", "text": _("Instancia no encontrada.")}
+        machine = inst._machine()
+        if not machine or machine.instance_state != "running":
+            return inst, {"status": "error",
+                          "text": _("El servidor de la instancia no está "
+                                    "corriendo.")}
+        return inst, None
+
+    @api.model
+    def get_odoo_logs(self, instance_id, source, lines=200, grep=None,
+                      since=None, until=None):
+        """Logs de UNA instancia Odoo por SSM (on-demand, sin persistir)."""
+        inst, error = self._panel_instance(instance_id)
+        if error:
+            return error
         try:
             return inst.fetch_logs(source, lines=lines, grep=grep,
                                    since=since, until=until)
-        except Exception as error:  # noqa: BLE001 - se muestra el error, no rompe
+        except Exception as error:  # noqa: BLE001 - se muestra, no rompe
             return {"status": "error", "text": str(error)}
 
     @api.model
-    def get_instance_logs_stream(self, instance_id, source, from_cursor=False,
-                                 lines=200, grep=None):
-        """Trae SOLO lo nuevo desde ``from_cursor`` (streaming incremental, sin persistir).
-
-        Wrapper del ``fetch_logs_stream``: el front pollea con el cursor devuelto.
-        Devuelve texto nuevo (vacío si no hubo novedad) + el cursor a reenviar.
-        (El parámetro no puede llamarse ``cursor``: ``_()`` lo tomaría como el
-        cursor de BD por su heurística de locales.)
-        """
-        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
-        if not inst:
-            return {"status": "error", "text": _("Instancia no encontrada."),
-                    "cursor": from_cursor}
-        if inst.instance_state != "running":
-            return {"status": "error",
-                    "text": _("La instancia no está corriendo."),
-                    "cursor": from_cursor}
+    def get_odoo_logs_stream(self, instance_id, source, from_cursor=False,
+                             lines=200, grep=None):
+        """Streaming incremental de logs de UNA instancia (sin persistir)."""
+        inst, error = self._panel_instance(instance_id)
+        if error:
+            return dict(error, cursor=from_cursor)
         try:
             return inst.fetch_logs_stream(source, from_cursor=from_cursor,
                                           lines=lines, grep=grep)
-        except Exception as error:  # noqa: BLE001 - se muestra el error, no rompe
+        except Exception as error:  # noqa: BLE001
             return {"status": "error", "text": str(error), "cursor": from_cursor}
 
     @api.model
-    def get_instance_config(self, instance_id):
-        """Lee el odoo.conf de una instancia (allowlist + hash) para la tab Config.
+    def get_odoo_config(self, instance_id):
+        """Lee el odoo.conf DE LA INSTANCIA (allowlist + hash) para la tab Config.
 
-        Solo instancias PCM. Nunca devuelve db_password/admin_passwd (allowlist).
+        ``is_production`` sale del ``env_type`` de LA INSTANCIA (no del
+        servidor): la fricción de prod es propiedad de la instancia (B5-audit).
         """
-        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
-        if not inst:
-            return {"status": "error", "text": _("Instancia no encontrada.")}
-        if not inst.provisioned_by_pcm:
+        inst, error = self._panel_instance(instance_id)
+        if error:
+            return error
+        machine = inst._machine()
+        if not machine.provisioned_by_pcm:
             return {"status": "error",
                     "text": _("Requiere una instancia aprovisionada por PCM.")}
-        if inst.instance_state != "running":
-            return {"status": "error",
-                    "text": _("La instancia no está corriendo.")}
         try:
             data = inst.fetch_config()
             data["status"] = "ok"
-            data["meta"] = inst._config_field_meta()
-            data["is_production"] = bool(
-                inst.environment_id
-                and inst.environment_id.env_type == "production")
+            data["meta"] = machine._config_field_meta()
+            data["is_production"] = bool(inst.env_type == "production")
             data["environment_name"] = inst.environment_id.name or ""
             return data
         except Exception as error:  # noqa: BLE001
             return {"status": "error", "text": str(error)}
 
     @api.model
-    def list_instance_db_users(self, instance_id, db):
+    def list_odoo_db_users(self, instance_id, db):
         """Usuarios internos activos de una BD de la instancia (para Login as)."""
-        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
-        if not inst or inst.instance_state != "running":
-            return {"status": "error", "text": _("Instancia no disponible.")}
+        inst, error = self._panel_instance(instance_id)
+        if error:
+            return error
         try:
             return {"status": "ok", "users": inst.list_db_users(db)}
         except Exception as error:  # noqa: BLE001
             return {"status": "error", "text": str(error)}
 
     @api.model
-    def login_as(self, instance_id, db, uid, login, is_admin_target=False,
-                 admin_ack=False, typed_name=None):
+    def odoo_login_as(self, instance_id, db, uid, login, is_admin_target=False,
+                      admin_ack=False, typed_name=None):
         """Genera el enlace de impersonación (con fricción + auditoría). B5."""
-        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+        inst = self.env["primate.cloud.instance"].browse(instance_id).exists()
         if not inst:
             return {"status": "error", "text": _("Instancia no encontrada.")}
         try:
@@ -543,28 +549,30 @@ class PrimateCloudDashboard(models.AbstractModel):
             return {"status": "error", "text": str(error)}
 
     @api.model
-    def add_instance_addon(self, instance_id, vals):
-        """Agrega un repo/addon a la instancia (clona + registra). Bloque B4."""
-        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
-        if not inst or not inst.environment_id:
-            return {"status": "error", "text": _("Instancia/entorno no encontrado.")}
-        if not inst.provisioned_by_pcm:
+    def add_odoo_addon(self, instance_id, vals):
+        """Agrega un repo/addon a LA instancia (clona + registra). B4.
+
+        El addon se ata a esta instancia (``instance_id`` en el repo) para que
+        el clone use SU ``addons_dir`` (no el de la primaria).
+        """
+        inst, error = self._panel_instance(instance_id)
+        if error:
+            return error
+        machine = inst._machine()
+        if not machine.provisioned_by_pcm:
             return {"status": "error",
                     "text": _("Requiere una instancia aprovisionada por PCM.")}
-        if inst.instance_state != "running":
-            return {"status": "error",
-                    "text": _("La instancia no está corriendo.")}
         try:
-            repo = inst.environment_id.add_addon(vals)
+            repo = inst.environment_id.add_addon(dict(vals, instance_id=inst.id))
             return {"status": "ok", "repo_id": repo.id}
         except Exception as error:  # noqa: BLE001 - error legible a la UI
             return {"status": "error", "text": str(error)}
 
     @api.model
-    def save_instance_config(self, instance_id, edits, expected_hash,
-                             typed_name=None):
-        """Valida y encola el guardado del odoo.conf (reinicia Odoo)."""
-        inst = self.env["primate.cloud.ec2.instance"].browse(instance_id).exists()
+    def save_odoo_config(self, instance_id, edits, expected_hash,
+                         typed_name=None):
+        """Valida y encola el guardado del odoo.conf DE LA INSTANCIA (reinicia)."""
+        inst = self.env["primate.cloud.instance"].browse(instance_id).exists()
         if not inst:
             return {"status": "error", "text": _("Instancia no encontrada.")}
         try:
