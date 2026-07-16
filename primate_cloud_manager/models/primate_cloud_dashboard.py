@@ -356,27 +356,9 @@ class PrimateCloudDashboard(models.AbstractModel):
         if not inst:
             return {}
         Ec2 = self.env["primate.cloud.ec2.instance"]
-        Db = self.env["primate.cloud.database"]
-        Repo = self.env["primate.cloud.repository"]
-        Backup = self.env["primate.cloud.backup"]
-        Env = self.env["primate.cloud.environment"]
         state_labels = dict(Ec2._fields["instance_state"].selection)
         os_labels = dict(Ec2._fields["os_type"].selection)
-        db_type_labels = dict(Db._fields["db_type"].selection)
-        repo_type_labels = dict(Repo._fields["repo_type"].selection)
-        sync_labels = dict(Repo._fields["sync_state"].selection)
-        bkp_state_labels = dict(Backup._fields["state"].selection)
-        bkp_purpose_labels = dict(Backup._fields["purpose"].selection)
         env = inst.environment_id
-        databases = Db.search([("ec2_instance_id", "=", inst.id)])
-        # Backups de las BD montadas en esta instancia (granularidad del motor
-        # Fase 8 = entorno/BD; la vista de la instancia = backups de sus BD).
-        backups = Backup.search(
-            [("database_id", "in", databases.ids)], order="backup_date desc, id desc",
-            limit=15) if databases else Backup.browse()
-        # Los repos cuelgan del ENTORNO (no de la instancia): en un entorno de una
-        # instancia es equivalente; se muestran los del entorno con nota en UI.
-        repos = Repo.search([("environment_id", "=", env.id)]) if env else Repo.browse()
         # R4-B6: instancias hospedadas (cada una con su CLIENTE y su env_type —
         # la verdad vive en la instancia, D-B6.1) + resumen honesto. El servidor
         # NO tiene "producción": es propiedad de cada instancia.
@@ -424,45 +406,12 @@ class PrimateCloudDashboard(models.AbstractModel):
             "environment_id": env.id,
             "environment_name": env.display_name or "",
             "environment_real_name": env.name or "" if env else "",
-            "is_production": bool(env and env.env_type == "production"),
-            "main_url": env.main_url or "" if env else "",
-            # R4-B6: el panel opera una INSTANCIA explícita. Hasta la pantalla
-            # de instancia (B6.2/B6.3) la pantalla actual opera la primaria —
-            # pero pasando SU id explícito, no dejando que el backend adivine.
-            "primary_instance_id": env.primary_instance_id.id if env else False,
-            "runtime": {
-                "python": inst.runtime_python_version or "",
-                "odoo": inst.runtime_odoo_version or "",
-                "workers": inst.runtime_workers or "",
-                "at": fields.Datetime.to_string(inst.last_runtime_probe) or "",
-            },
-            "backup_compliance": env.backup_compliance if env else "",
-            "backup_compliance_label": (
-                dict(self.env["primate.cloud.instance"]._fields["backup_compliance"].selection).get(
-                    env.backup_compliance, env.backup_compliance) if env else ""),
-            "databases": [{
-                "id": db.id, "name": db.display_name,
-                "db_type": db.db_type,
-                "db_type_label": db_type_labels.get(db.db_type, db.db_type or ""),
-            } for db in databases],
-            "backups": [{
-                "id": b.id, "name": b.display_name,
-                "backup_date": fields.Datetime.to_string(b.backup_date) or "",
-                "state": b.state,
-                "state_label": bkp_state_labels.get(b.state, b.state or ""),
-                "purpose_label": bkp_purpose_labels.get(b.purpose, b.purpose or ""),
-                "size_mb": b.size_mb or 0.0,
-                "database_name": b.database_id.display_name or "",
-            } for b in backups],
-            "repositories": [{
-                "id": r.id, "name": r.display_name,
-                "repo_type": r.repo_type,
-                "repo_type_label": repo_type_labels.get(r.repo_type, r.repo_type or ""),
-                "configured_branch": r.configured_branch or "",
-                "current_commit": (r.current_commit or "")[:10],
-                "sync_state": r.sync_state,
-                "sync_state_label": sync_labels.get(r.sync_state, r.sync_state or ""),
-            } for r in repos],
+            # R4-B6.3 (D-B6.1): el servidor NO tiene env_type/is_production ni
+            # config/backups/repos/runtime — esos son de cada INSTANCIA y
+            # viven en get_odoo_instance_detail. Acá solo la MÁQUINA + la
+            # lista de instancias hospedadas (arriba). Se retiraron:
+            # is_production, main_url, primary_instance_id, runtime,
+            # backup_compliance*, databases, backups, repositories.
             # Métricas (Fase 9): las que PCM tiene sin agente + marca de las
             # que REQUIEREN agente (RAM/disco), para que la UI no muestre 0.
             "metrics": {

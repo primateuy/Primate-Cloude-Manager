@@ -1225,10 +1225,10 @@ class TestR4B6Shims(TransactionCase):
             data = self.Dash.get_odoo_config(self.inst_b.id)
         self.assertTrue(data["is_production"])   # la instancia B es prod
 
-    def test_server_detail_expone_primary_instance_id(self):
-        # El JS puente pasa el id explícito de la primaria (no el default).
+    def test_server_detail_ya_no_expone_primary_instance_id(self):
+        # El puente JS murió en B6.2 → el campo se retiró en B6.3 (vestigial).
         data = self.Dash.get_server_detail(self.machine.id)
-        self.assertEqual(data["primary_instance_id"], self.prim.id)
+        self.assertNotIn("primary_instance_id", data)
 
 
 @tagged("post_install", "-at_install", "primate_cloud")
@@ -1330,3 +1330,108 @@ class TestR4B6Pantallas(TransactionCase):
             self.assertIsNone(
                 re.search(r"const\s+PCM_PATHS\s*=", src),
                 "PCM_PATHS no debe existir como constante en %s" % screen)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR4B6Terminate(TransactionCase):
+    """R4-B6.3 / D-B6.5: Terminate de servidor con proyectos ajenos = admin-only
+    (server-side) + la confirmación lista a los afectados + realza producción."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        # Dos clientes con SUS partners.
+        self.partner_a = self.env["res.partner"].create({"name": "Partner A"})
+        self.partner_b = self.env["res.partner"].create({"name": "Partner B"})
+        self.proj_a = self.env["primate.cloud.project"].create({
+            "name": "Cliente A", "account_id": self.account.id,
+            "partner_id": self.partner_a.id})
+        self.proj_b = self.env["primate.cloud.project"].create({
+            "name": "Cliente B", "account_id": self.account.id,
+            "partner_id": self.partner_b.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "Compartido", "project_id": self.proj_a.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community"})
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "srv-compartido", "account_id": self.account.id,
+            "aws_instance_id": "i-t", "instance_state": "running",
+            "region": "us-east-1", "environment_id": self.server.id})
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        self.inst_a = self.server.primary_instance_id
+        self.inst_a.write({"slug": "a", "state": "active", "name": "Odoo A",
+                           "env_type": "production"})
+        self.inst_b = self.server._create_instance_with_ports({
+            "name": "Odoo B", "project_id": self.proj_b.id, "slug": "b",
+            "odoo_version": "19", "state": "active", "env_type": "staging"})
+
+    def _terminate_wizard(self):
+        return self.env["primate.cloud.ec2.terminate.wizard"].create({
+            "instance_id": self.machine.id,
+            "confirm_name": "srv-compartido", "acknowledge": True})
+
+    def test_confirmacion_lista_afectados_y_produccion(self):
+        wiz = self._terminate_wizard()
+        wiz._compute_affected()
+        # Lista las dos instancias con su cliente.
+        self.assertIn("Odoo A", wiz.affected_text)
+        self.assertIn("Cliente A", wiz.affected_text)
+        self.assertIn("Odoo B", wiz.affected_text)
+        self.assertIn("Cliente B", wiz.affected_text)
+        # Realza la de producción.
+        self.assertIn("PRODUCCIÓN", wiz.affected_text)
+        self.assertTrue(wiz.hosts_production)
+        self.assertIn("Cliente A", wiz.affected_clients)
+        self.assertIn("Cliente B", wiz.affected_clients)
+
+    def test_operador_ajeno_no_puede_terminar_server_side(self):
+        # Un operador cuyo partner NO es dueño de todos los proyectos
+        # hospedados NO puede terminar (admin-only), validado en action_terminate.
+        operator = self.env["res.users"].create({
+            "name": "Op", "login": "op_termbe",
+            "partner_id": self.partner_a.id,
+            "group_ids": [(6, 0, [self.env.ref(
+                "primate_cloud_manager.group_cloud_operator").id])]})
+        machine_op = self.machine.with_user(operator)
+        # Cross-cliente: hospeda Cliente B (ajeno al operador de A).
+        self.assertTrue(machine_op._terminate_is_cross_client())
+        with self.assertRaises(UserError):
+            machine_op.action_terminate()
+
+    def test_admin_si_puede_terminar_cross_cliente(self):
+        admin = self.env["res.users"].create({
+            "name": "Adm", "login": "adm_termbe",
+            "group_ids": [(6, 0, [self.env.ref(
+                "primate_cloud_manager.group_cloud_admin").id])]})
+        machine_adm = self.machine.with_user(admin)
+        self.assertFalse(machine_adm._terminate_is_cross_client())
+        with mock.patch.object(type(self.machine), "with_delay") as wd:
+            machine_adm.action_terminate()
+            wd.assert_called()
+
+    def test_wizard_cross_cliente_exige_ack(self):
+        operator = self.env["res.users"].create({
+            "name": "Op2", "login": "op2_termbe",
+            "partner_id": self.partner_a.id,
+            "group_ids": [(6, 0, [self.env.ref(
+                "primate_cloud_manager.group_cloud_operator").id])]})
+        wiz = self._terminate_wizard().with_user(operator)
+        wiz._compute_affected()
+        self.assertTrue(wiz.is_cross_client)
+        # Sin ack_clients → error (además del admin-only del server-side).
+        with self.assertRaises(UserError):
+            wiz.action_confirm()
+
+    def test_servidor_dedicado_operador_dueno_no_es_cross(self):
+        # Si todas las instancias son del proyecto del operador → no cross.
+        self.inst_b.project_id = self.proj_a.id   # ambas de A
+        operator = self.env["res.users"].create({
+            "name": "Op3", "login": "op3_termbe",
+            "partner_id": self.partner_a.id,
+            "group_ids": [(6, 0, [self.env.ref(
+                "primate_cloud_manager.group_cloud_operator").id])]})
+        self.assertFalse(
+            self.machine.with_user(operator)._terminate_is_cross_client())

@@ -227,7 +227,11 @@ class TestEc2Wizards(TransactionCase):
 
 @tagged("post_install", "-at_install", "primate_cloud")
 class TestTerminatePermisos(TransactionCase):
-    def test_operator_no_puede_terminar(self):
+    def test_operator_puede_terminar_no_cross_cliente(self):
+        # R4-B6.3 (D-B6.5): la terminación admin-only TOTAL se relajó — un
+        # operador SÍ puede terminar una máquina que NO afecta a otros clientes
+        # (importada/dedicada). El admin-only quedó SOLO para el caso
+        # cross-cliente (cubierto en TestR4B6Terminate).
         account = self.env["primate.cloud.account"].create({"name": "C"})
         instance = self.env["primate.cloud.ec2.instance"].create(
             {"name": "s", "account_id": account.id, "aws_instance_id": "i-1",
@@ -237,5 +241,8 @@ class TestTerminatePermisos(TransactionCase):
             self.env, login="op_cloud",
             groups="primate_cloud_manager.group_cloud_operator",
         )
-        with self.assertRaises(UserError):
-            instance.with_user(operator).action_terminate()
+        machine = instance.with_user(operator)
+        self.assertFalse(machine._terminate_is_cross_client())  # sin entorno
+        with mock.patch.object(type(instance), "with_delay") as wd:
+            machine.action_terminate()
+            wd.assert_called()

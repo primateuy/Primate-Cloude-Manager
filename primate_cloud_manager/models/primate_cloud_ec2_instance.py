@@ -1189,16 +1189,46 @@ class PrimateCloudEc2Instance(models.Model):
         """Reinicia (reboot in situ)."""
         return self._enqueue_lifecycle("ec2_restart")
 
+    def _terminate_is_cross_client(self):
+        """¿El servidor hospeda instancias de un proyecto AJENO al operador?
+
+        R4-B6.3 (D-B6.5): terminar la máquina mata TODAS sus instancias, de
+        varios clientes. Si el operador no es dueño de todos los proyectos
+        hospedados, la terminación es cross-cliente → admin-only. Un admin
+        (o el usuario técnico SUPERUSER) nunca es cross-cliente para sí.
+        """
+        self.ensure_one()
+        if self.env.uid == SUPERUSER_ID or self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"):
+            return False
+        env = self.environment_id
+        if not env:
+            return False
+        hosted_projects = env.instance_ids.filtered(
+            lambda i: i.state != "archived").project_id
+        # Proyectos del operador: los que tiene asignados como partner/usuario.
+        # v1: se compara contra los proyectos cuyo partner es el del usuario.
+        own = hosted_projects.filtered(
+            lambda p: p.partner_id and p.partner_id == self.env.user.partner_id)
+        return bool(hosted_projects - own)
+
     def action_terminate(self):
         """Termina la(s) instancia(s). Operación destructiva: solo admin + wizard.
 
-        Se valida el grupo aquí también (defensa en profundidad), además de la
-        restricción de la vista/wizard.
+        Gobierno (D-B6.5, server-side, defensa en profundidad además del
+        wizard): terminar un servidor con instancias de OTROS clientes es
+        admin-only — un operador no puede tumbar la producción de un tercero
+        por compartir máquina. Un servidor cuyas instancias son todas del
+        operador queda operator+ (con la fricción del wizard).
         """
-        if self.env.uid != SUPERUSER_ID and not self.env.user.has_group(
-            "primate_cloud_manager.group_cloud_admin"
-        ):
-            raise UserError(_("Solo un Cloud Admin puede terminar instancias."))
+        for machine in self:
+            is_admin = self.env.uid == SUPERUSER_ID or self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin")
+            if not is_admin and machine._terminate_is_cross_client():
+                raise UserError(_(
+                    "Terminar «%s» afecta a instancias de OTROS clientes: solo "
+                    "un Cloud Admin puede hacerlo. Escalá la terminación."
+                ) % machine.name)
         return self._enqueue_lifecycle("ec2_terminate")
 
     def _enqueue_lifecycle(self, action_type):

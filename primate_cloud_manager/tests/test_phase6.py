@@ -88,18 +88,23 @@ class TestDeployment(TransactionCase):
 
     # --- Panel de instancia (Bloque A) ---
     def test_server_detail_expone_panel(self):
-        """get_server_detail alimenta el panel: repos del entorno, backups de sus
-        BD, y el flag PCM (importada ⇒ False, no inventa paths)."""
+        """get_server_detail = SOLO la máquina (R4-B6.3): info AWS, métricas y la
+        lista de instancias hospedadas. Config/repos/backups son de la
+        INSTANCIA (get_odoo_instance_detail), no del servidor."""
         data = self.env["primate.cloud.dashboard"].get_server_detail(
             self.instance.id)
         # Instancia creada a mano (no por PCM) ⇒ False.
         self.assertFalse(data["provisioned_by_pcm"])
-        # Trae los repos del entorno para la tab Addons.
-        self.assertIn("repositories", data)
-        self.assertIn(self.repo.id, [r["id"] for r in data["repositories"]])
-        # Y la lista (vacía) de backups para la tab Backups.
-        self.assertIn("backups", data)
-        self.assertEqual(data["backups"], [])
+        # El servidor lista sus instancias hospedadas (con cliente/env_type).
+        self.assertIn("hosted_instances", data)
+        self.assertIn("hosted_summary", data)
+        self.assertIn("metrics", data)
+        # Los campos por-instancia se RETIRARON del serializer de servidor.
+        for retirado in ("repositories", "backups", "is_production", "runtime",
+                         "primary_instance_id", "main_url"):
+            self.assertNotIn(retirado, data,
+                             "%s ya no es del servidor (es de la instancia)"
+                             % retirado)
 
     def test_register_provisioned_marca_flag_pcm(self):
         """Una instancia creada por PCM queda marcada: el panel puede confiar en
