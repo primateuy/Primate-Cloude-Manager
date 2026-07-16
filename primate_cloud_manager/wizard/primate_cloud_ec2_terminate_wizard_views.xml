@@ -13,30 +13,22 @@
                 </div>
                 <field name="instance_id" invisible="1"/>
                 <field name="hosts_production" invisible="1"/>
-                <field name="is_cross_client" invisible="1"/>
                 <!-- Radio de daño: a quiénes se lleva puestos -->
                 <div class="alert alert-warning" role="alert">
                     <strong>Esta terminación se lleva puestas:</strong>
                     <field name="affected_text" nolabel="1" readonly="1"/>
+                    <div>Clientes: <field name="affected_clients" nolabel="1" readonly="1"/></div>
                 </div>
                 <div class="alert alert-danger" role="alert"
                      invisible="not hosts_production">
                     <i class="fa fa-exclamation-triangle"/>
                     <strong>Incluye instancias de PRODUCCIÓN.</strong>
                 </div>
-                <div class="alert alert-danger" role="alert"
-                     invisible="not is_cross_client">
-                    <i class="fa fa-users"/>
-                    Afecta a instancias de <strong>otros clientes</strong>
-                    (<field name="affected_clients" nolabel="1" readonly="1"/>).
-                    Solo un Cloud Admin puede terminar este servidor.
-                </div>
                 <group>
                     <field name="instance_name" string="Servidor"/>
                     <field name="confirm_name"
                            placeholder="Escribí el nombre exacto del servidor"/>
                     <field name="acknowledge"/>
-                    <field name="ack_clients" invisible="not is_cross_client"/>
                 </group>
                 <footer>
                     <button name="action_confirm" type="object" string="Terminar servidor"

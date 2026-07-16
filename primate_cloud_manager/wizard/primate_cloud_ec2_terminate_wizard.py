@@ -3,9 +3,10 @@
 
 R4-B6.3: terminar un SERVIDOR mata la máquina y con ella TODAS las instancias
 que hospeda — de varios clientes. La confirmación deja de ser el "¿seguro?"
-genérico: lista a quiénes se lleva puestos, realza si hay producción, y —
-cuando hospeda proyectos AJENOS al operador— exige ``group_cloud_admin``
-(D-B6.5: la fricción de UX no es un control de autorización).
+genérico: lista a quiénes se lleva puestos y realza si hay producción. La
+AUTORIZACIÓN (D-B6.5 corregido) es admin-only declarativo (ACL) — no hay en el
+modelo una asignación operador→cliente para decidirlo en runtime; el radio de
+daño se muestra igual porque le sirve al admin.
 """
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -32,7 +33,7 @@ class PrimateCloudEc2TerminateWizard(models.TransientModel):
     acknowledge = fields.Boolean(
         string="Entiendo que esta acción es permanente e irreversible",
     )
-    # R4-B6.3: radio de daño multi-cliente, calculado del servidor.
+    # R4-B6.3: radio de daño (a quiénes se lleva puestos) — útil para el admin.
     affected_text = fields.Text(
         string="Instancias afectadas", compute="_compute_affected", readonly=True,
     )
@@ -41,12 +42,6 @@ class PrimateCloudEc2TerminateWizard(models.TransientModel):
     )
     hosts_production = fields.Boolean(
         compute="_compute_affected", readonly=True,
-    )
-    is_cross_client = fields.Boolean(
-        string="Afecta a otros clientes", compute="_compute_affected", readonly=True,
-    )
-    ack_clients = fields.Boolean(
-        string="Reconozco que afecta a los clientes listados arriba",
     )
 
     @api.depends("instance_id")
@@ -68,11 +63,9 @@ class PrimateCloudEc2TerminateWizard(models.TransientModel):
                 sorted(c.display_name for c in clients)) or "—"
             wizard.hosts_production = any(
                 i.env_type == "production" for i in hosted)
-            # Cross-cliente = hospeda un proyecto que NO es del operador.
-            wizard.is_cross_client = wizard.instance_id._terminate_is_cross_client()
 
     def action_confirm(self):
-        """Valida la confirmación (fricción + gobierno) y encola la terminación."""
+        """Valida la confirmación y encola la terminación (admin-only en el job)."""
         self.ensure_one()
         if not self.acknowledge:
             raise UserError(_("Debés marcar la conformidad para continuar."))
@@ -80,12 +73,5 @@ class PrimateCloudEc2TerminateWizard(models.TransientModel):
             raise UserError(
                 _("El nombre escrito no coincide con el del servidor.")
             )
-        # Radio multi-cliente: ack explícito de los clientes afectados.
-        if self.is_cross_client and not self.ack_clients:
-            raise UserError(_(
-                "Este servidor hospeda instancias de otros clientes (%s): "
-                "reconocé explícitamente el impacto para continuar."
-            ) % self.affected_clients)
-        # action_terminate revalida el gobierno (admin-only cross-cliente,
-        # server-side) y encola el job.
+        # action_terminate valida el grupo (admin-only, server-side) y encola.
         return self.instance_id.action_terminate()

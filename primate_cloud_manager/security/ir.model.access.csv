@@ -35,7 +35,6 @@ access_dns_record_admin,primate.cloud.dns.record admin,model_primate_cloud_dns_r
 access_ec2_command_wizard_operator,ec2.command.wizard operator,model_primate_cloud_ec2_command_wizard,group_cloud_operator,1,1,1,1
 access_ec2_command_wizard_admin,ec2.command.wizard admin,model_primate_cloud_ec2_command_wizard,group_cloud_admin,1,1,1,1
 access_ec2_terminate_wizard_admin,ec2.terminate.wizard admin,model_primate_cloud_ec2_terminate_wizard,group_cloud_admin,1,1,1,1
-access_ec2_terminate_wizard_operator,ec2.terminate.wizard operator,model_primate_cloud_ec2_terminate_wizard,group_cloud_operator,1,1,1,1
 access_repository_viewer,primate.cloud.repository viewer,model_primate_cloud_repository,group_cloud_viewer,1,0,0,0
 access_repository_operator,primate.cloud.repository operator,model_primate_cloud_repository,group_cloud_operator,1,1,1,0
 access_repository_admin,primate.cloud.repository admin,model_primate_cloud_repository,group_cloud_admin,1,1,1,1
