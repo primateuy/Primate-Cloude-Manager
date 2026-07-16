@@ -1407,3 +1407,117 @@ class TestR4B6Terminate(TransactionCase):
         with mock.patch.object(type(self.machine), "with_delay") as wd:
             self.machine.with_user(admin).action_terminate()
             wd.assert_called()
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR4B6DnsYRefresh(TransactionCase):
+    """R4-B6.4: DNS best-effort (§8.1) + refresh de staging por-instancia (D-B6.6)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "P", "account_id": self.account.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "S", "project_id": self.project.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community"})
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id, "aws_instance_id": "i-d",
+            "instance_state": "running", "region": "us-east-1",
+            "environment_id": self.server.id, "public_ip": "1.2.3.4"})
+        self.server.ec2_instance_id = self.machine
+        self.server.state = "active"
+        self.inst = self.server.primary_instance_id
+        self.inst.write({"slug": "a", "state": "active", "main_url": "a.pcm.test"})
+        self.server._materialize_multiodoo_layout(self.inst, {"db_mode": "local_pg"})
+
+    # --- DNS best-effort ---
+    def test_dns_pending_se_puebla_y_expone(self):
+        self.inst._set_dns_pending("Route53 timeout", {
+            "hosted_zone_id": "Z1", "ttl": 300, "domain": "a.pcm.test"})
+        data = self.inst._dns_pending_data()
+        self.assertEqual(data["reason"], "Route53 timeout")
+        self.assertEqual(data["hosted_zone_id"], "Z1")
+        # El serializer de instancia lo expone para el badge.
+        detail = self.env["primate.cloud.dashboard"].get_odoo_instance_detail(
+            self.inst.id)
+        self.assertTrue(detail["dns_pending"])
+        self.assertEqual(detail["dns_pending"]["domain"], "a.pcm.test")
+
+    def test_retry_dns_reusa_provision_sin_install(self):
+        # El reintento crea el registro reusando _provision_dns; NO corre SSM
+        # de install (cero DIRTY_SLUG). Éxito → limpia el flag + crea el record.
+        self.inst._set_dns_pending("timeout", {
+            "hosted_zone_id": "Z1", "ttl": 300, "domain": "a.pcm.test"})
+        called = {}
+        with mock.patch.object(type(self.account), "_get_aws_service",
+                               return_value=mock.Mock()), \
+                mock.patch.object(type(self.server), "_provision_dns",
+                                  side_effect=lambda *a, **k:
+                                  called.update(dns=True)):
+            ok = self.inst.job_retry_dns()
+        self.assertTrue(ok)
+        self.assertTrue(called.get("dns"))
+        self.assertFalse(self.inst.dns_pending)   # flag limpio
+
+    def test_retry_dns_falla_refresca_motivo(self):
+        self.inst._set_dns_pending("timeout 1", {
+            "hosted_zone_id": "Z1", "ttl": 300, "domain": "a.pcm.test"})
+        with mock.patch.object(type(self.account), "_get_aws_service",
+                               return_value=mock.Mock()), \
+                mock.patch.object(type(self.server), "_provision_dns",
+                                  side_effect=Exception("timeout 2")):
+            ok = self.inst.job_retry_dns()
+        self.assertFalse(ok)
+        self.assertIn("timeout 2", self.inst._dns_pending_data()["reason"])
+
+    def test_action_retry_sin_pendiente_falla(self):
+        with self.assertRaises(UserError):
+            self.inst.action_retry_dns()
+
+    # --- Refresh por-instancia (D-B6.6) ---
+    def test_resolve_refresh_origin_instance_based(self):
+        # Staging instance-based: usa origin_instance_id (no la primaria).
+        origin = self.inst
+        origin_db = self.env["primate.cloud.database"].create({
+            "name": "prod_db", "account_id": self.account.id,
+            "environment_id": self.server.id, "db_type": "local_pg",
+            "instance_id": origin.id})
+        origin.database_id = origin_db
+        stg = self.server._create_instance_with_ports({
+            "name": "Stg", "project_id": self.project.id, "slug": "stg",
+            "odoo_version": "19", "env_type": "staging",
+            "origin_instance_id": origin.id})
+        oi, odb = stg._resolve_refresh_origin()
+        self.assertEqual(oi, origin)
+        self.assertEqual(odb, origin_db)
+
+    def test_resolve_refresh_origin_env_based_no_primaria(self):
+        # Staging env-based (fase 8): deriva de staging_origin_database_id
+        # .instance_id, NO de la primaria del origen.
+        origin_db = self.env["primate.cloud.database"].create({
+            "name": "prod_db", "account_id": self.account.id,
+            "environment_id": self.server.id, "db_type": "local_pg",
+            "instance_id": self.inst.id})
+        stg_env = self.env["primate.cloud.environment"].create({
+            "name": "StgEnv", "project_id": self.project.id,
+            "env_type": "staging", "odoo_version": "19",
+            "staging_origin_database_id": origin_db.id})
+        stg_prim = stg_env.primary_instance_id
+        oi, odb = stg_prim._resolve_refresh_origin()
+        self.assertEqual(odb, origin_db)
+        self.assertEqual(oi, self.inst)   # la instancia de la BD, no [:1]
+
+    def test_resolve_refresh_origin_sin_dato_falla(self):
+        stg = self.server._create_instance_with_ports({
+            "name": "Stg2", "project_id": self.project.id, "slug": "stg2",
+            "odoo_version": "19", "env_type": "staging"})
+        with self.assertRaises(UserError):
+            stg._resolve_refresh_origin()
+
+    def test_refresh_no_staging_falla(self):
+        with self.assertRaises(UserError):
+            self.inst.action_refresh_staging()   # inst es production

@@ -190,6 +190,18 @@ class PrimateCloudInstance(models.Model):
         copy=False, groups="primate_cloud_manager.group_cloud_admin",
     )
 
+    # --- DNS best-effort (R4-B6.4, §8.1) ---
+    # Si Route53 falla al montar la instancia, el Odoo queda ACTIVO (nginx ya
+    # responde por dominio/IP) y acá se guarda el motivo + los params para
+    # reintentar el registro SIN re-correr el install (cero PCM_ERR_DIRTY_SLUG).
+    # JSON: {"reason", "hosted_zone_id", "ttl", "domain", "record_type"}. Vacío
+    # = sin DNS pendiente.
+    dns_pending = fields.Char(
+        string="DNS pendiente (JSON)", copy=False, readonly=True,
+        help="Motivo + params del registro DNS que falló al aprovisionar, "
+             "para reintentarlo sin re-instalar.",
+    )
+
     active = fields.Boolean(string="Activo", default=True)
     notes = fields.Text(string="Notas")
 
@@ -237,6 +249,73 @@ class PrimateCloudInstance(models.Model):
         """
         self.ensure_one()
         return self.environment_id._active_machine()
+
+    # --- DNS best-effort (R4-B6.4) ---
+    def _set_dns_pending(self, reason, params):
+        """Guarda el motivo + params del DNS que falló (para reintentar)."""
+        self.ensure_one()
+        self.sudo().dns_pending = json.dumps({
+            "reason": (reason or "")[:400],
+            "hosted_zone_id": params.get("hosted_zone_id") or "",
+            "ttl": params.get("ttl") or 300,
+            "domain": params.get("domain") or self.main_url or "",
+            "record_type": "A",
+        })
+
+    def _dns_pending_data(self):
+        """Dict del DNS pendiente (o False). Consumido por el serializer."""
+        self.ensure_one()
+        if not self.dns_pending:
+            return False
+        try:
+            return json.loads(self.dns_pending)
+        except (ValueError, TypeError):
+            return False
+
+    def action_retry_dns(self):
+        """Reintenta SOLO el registro DNS pendiente (R4-B6.4, §8.1 cond 3).
+
+        Reusa ``environment._provision_dns`` con los params guardados, SIN
+        re-correr ningún install (cero riesgo de PCM_ERR_DIRTY_SLUG: la
+        instancia ya existe). Éxito → limpia ``dns_pending`` + crea el
+        registro real. Fallo → refresca el motivo (sigue reintentable). Va
+        por queue_job (muta Route53).
+        """
+        self.ensure_one()
+        if not self.dns_pending:
+            raise UserError(_("Esta instancia no tiene un DNS pendiente."))
+        self.with_delay(
+            description=_("Reintentar DNS: %s") % self.display_name
+        ).job_retry_dns()
+        return True
+
+    def job_retry_dns(self):
+        """Job: crea el registro DNS pendiente reusando el flujo de provisioning."""
+        self.ensure_one()
+        data = self._dns_pending_data()
+        if not data:
+            return False
+        env = self.environment_id
+        machine = self._machine()
+        if not machine:
+            self.message_post(body=_(
+                "No se pudo crear el DNS: el servidor no tiene máquina activa."))
+            return False
+        try:
+            base = self.account_id._get_aws_service()
+            env._provision_dns(
+                base, self.account_id, machine,
+                {"create_dns": True, "hosted_zone_id": data["hosted_zone_id"],
+                 "ttl": data["ttl"], "domain": data["domain"]},
+                data["domain"], instance=self)
+            self.sudo().dns_pending = False   # éxito → limpia el flag
+            self.message_post(body=_("Registro DNS creado (reintento)."))
+            return True
+        except Exception as error:  # noqa: BLE001 - se anota, sigue reintentable
+            self._set_dns_pending(str(error), data)
+            self.message_post(body=_(
+                "El reintento de DNS falló otra vez: %s.") % error)
+            return False
 
     def _machine_required(self):
         """Como :meth:`_machine`, pero exige que exista (operaciones SSM)."""
@@ -349,6 +428,76 @@ class PrimateCloudInstance(models.Model):
             return "https://%s" % self.main_url.rstrip("/")
         machine = self._machine()
         return "http://%s" % (machine.public_ip or "")
+
+    # --- Refresh de staging POR INSTANCIA (R4-B6.4 / D-B6.6) ---
+    def _resolve_refresh_origin(self):
+        """(instancia_origen, base_origen) para refrescar ESTE staging.
+
+        D-B6.6 — fallback explícito, NUNCA la primaria a ciegas (ese era el
+        ``[:1]``):
+        1. Instance-based (B5): ``self.origin_instance_id`` seteado → esa
+           instancia y su ``database_id`` (verdad nueva, inequívoca).
+        2. Env-based (Fase 8): sin ``origin_instance_id`` pero el entorno del
+           staging tiene ``staging_origin_database_id`` → derivar la instancia
+           origen de esa BD (``.instance_id``, por el mixin R1), no la primaria.
+        3. Ninguno → fail claro (indicá la instancia de origen).
+        """
+        self.ensure_one()
+        if self.origin_instance_id:
+            origin = self.origin_instance_id
+            return origin, origin.database_id
+        env = self.environment_id
+        if env.env_type == "staging" and env.staging_origin_database_id:
+            db = env.staging_origin_database_id
+            if db.instance_id:
+                return db.instance_id, db
+        raise UserError(_(
+            "Este staging no tiene un origen registrado de forma inequívoca: "
+            "indicá la instancia de origen (no se adivina la primaria)."))
+
+    def action_refresh_staging(self, use_last_backup=False, neutralize=True):
+        """Refresca la base de ESTE staging desde su instancia de origen (B6.4).
+
+        Reusa el pipeline backup/restore por-instancia de B4: backup del
+        origen → restore sobre la BD de este staging (con neutralización).
+        Solo aplica a instancias ``env_type=staging``.
+        """
+        self.ensure_one()
+        if self.env_type != "staging":
+            raise UserError(_("Refrescar solo aplica a instancias de staging."))
+        # Valida el origen ANTES de encolar (fail rápido si no resuelve).
+        self._resolve_refresh_origin()
+        self.with_delay(
+            description=_("Refrescar staging: %s") % self.display_name
+        ).job_refresh_staging_instance(
+            {"use_last_backup": use_last_backup, "neutralize": neutralize})
+        return True
+
+    def job_refresh_staging_instance(self, params):
+        """Job: copia la base del origen sobre este staging (pipeline B4)."""
+        self.ensure_one()
+        env = self.environment_id
+        machine = self._machine()
+        if not machine or not self.database_id:
+            self.message_post(body=_(
+                "No se puede refrescar: falta máquina activa o base del staging."))
+            return False
+        origin_inst, origin_db = self._resolve_refresh_origin()
+        origin_env = origin_inst.environment_id
+        origin_machine = origin_inst._machine()
+        region = self.account_id.default_region
+        source = origin_env._staging_source_backup(
+            origin_env, origin_machine, origin_db, region,
+            use_last_backup=params.get("use_last_backup"))
+        ok = env.job_restore_backup({
+            "backup_id": source.id, "db_name": self.database_id.name,
+            "instance_id": machine.id, "odoo_instance_id": self.id,
+            "pre_backup": False,
+            "neutralize": params.get("neutralize", True)})
+        if ok:
+            self.message_post(body=_("Staging refrescado desde %s.")
+                              % origin_inst.display_name)
+        return ok
 
     # --- Wrappers canónicos remotos (la mecánica SSM vive en la máquina) ---
     def deploy_impersonate(self, dbs, pcm_ip=None):

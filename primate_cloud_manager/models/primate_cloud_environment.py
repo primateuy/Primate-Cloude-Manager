@@ -1178,17 +1178,23 @@ class PrimateCloudEnvironment(models.Model):
                 "main_url": params.get("domain") or instance.main_url,
                 "database_id": database.id,
             })
-            # DNS best-effort: el Odoo ya está montado y sano; un fallo de
-            # Route53 no debe dejar la instancia en error (un retry completo
-            # chocaría con PCM_ERR_DIRTY_SLUG). Se anota y se reintenta a mano.
+            # DNS best-effort (§8.1): el Odoo ya está montado y sano; un fallo
+            # de Route53 no debe dejar la instancia en error (un retry completo
+            # chocaría con PCM_ERR_DIRTY_SLUG). Se persiste el motivo + params
+            # en instance.dns_pending → la pantalla de instancia lo avisa
+            # (badge), muestra el acceso por IP+Host mientras tanto, y ofrece
+            # "Crear DNS ahora" (action_retry_dns, sin re-instalar).
             if params.get("create_dns"):
                 try:
                     self._provision_dns(base, self.account_id, machine, params,
                                         params.get("domain"), instance=instance)
+                    instance.sudo().dns_pending = False
                 except Exception as error:  # noqa: BLE001 - best-effort
+                    instance._set_dns_pending(str(error), params)
                     self.message_post(body=_(
                         "ADVERTENCIA: la instancia quedó activa pero el DNS "
-                        "falló: %s. Crearlo a mano desde Registros DNS.") % error)
+                        "falló: %s. Reintentar desde la pantalla de la "
+                        "instancia («Crear DNS ahora»).") % error)
             self._log("instance_install", name=title, result="success",
                       record=instance)
             bus.provision_done(self.env, self, ok=True,
