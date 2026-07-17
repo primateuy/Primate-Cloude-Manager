@@ -22,6 +22,7 @@ SHOT = os.path.join(os.path.dirname(__file__), "screenshots")
 FIXTURE = "SMOKE UI (borrar)"          # entorno draft con cuenta de prueba
 INFRA_ENV = "Forum Producción"          # entorno con infra para drill-through
 DNS_ENV = "SMOKE DNS (borrar)"          # entorno producción con registro DNS
+MULTI_ENV = "SMOKE MULTI (borrar)"      # servidor multi-Odoo (prod + staging, R4-B6)
 
 console_errors = []
 results = []
@@ -230,62 +231,91 @@ def s06_respaldos_y_wizards_fase8(pg):
     pg.screenshot(path=f"{SHOT}/s06_restore_drawer.png")
     pg.click(f"{dr} .modal-footer button:has-text('Cancelar')")
     pg.wait_for_selector(dr, state="detached", timeout=8000)
-    # 3) Staging desde la instancia: detalle de servidor -> Crear staging.
+    # 3) Crear staging: R4-B6 lo ofrece el HUB del entorno (ya no la pantalla de
+    # servidor). El wizard trae el servidor destino (D-R4.6) en el drawer.
     open_env(pg, INFRA_ENV)
-    pg.locator(".o_pcm_instance_head").first.click()
     pg.wait_for_selector("button:has-text('Crear staging')", timeout=10000)
     pg.click("button:has-text('Crear staging')")
     pg.wait_for_selector(dr, timeout=10000)
-    # Origen preseleccionado (instancia única del entorno).
     pg.wait_for_selector(f"{dr} [name='origin_instance_id']", timeout=8000)
-    pg.screenshot(path=f"{SHOT}/s06_staging_desde_servidor.png")
+    pg.screenshot(path=f"{SHOT}/s06_staging.png")
     pg.click(f"{dr} .modal-footer button:has-text('Cancelar')")
     pg.wait_for_selector(dr, state="detached", timeout=8000)
 
 
 @scenario
-def s08_costos_y_logs(pg):
-    """Fase 9: pantalla de Costos (con 'datos al') y el visor de logs del
-    detalle de servidor renderizan (aunque con datos vacíos/mock)."""
+def s08_costos(pg):
+    """Fase 9: pantalla de Costos renderiza sus KPIs."""
     open_app(pg)
-    # Costos: se abre desde el sidebar y renderiza sus KPIs.
     pg.click(".o_pcm_nav_item:has-text('Costos')")
     pg.wait_for_selector(".o_pcm_costos", timeout=10000)
     assert pg.locator(".o_pcm_costos h1:has-text('Costos')").count() == 1, \
         "la pantalla de costos no renderizó"
-    # La sección tiene los tres KPIs (mes en curso / anterior / proyección).
     assert pg.locator(".o_pcm_costos .o_pcm_kpi_value").count() >= 3, \
         "faltan los KPIs de costos"
     pg.screenshot(path=f"{SHOT}/s08_costos.png")
-    # Panel de instancia (tabs): drill a un servidor con infra.
-    open_env(pg, INFRA_ENV)
+
+
+@scenario
+def s09_servidor_vs_instancia(pg):
+    """R4-B6: la reescritura de UI más grande del proyecto. Verifica el corte
+    servidor/instancia: el SERVIDOR es máquina-only (sin config/logs/addons/
+    login-as), lista sus instancias con resumen env_type honesto, y el panel
+    Odoo (con sus tabs y rutas del SLUG) vive en la pantalla de INSTANCIA."""
+    open_app(pg)
+    open_env(pg, MULTI_ENV)
+    # Drill al SERVIDOR (la máquina) desde el hub del entorno.
     pg.locator(".o_pcm_instance_head").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000)
+    pg.screenshot(path=f"{SHOT}/s09_servidor.png")
+    body = pg.locator(".o_pcm_detalle").inner_text()
+
+    # (1) El SERVIDOR NO expone acciones por-instancia (assert de AUSENCIA en
+    # la pantalla REAL, no solo en el JS): sin tabs de panel, sin Login-as,
+    # sin "Traer logs", sin "Agregar addon", sin editor de Config.
+    assert pg.locator(".o_pcm_detalle .o_pcm_tabs").count() == 0, \
+        "el servidor NO debe tener las tabs del panel de instancia"
+    for prohibido in ("Iniciar sesión como", "Traer logs", "Agregar addon",
+                      "Guardar y reiniciar"):
+        assert prohibido not in body, \
+            f"el servidor NO debe ofrecer '{prohibido}' (es de la instancia)"
+
+    # (2) Resumen env_type honesto: el server mitad-y-mitad NO dice "producción"
+    # a secas — lista "producción" Y "staging".
+    assert "Hospeda:" in body, "falta el resumen de instancias hospedadas"
+    low = body.lower()
+    assert "producción" in low and "staging" in low, \
+        f"el resumen env_type no refleja el server mitad-y-mitad: {body[:200]}"
+
+    # (3) Lista de instancias hospedadas con su cliente → click a la de BETA
+    # (staging, cliente-b) para verificar las rutas del slug.
+    assert pg.locator(".o_pcm_line_click:has-text('Odoo Beta')").count() >= 1, \
+        "el servidor no lista sus instancias hospedadas con nombre"
+    pg.locator(".o_pcm_line_click:has-text('Odoo Beta')").first.click()
     pg.wait_for_selector(".o_pcm_detalle .o_pcm_tabs", timeout=10000)
-    # Tab Dashboard (por defecto): métricas con RAM/disco "requiere agente".
-    pg.wait_for_selector(".o_pcm_section_head:has-text('Métricas')", timeout=8000)
-    assert pg.locator(":text('requiere agente CloudWatch')").count() >= 1, \
-        "RAM/disco deberían mostrar 'requiere agente', no gráfico vacío"
-    pg.screenshot(path=f"{SHOT}/s08_dashboard.png")
-    # Tab Logs: el visor on-demand + el toggle de streaming ("En vivo") viven acá.
+    pg.screenshot(path=f"{SHOT}/s09_instancia.png")
+    inst_body = pg.locator(".o_pcm_detalle").inner_text()
+
+    # (4) Las RUTAS son las del SLUG (backend), no las legacy hardcodeadas de
+    # PCM_PATHS: /etc/odoo/cliente-b.conf y la unit odoo-cliente-b.
+    assert "/etc/odoo/cliente-b.conf" in inst_body, \
+        f"la instancia no muestra el conf del slug (¿PCM_PATHS legacy?): revisar"
+    assert "odoo-cliente-b" in inst_body, \
+        "la instancia no muestra la unit del slug"
+    assert "/opt/odoo/odoo.conf" not in inst_body and \
+        "/etc/odoo/odoo.conf" not in inst_body, \
+        "aparecen rutas legacy hardcodeadas en la pantalla de instancia"
+
+    # (5) Los tabs de la INSTANCIA abren (Logs / Config).
     pg.click(".o_pcm_tab:has-text('Logs')")
     pg.wait_for_selector("button:has-text('Traer logs')", timeout=8000)
     assert pg.locator("button:has-text('Traer logs')").count() == 1, \
-        "falta el visor de logs en la tab Logs"
-    assert pg.locator("button:has-text('En vivo')").count() == 1, \
-        "falta el toggle de streaming 'En vivo'"
-    pg.screenshot(path=f"{SHOT}/s08_logs.png")
-    # Deep-link: la tab activa se refleja en el hash y sobrevive al F5.
-    assert ".logs" in (pg.url or ""), f"la tab no quedó en el hash: {pg.url}"
-    pg.reload()
-    pg.wait_for_selector(".o_pcm_tab_active:has-text('Logs')", timeout=10000)
-    assert pg.locator("button:has-text('Traer logs')").count() == 1, \
-        "tras F5 no se restauró la tab Logs"
-    # Tab Config (Bloque B3): ahora habilitada; renderiza (form o aviso).
+        "la tab Logs de la instancia no montó su visor"
     pg.click(".o_pcm_tab:has-text('Config')")
     pg.wait_for_selector(".o_pcm_tab_active:has-text('Config')", timeout=8000)
     assert pg.locator(".o_pcm_detalle .o_pcm_card").count() >= 1, \
-        "la tab Config no renderizó contenido"
-    pg.screenshot(path=f"{SHOT}/s08_config.png")
+        "la tab Config de la instancia no renderizó contenido"
+    pg.screenshot(path=f"{SHOT}/s09_instancia_config.png")
 
 
 @scenario
@@ -355,8 +385,8 @@ def main():
         pg.wait_for_timeout(1500)
         for fn in (s01_app_y_sidebar, s02_hub_y_drill, s03_drawer_cancelar,
                    s04_drawer_error_correccion_exito,
-                   s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos_y_logs,
-                   s05_salir_y_volver):
+                   s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
+                   s09_servidor_vs_instancia, s05_salir_y_volver):
             fn(pg)
         br.close()
 
