@@ -11,12 +11,15 @@ deshabilitado.
 import importlib.util
 import os
 from datetime import date
+from unittest import mock
 
 from odoo.exceptions import UserError, ValidationError
 from odoo.tests.common import TransactionCase, tagged
 from odoo.tools import mute_logger
 
 from odoo import fields
+
+from ..services import aws_ec2
 
 
 @tagged("post_install", "-at_install", "primate_cloud")
@@ -348,3 +351,131 @@ class TestR5B2Motor(TransactionCase):
     def test_usage_deshabilitado_no_se_puede_guardar(self):
         with self.assertRaises(ValidationError):
             self.server.cost_split_method = "usage"
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR5B3Retag(TransactionCase):
+    """Re-tag dedicado/compartido: quién queda con primate:client_id."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.partner_x = self.env["res.partner"].create({"name": "Cliente X"})
+        self.partner_y = self.env["res.partner"].create({"name": "Cliente Y"})
+        self.sentinel = self.env["res.partner"].create(
+            {"name": "⚠ SIN CLIENTE (asignar)"})
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.unassigned_partner_id", str(self.sentinel.id))
+        self.proj_x = self.env["primate.cloud.project"].create(
+            {"name": "PX", "account_id": self.account.id,
+             "partner_id": self.partner_x.id})
+        self.proj_y = self.env["primate.cloud.project"].create(
+            {"name": "PY", "account_id": self.account.id,
+             "partner_id": self.partner_y.id})
+        self.proj_sent = self.env["primate.cloud.project"].create(
+            {"name": "PS", "account_id": self.account.id,
+             "partner_id": self.sentinel.id})
+        # Servidor de X (su primaria nace en proj_x) + máquina EC2.
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "srv", "project_id": self.proj_x.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community",
+        })
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id, "aws_instance_id": "i-1",
+            "instance_state": "running", "region": "us-east-1",
+            "environment_id": self.server.id, "provisioned_by_pcm": True,
+        })
+        self.server.ec2_instance_id = self.machine
+
+    def _add(self, project, name):
+        return self.server._create_instance_with_ports(
+            {"name": name, "project_id": project.id})
+
+    # --- _dedicated_client_partner (cálculo puro) ----------------------
+    def test_dedicado_un_solo_cliente(self):
+        self.assertEqual(self.server._dedicated_client_partner(), self.partner_x)
+
+    def test_compartido_dos_clientes_no_dedicado(self):
+        self._add(self.proj_y, "B")
+        self.assertFalse(self.server._dedicated_client_partner())
+
+    def test_todas_centinela_no_dedicado(self):
+        self.server.primary_instance_id.project_id = self.proj_sent
+        self._add(self.proj_sent, "B")
+        self.assertFalse(self.server._dedicated_client_partner())
+
+    def test_cliente_real_mas_centinela_no_dedicado(self):
+        # X + una sin asignar: taggear X sobre-atribuiría → NO dedicado.
+        self._add(self.proj_sent, "sinasignar")
+        self.assertFalse(self.server._dedicated_client_partner())
+
+    def test_archivar_el_otro_cliente_devuelve_dedicado(self):
+        # Requisito 1: archivar cambia la condición (compartido → dedicado).
+        b = self._add(self.proj_y, "B")
+        self.assertFalse(self.server._dedicated_client_partner())   # compartido
+        b.write({"state": "archived"})
+        self.assertEqual(self.server._dedicated_client_partner(),   # dedicado a X
+                         self.partner_x)
+
+    # --- trigger en el choke point (add + archive) ---------------------
+    def test_agregar_instancia_encola_retag(self):
+        with mock.patch.object(type(self.server),
+                               "_enqueue_client_tag_sync") as enq:
+            self._add(self.proj_y, "B")
+        enq.assert_called()
+
+    def test_archivar_encola_retag(self):
+        b = self._add(self.proj_y, "B")
+        with mock.patch.object(type(self.server),
+                               "_enqueue_client_tag_sync") as enq:
+            b.write({"state": "archived"})
+        enq.assert_called()
+
+    # --- _job_sync_client_tag (AWS mockeado) ---------------------------
+    def _patch_ec2(self, fake):
+        return (mock.patch.object(type(self.account), "_get_aws_service",
+                                  return_value=mock.Mock()),
+                mock.patch.object(aws_ec2, "AwsEc2Service", return_value=fake))
+
+    def test_job_dedicado_pone_client_id(self):
+        fake = mock.Mock()
+        p1, p2 = self._patch_ec2(fake)
+        with p1, p2:
+            self.server._job_sync_client_tag()
+        fake.create_tags.assert_called_once()
+        tags = {t["Key"]: t["Value"] for t in fake.create_tags.call_args[0][1]}
+        self.assertIn("primate:client_id", tags)
+        fake.delete_tags.assert_not_called()
+
+    def test_job_compartido_quita_client_id(self):
+        self._add(self.proj_y, "B")
+        fake = mock.Mock()
+        p1, p2 = self._patch_ec2(fake)
+        with p1, p2:
+            self.server._job_sync_client_tag()
+        fake.delete_tags.assert_called_once()
+        keys = fake.delete_tags.call_args[0][1]
+        self.assertIn("primate:client_id", keys)
+        fake.create_tags.assert_not_called()
+
+    def test_job_no_rompe_si_aws_falla(self):
+        # Requisito 3: si el tag falla (permiso, etc.) NO rompe la operación.
+        fake = mock.Mock()
+        fake.create_tags.side_effect = Exception("AccessDenied")
+        p1, p2 = self._patch_ec2(fake)
+        with p1, p2, mute_logger(
+                "odoo.addons.primate_cloud_manager.models.primate_cloud_environment"):
+            self.server._job_sync_client_tag()   # no debe levantar
+
+    def test_job_maquina_terminada_no_op(self):
+        self.machine.instance_state = "terminated"
+        fake = mock.Mock()
+        p1, p2 = self._patch_ec2(fake)
+        with p1, p2:
+            self.server._job_sync_client_tag()
+        fake.create_tags.assert_not_called()
+        fake.delete_tags.assert_not_called()

@@ -333,6 +333,27 @@ class AwsEc2Service:
         response = client.create_tags(Resources=list(resource_ids), Tags=tags)
         return self._request_id(response)
 
+    def delete_tags(self, resource_ids, keys, region=None):
+        """Quita tags (por clave) de recursos EC2 existentes.
+
+        ``ec2:DeleteTags`` es idempotente: borrar una clave ausente es un no-op.
+        Se pasan solo las CLAVES (sin Value → borra cualquier valor). Se usa para
+        retirar ``primate:client_id`` cuando un servidor deja de ser dedicado a
+        un cliente (pasa a compartido).
+
+        Args:
+            resource_ids (list[str]): ids de recursos EC2.
+            keys (list[str]): claves de tag a borrar.
+            region (str, optional): región de los recursos.
+
+        Returns:
+            str: el AWS Request ID.
+        """
+        client = self._base.get_client("ec2", region=region)
+        response = client.delete_tags(
+            Resources=list(resource_ids), Tags=[{"Key": k} for k in keys])
+        return self._request_id(response)
+
     @staticmethod
     def _error_code(error):
         """Código de error boto3 (``''`` si no aplica)."""

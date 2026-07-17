@@ -426,6 +426,75 @@ class PrimateCloudEnvironment(models.Model):
             "amount": total_amount, "computed_at": now,
         }
 
+    # --- Re-tag dedicado / compartido (R5-B3) --------------------------
+    def _dedicated_client_partner(self):
+        """Partner al que el servidor está DEDICADO, o recordset vacío si es
+        COMPARTIDO / sin cliente real.
+
+        Dedicado = TODAS las instancias vivas (no archivadas) son del MISMO
+        cliente REAL — una sola EC2 no puede tener dos dueños. El centinela
+        "⚠ SIN CLIENTE" NO cuenta como cliente: un servidor de puras instancias
+        sin asignar, o de un cliente real + una sin asignar, NO es dedicado
+        (taggear su client_id sobre-atribuiría todo el servidor en Cost Explorer).
+        """
+        self.ensure_one()
+        live = self.with_context(active_test=False).instance_ids.filtered(
+            lambda i: i.state != "archived")
+        partners = live.mapped("project_id.partner_id")
+        sentinel_id = int(self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.unassigned_partner_id") or 0)
+        distinct = set(partners.ids)
+        if len(distinct) == 1 and sentinel_id not in distinct:
+            return partners[:1]
+        return self.env["res.partner"]
+
+    def _enqueue_client_tag_sync(self):
+        """Encola el re-tag de ``primate:client_id``. Va por ``queue_job`` porque
+        MUTA AWS; y encolar (una escritura en BD) NO puede hacer fallar la
+        operación que agregó/archivó la instancia. Dedup por servidor."""
+        self.ensure_one()
+        if not self.ec2_instance_id or not self.ec2_instance_id.aws_instance_id:
+            return   # sin máquina gestionada: nada que re-taggear
+        self.with_delay(
+            identity_key="pcm_retag_client_%s" % self.id,
+            description=_("Re-tag client_id: %s") % self.name
+        )._job_sync_client_tag()
+
+    def _job_sync_client_tag(self):
+        """Job: pone/quita ``primate:client_id`` en la EC2 según el servidor sea
+        dedicado a un cliente real o compartido. NUNCA rompe la operación que lo
+        disparó (regla Fase 9: el tagging no hace fallar lo que etiqueta) — captura,
+        loguea y sigue."""
+        self.ensure_one()
+        machine = self.ec2_instance_id
+        if (not machine or not machine.aws_instance_id
+                or machine.instance_state == "terminated"):
+            return   # sin máquina / terminada: nada que taggear
+        try:
+            ec2 = aws_ec2.AwsEc2Service(self.account_id._get_aws_service())
+            region = machine.region or self.account_id.default_region
+            partner = self._dedicated_client_partner()
+            if partner:
+                ec2.create_tags(
+                    [machine.aws_instance_id],
+                    [{"Key": aws_base.CLIENT_ID_TAG,
+                      "Value": partner._ensure_pcm_ref()},
+                     {"Key": aws_base.CLIENT_TAG, "Value": partner.name or ""}],
+                    region=region)
+            else:
+                # Compartido / sin cliente real → se RETIRA el client_id (si no,
+                # CE seguiría agrupando todo el servidor bajo el dueño anterior).
+                ec2.delete_tags(
+                    [machine.aws_instance_id],
+                    [aws_base.CLIENT_ID_TAG, aws_base.CLIENT_TAG], region=region)
+        except Exception as error:  # noqa: BLE001 - el tagging no rompe nada
+            _logger.warning(
+                "Re-tag de client_id del servidor %s falló (se ignora, regla "
+                "Fase 9): %s", self.name, error)
+            self.env["primate.cloud.operation.log"].log_operation(
+                "retag", name=_("Re-tag client_id: %s") % self.name,
+                record=self, result="failed", error_message=str(error))
+
     # Campos de identidad del Odoo que desde R1 viven en la instancia. Si
     # vienen en el create del entorno (flujos/tests previos a D6), se
     # extraen y se crean EN la instancia primaria que nace con el entorno.

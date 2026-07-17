@@ -241,7 +241,12 @@ class PrimateCloudInstance(models.Model):
                 vals["slug"] = slugify(vals.get("name"))
             if not vals.get("pcm_ref"):
                 vals["pcm_ref"] = self._new_pcm_ref()
-        return super().create(vals_list)
+        records = super().create(vals_list)
+        # Una instancia nueva puede volver COMPARTIDO un servidor dedicado (o
+        # sumar el 1er cliente): re-taggear (por queue_job, no rompe el create).
+        for env in records.environment_id:
+            env._enqueue_client_tag_sync()
+        return records
 
     def write(self, vals):
         """Estampa ``hosted_until`` al archivar (choke point único del dato).
@@ -253,6 +258,14 @@ class PrimateCloudInstance(models.Model):
         si vuelve a un estado vivo se limpia (edge de reactivación). Un
         ``hosted_until`` explícito en el mismo write manda (no se toca).
         """
+        # ¿Cambia la condición dedicado/compartido? Pasar A o DESDE 'archived'
+        # altera el set de instancias VIVAS del servidor (R5-B3). Se evalúa ANTES
+        # de escribir (después, r.state ya cambió). Mismo choke point que
+        # hosted_until: el re-tag por archivar/reactivar no se escapa.
+        retag = "state" in vals and (
+            vals["state"] == "archived"
+            or any(rec.state == "archived" for rec in self))
+        envs = self.environment_id
         if vals.get("state") == "archived" and "hosted_until" not in vals:
             now = fields.Datetime.now()
             sin_sello = self.filtered(lambda r: not r.hosted_until)
@@ -263,11 +276,16 @@ class PrimateCloudInstance(models.Model):
                     dict(vals, hosted_until=now))
             if resto:
                 res = super(PrimateCloudInstance, resto).write(vals) and res
-            return res
-        if (vals.get("state") and vals["state"] != "archived"
-                and "hosted_until" not in vals and self.filtered("hosted_until")):
-            vals = dict(vals, hosted_until=False)   # reactivación: limpia el sello
-        return super().write(vals)
+        else:
+            if (vals.get("state") and vals["state"] != "archived"
+                    and "hosted_until" not in vals
+                    and self.filtered("hosted_until")):
+                vals = dict(vals, hosted_until=False)  # reactivación: limpia sello
+            res = super().write(vals)
+        if retag:
+            for env in envs:
+                env._enqueue_client_tag_sync()
+        return res
 
     def _hosted_days_in_period(self, period_start, period_end):
         """Días que la instancia estuvo hospedada dentro de ``[period_start,
