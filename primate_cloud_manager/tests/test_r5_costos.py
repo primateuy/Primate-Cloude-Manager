@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""R5-B1: fundación del reparto de costos.
+"""R5 — reparto de costos.
 
-Cubre lo que NO es el motor de reparto (eso es B2): la inmutabilidad de
-``cost.share`` con su escape de regeneración, la captura de ``hosted_until`` al
-archivar (dato del prorrateo, gratis ahora / irreconstruible después) y el
-prerequisito ``project.partner_id`` required.
+B1 (fundación): inmutabilidad de ``cost.share`` con escape de regeneración,
+captura de ``hosted_until`` al archivar, prerequisito ``project.partner_id``
+required + su migración.
+B2 (motor): splitter al centavo con residuo determinístico, prorrateo por días,
+servidor sin instancias (Q2), regeneración idempotente, método 'usage'
+deshabilitado.
 """
 import importlib.util
 import os
+from datetime import date
 
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 from odoo.tests.common import TransactionCase, tagged
 from odoo.tools import mute_logger
 
@@ -196,3 +199,152 @@ class TestR5B1Migracion(TransactionCase):
         self.assertEqual(env_ref, self.server.pcm_ref)
         self.assertFalse(client_ref,
                          "no se emite client_id para el partner centinela")
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR5B2Motor(TransactionCase):
+    """Motor de reparto: splitter al centavo, prorrateo por días, Q2 e idempotencia."""
+
+    def setUp(self):
+        super().setUp()
+        self.partner = self.env["res.partner"].create({"name": "Cliente R5-B2"})
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Proyecto R5-B2", "account_id": self.account.id,
+             "partner_id": self.partner.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "srv-b2", "project_id": self.project.id,
+            "env_type": "production", "odoo_version": "19",
+            "odoo_edition": "community",
+        })
+        self.p_start = date(2026, 1, 1)
+        self.p_end = date(2026, 2, 1)   # exclusivo → enero = 31 días
+        self.Share = self.env["primate.cloud.cost.share"]
+
+    # --- helpers -------------------------------------------------------
+    def _entry(self, amount, service="AmazonEC2"):
+        return self.env["primate.cloud.cost.entry"].create({
+            "account_id": self.account.id, "period_start": self.p_start,
+            "period_end": self.p_end, "granularity": "monthly",
+            "environment_ref": self.server.pcm_ref, "environment_name": "srv-b2",
+            "service": service, "amount": amount})
+
+    def _set_created(self, inst, dt):
+        """create_date es magic/readonly: se fuerza por SQL (y se INVALIDA la
+        caché ORM, si no el prorrateo ve la fecha vieja) para controlar el
+        solapamiento del período (hosted_from = create_date)."""
+        self.env.cr.execute(
+            "UPDATE primate_cloud_instance SET create_date=%s WHERE id=%s",
+            (dt, inst.id))
+        inst.invalidate_recordset(["create_date"])
+
+    def _instance(self, name, created=None, until=None, weight=1.0):
+        # Vía _create_instance_with_ports: asigna el slot de puertos (crear
+        # directo choca con el unique (environment_id, http_port) de la primaria).
+        inst = self.server._create_instance_with_ports(
+            {"name": name, "project_id": self.project.id})
+        inst.cost_weight = weight
+        if created is not None:
+            self._set_created(inst, created)
+        if until is not None:
+            inst.hosted_until = until
+        return inst
+
+    def _shares(self):
+        return self.Share.search([("environment_id", "=", self.server.id),
+                                  ("period_start", "=", self.p_start)])
+
+    # --- splitter puro -------------------------------------------------
+    def test_split_cents_equal_invariante_y_residuo(self):
+        out = self.Share._split_cents(10.0, [1, 1, 1])
+        self.assertEqual(sum(out), 10.0)              # invariante al centavo
+        self.assertEqual(sorted(out), [3.33, 3.33, 3.34])
+        # residuo determinístico: el centavo va al PRIMERO del orden recibido.
+        self.assertEqual(out[0], 3.34)
+
+    def test_split_cents_por_peso(self):
+        out = self.Share._split_cents(10.0, [2, 1, 1])
+        self.assertEqual(out, [5.0, 2.5, 2.5])
+
+    def test_split_cents_numero_feo_cuadra_exacto(self):
+        out = self.Share._split_cents(100.0, [1] * 7)
+        self.assertEqual(round(sum(out), 2), 100.0)   # cuadra al centavo
+        self.assertEqual(len(out), 7)
+
+    def test_split_cents_sin_pesos_vacio(self):
+        self.assertEqual(self.Share._split_cents(10.0, []), [])
+
+    # --- overlap de días ----------------------------------------------
+    def test_hosted_days_overlap(self):
+        # Instancia creada el 16/ene, viva todo el resto → 16 días (16..31).
+        inst = self._instance("A", created="2026-01-16 00:00:00")
+        self.assertEqual(inst._hosted_days_in_period(self.p_start, self.p_end), 16)
+        # Archivada el 11/ene → 10 días (1..10).
+        inst2 = self._instance("B", created="2025-12-01 00:00:00",
+                               until="2026-01-11 00:00:00")
+        self.assertEqual(inst2._hosted_days_in_period(self.p_start, self.p_end), 10)
+        # Creada después del período → 0.
+        inst3 = self._instance("C", created="2026-03-01 00:00:00")
+        self.assertEqual(inst3._hosted_days_in_period(self.p_start, self.p_end), 0)
+
+    # --- regeneración: equal, invariante ------------------------------
+    def test_regenera_equal_invariante_al_centavo(self):
+        # 2 instancias permanentes (la primaria + una más), total feo.
+        self.server.primary_instance_id.write({"name": "prim"})
+        self._set_created(self.server.primary_instance_id, "2025-12-01 00:00:00")
+        self._instance("segunda", created="2025-12-01 00:00:00")
+        self._entry(10.01)
+        self.account._regenerate_cost_shares(self.p_start, self.p_end, "monthly")
+        shares = self._shares()
+        self.assertEqual(len(shares), 2)
+        self.assertEqual(round(sum(shares.mapped("amount")), 2), 10.01)  # invariante 2
+
+    # --- regeneración: prorrateo por días -----------------------------
+    def test_regenera_prorratea_por_dias(self):
+        # A permanente (31 días), B solo la 1ª mitad (archivada el 16 → 15 días).
+        self._set_created(self.server.primary_instance_id, "2025-12-01 00:00:00")
+        self.server.primary_instance_id.write({"name": "A"})
+        self._instance("B", created="2025-12-01 00:00:00",
+                       until="2026-01-16 00:00:00")   # 15 días
+        self._entry(46.0)   # 46 / (31+15=46) = $1/día → A=31, B=15
+        self.account._regenerate_cost_shares(self.p_start, self.p_end, "monthly")
+        by_name = {s.instance_name: s.amount for s in self._shares()}
+        self.assertEqual(round(sum(by_name.values()), 2), 46.0)  # invariante
+        self.assertEqual(by_name["A"], 31.0)
+        self.assertEqual(by_name["B"], 15.0)
+
+    # --- Q2: servidor sin instancias en el período --------------------
+    def test_regenera_servidor_sin_instancias_unattributed(self):
+        # La primaria "nace" después del período → 0 días → nada que atribuir.
+        self.env.cr.execute(
+            "UPDATE primate_cloud_instance SET create_date=%s WHERE id=%s",
+            ("2026-03-01 00:00:00", self.server.primary_instance_id.id))
+        self.server.primary_instance_id.invalidate_recordset(["create_date"])
+        self._entry(30.0)
+        self.account._regenerate_cost_shares(self.p_start, self.p_end, "monthly")
+        shares = self._shares()
+        self.assertEqual(len(shares), 1)
+        self.assertTrue(shares.unattributed)
+        self.assertFalse(shares.instance_id)
+        self.assertEqual(shares.amount, 30.0)   # invariante: no se pierde plata
+
+    # --- idempotencia --------------------------------------------------
+    def test_regenera_idempotente(self):
+        self._set_created(self.server.primary_instance_id, "2025-12-01 00:00:00")
+        self._instance("segunda", created="2025-12-01 00:00:00")
+        self._entry(10.0)
+        self.account._regenerate_cost_shares(self.p_start, self.p_end, "monthly")
+        primera = {s.instance_name: s.amount for s in self._shares()}
+        # Segunda corrida: mismo estado → mismas shares (borra+recrea).
+        self.account._regenerate_cost_shares(self.p_start, self.p_end, "monthly")
+        segunda = {s.instance_name: s.amount for s in self._shares()}
+        self.assertEqual(primera, segunda)
+        self.assertEqual(len(self._shares()), 2)
+
+    # --- usage deshabilitado ------------------------------------------
+    def test_usage_deshabilitado_no_se_puede_guardar(self):
+        with self.assertRaises(ValidationError):
+            self.server.cost_split_method = "usage"

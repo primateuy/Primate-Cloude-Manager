@@ -18,7 +18,7 @@ from datetime import timedelta
 import requests
 
 from odoo import _, api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 from odoo.tools import file_open
 
 from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm, github_api
@@ -213,6 +213,30 @@ class PrimateCloudEnvironment(models.Model):
         "UNIQUE(pcm_ref)", "El identificador estable (pcm_ref) debe ser único."
     )
 
+    # Método de reparto del costo crudo del servidor entre sus instancias (R5).
+    # "default" = usar el global (system param pcm.cost.split_method). "usage"
+    # está DEFINIDO pero DESHABILITADO (requiere medición por instancia, v2):
+    # la constraint impide guardarlo.
+    cost_split_method = fields.Selection(
+        [("default", "Usar el default global"),
+         ("equal", "Partes iguales (prorrateado por días)"),
+         ("weight", "Por peso (prorrateado por días)"),
+         ("usage", "Por uso (requiere medición — deshabilitado)")],
+        string="Método de reparto de costo", default="default", required=True,
+        help="Cómo se reparte el costo crudo de ESTE servidor entre sus "
+             "instancias. 'usage' está deshabilitado hasta que haya medición "
+             "por instancia (v2).",
+    )
+
+    @api.constrains("cost_split_method")
+    def _check_cost_split_method(self):
+        for rec in self:
+            if rec.cost_split_method == "usage":
+                raise ValidationError(_(
+                    "El método de reparto 'por uso' aún no está disponible: "
+                    "requiere medición de recursos por instancia (v2). Usá "
+                    "'partes iguales' o 'por peso'."))
+
     # --- Respaldos (Fase 8) — delegados a la instancia primaria desde R1;
     #     los jobs/crons siguen leyendo/escribiendo por acá hasta R4 ---
     backup_policy_id = fields.Many2one(
@@ -328,6 +352,79 @@ class PrimateCloudEnvironment(models.Model):
                     "recurso queda sin tag de cliente.", partner.id)
                 client_ref = False
         return self.pcm_ref, client_ref
+
+    # --- Reparto de costos por instancia (R5-B2) ------------------------
+    def _effective_split_method(self):
+        """Método de reparto efectivo: el del servidor, o el default global."""
+        self.ensure_one()
+        if self.cost_split_method and self.cost_split_method != "default":
+            return self.cost_split_method
+        return self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.cost.split_method", "equal")
+
+    def _compute_cost_shares_vals(self, total_amount, period_start, period_end,
+                                  granularity, now):
+        """Vals de ``cost.share`` para repartir ``total_amount`` (crudo de ESTE
+        servidor) entre sus instancias, PRORRATEADO por días de hospedaje.
+
+        Peso efectivo por instancia = base × días_en_el_período, con
+        base = 1 (``equal``) o ``cost_weight`` (``weight``). Sin instancias con
+        días en el período (Q2: servidor recién creado / todo archivado antes) →
+        UNA share "sin atribuir" con el total (invariante intacto, costo visible,
+        nadie facturado). Orden por ``pcm_ref`` para que el residuo del splitter
+        sea reproducible.
+        """
+        self.ensure_one()
+        Share = self.env["primate.cloud.cost.share"]
+        method = self._effective_split_method()
+        # active_test=False: una instancia archivada pudo haber estado viva parte
+        # del período y le corresponde su prorrateo.
+        instances = self.with_context(
+            active_test=False).instance_ids.sorted("pcm_ref")
+        parts = []
+        for inst in instances:
+            days = inst._hosted_days_in_period(period_start, period_end)
+            base = inst.cost_weight if method == "weight" else 1.0
+            weight = base * days
+            if weight > 0:
+                parts.append((inst, weight))
+        if not parts:
+            return [self._unattributed_share_vals(
+                total_amount, period_start, period_end, granularity, method, now)]
+        amounts = Share._split_cents(total_amount, [w for _inst, w in parts])
+        vals = []
+        for (inst, _weight), amount in zip(parts, amounts):
+            partner = inst.project_id.partner_id
+            vals.append({
+                "account_id": self.account_id.id,
+                "period_start": period_start, "period_end": period_end,
+                "granularity": granularity,
+                "environment_id": self.id, "environment_ref": self.pcm_ref,
+                "environment_name": self.name,
+                "instance_id": inst.id, "instance_ref": inst.pcm_ref,
+                "instance_name": inst.name,
+                "project_id": inst.project_id.id or False,
+                "partner_id": partner.id or False,
+                "client_ref": partner.pcm_ref or False,
+                "client_name": partner.name or False,
+                "method": method, "amount": amount, "computed_at": now,
+            })
+        return vals
+
+    def _unattributed_share_vals(self, total_amount, period_start, period_end,
+                                 granularity, method, now):
+        """Share del crudo de un servidor SIN instancias atribuibles (Q2)."""
+        self.ensure_one()
+        return {
+            "account_id": self.account_id.id,
+            "period_start": period_start, "period_end": period_end,
+            "granularity": granularity,
+            "environment_id": self.id, "environment_ref": self.pcm_ref,
+            "environment_name": self.name,
+            "instance_id": False, "instance_ref": False, "instance_name": False,
+            "unattributed": True, "method": method,
+            "amount": total_amount, "computed_at": now,
+        }
 
     # Campos de identidad del Odoo que desde R1 viven en la instancia. Si
     # vienen en el create del entorno (flujos/tests previos a D6), se

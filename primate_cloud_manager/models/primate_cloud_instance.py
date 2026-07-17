@@ -269,6 +269,23 @@ class PrimateCloudInstance(models.Model):
             vals = dict(vals, hosted_until=False)   # reactivación: limpia el sello
         return super().write(vals)
 
+    def _hosted_days_in_period(self, period_start, period_end):
+        """Días que la instancia estuvo hospedada dentro de ``[period_start,
+        period_end)`` — el peso del prorrateo del reparto de costos (R5-B2).
+
+        hosted_from = ``create_date`` (la instancia no se mueve de servidor);
+        hosted_until = el campo, o ``period_end`` si sigue viva. El solapamiento
+        es ``min(until, period_end) - max(from, period_start)``; 0 si no se
+        solapa (creada después del período o archivada antes). ``period_*`` son
+        ``date``; se comparan contra las fechas de las marcas de tiempo.
+        """
+        self.ensure_one()
+        created = (self.create_date.date() if self.create_date else period_start)
+        from_date = max(created, period_start)
+        until = (self.hosted_until.date() if self.hosted_until else period_end)
+        to_date = min(until, period_end)
+        return max(0, (to_date - from_date).days)
+
     def _compute_display_name(self):
         for rec in self:
             server = rec.environment_id.name

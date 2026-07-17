@@ -120,3 +120,32 @@ class PrimateCloudCostShare(models.Model):
                 "El reparto de costos es derivado e inmutable: no se elimina a "
                 "mano. Se regenera desde el costo crudo (recalcular)."))
         return super().unlink()
+
+    # --- Splitter PURO al centavo con residuo determinístico ------------
+    @api.model
+    def _split_cents(self, total_amount, weights):
+        """Reparte ``total_amount`` (USD) entre N pesos, al CENTAVO exacto.
+
+        Devuelve una lista de montos (USD) que suman EXACTAMENTE
+        ``round(total_amount*100)/100`` — el invariante. Trabaja en centavos
+        enteros: cada porción es el ``floor`` de su cuota, y los centavos
+        sobrantes (``total - Σfloors``, siempre ``< N``) se reparten por el
+        método de mayor resto (Hamilton) con desempate DETERMINÍSTICO por el
+        orden recibido (el llamador ordena por ``pcm_ref``). Así ``equal`` (todos
+        los restos iguales) los asigna a los primeros por pcm_ref — reproducible.
+
+        Es puro (sin ORM, sin efectos): testeable en aislamiento.
+        """
+        total_cents = round((total_amount or 0.0) * 100)
+        wsum = sum(weights)
+        if not weights or wsum <= 0:
+            return []   # sin destino: el llamador arma la share "sin atribuir"
+        raw = [total_cents * w / wsum for w in weights]
+        floors = [int(x) for x in raw]     # x >= 0 → floor
+        remainder = total_cents - sum(floors)
+        # Mayor resto primero; empate → menor índice (orden pcm_ref del llamador).
+        order = sorted(range(len(weights)),
+                       key=lambda i: (raw[i] - floors[i], -i), reverse=True)
+        for k in range(remainder):
+            floors[order[k]] += 1
+        return [c / 100.0 for c in floors]

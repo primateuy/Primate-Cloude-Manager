@@ -420,6 +420,10 @@ class PrimateCloudAccount(models.Model):
             self._persist_cost_result(current, month_start,
                                       today + timedelta(days=1), "monthly", now)
             self._reconcile_costs(current, month_start, "monthly")
+            # Reparto por instancia del mes en curso (mismo período que el crudo:
+            # month-to-date → pesos y crudo consistentes).
+            self._regenerate_cost_shares(
+                month_start, today + timedelta(days=1), "monthly")
             # Mes anterior (comparativa).
             prev_end = month_start
             prev_start = (month_start - timedelta(days=1)).replace(day=1)
@@ -429,6 +433,8 @@ class PrimateCloudAccount(models.Model):
                 granularity="MONTHLY", group_by=self._cost_group_by())
             self._persist_cost_result(previous, prev_start, prev_end,
                                       "monthly", now)
+            # Reparto del mes anterior (mes cerrado: foto/prorrateo definitivo).
+            self._regenerate_cost_shares(prev_start, prev_end, "monthly")
             # Proyección a fin de mes (una fila is_forecast, no agrupada).
             forecast = service.get_cost_forecast(
                 start=fields.Date.to_string(today + timedelta(days=1)),
@@ -571,6 +577,62 @@ class PrimateCloudAccount(models.Model):
                             self.name, persisted, total)
             return False
         return True
+
+    def _regenerate_cost_shares(self, period_start, period_end,
+                               granularity="monthly"):
+        """Regenera (borra+recrea) las ``cost.share`` de un período desde el
+        crudo. DERIVADO e idempotente: dos corridas del mismo período con el
+        mismo estado dan las mismas shares. El crudo por servidor = suma de
+        ``cost.entry`` por ``environment_ref`` (sin forecast, sin el bucket "sin
+        atribuir" que no se reparte). El cuadre GLOBAL sigue siendo contra CE
+        (``cost.entry``), NO contra la suma de shares (invariante 1 intacto);
+        acá se garantiza el invariante 2: Σ shares de un servidor = su crudo.
+        """
+        self.ensure_one()
+        Share = self.env["primate.cloud.cost.share"].with_context(
+            pcm_cost_regen=True)
+        Entry = self.env["primate.cloud.cost.entry"]
+        Env = self.env["primate.cloud.environment"]
+        now = fields.Datetime.now()
+        # Regeneración: borrar las shares previas del período.
+        Share.search([
+            ("account_id", "=", self.id),
+            ("period_start", "=", period_start),
+            ("granularity", "=", granularity),
+        ]).unlink()
+        # Crudo por servidor: suma de servicios por environment_ref.
+        entries = Entry.search([
+            ("account_id", "=", self.id),
+            ("period_start", "=", period_start),
+            ("granularity", "=", granularity),
+            ("is_forecast", "=", False),
+            ("environment_ref", "!=", False),
+        ])
+        totals = {}
+        for entry in entries:
+            totals[entry.environment_ref] = (
+                totals.get(entry.environment_ref, 0.0) + entry.amount)
+        vals_list = []
+        for env_ref, total in totals.items():
+            server = Env.search([("pcm_ref", "=", env_ref)], limit=1)
+            if server:
+                vals_list += server._compute_cost_shares_vals(
+                    total, period_start, period_end, granularity, now)
+            else:
+                # Servidor borrado con costo histórico: sin atribuir (snapshot
+                # del nombre del entry, que sobrevive al borrado del entorno).
+                snap = entries.filtered(
+                    lambda e: e.environment_ref == env_ref)[:1].environment_name
+                vals_list.append({
+                    "account_id": self.id, "period_start": period_start,
+                    "period_end": period_end, "granularity": granularity,
+                    "environment_ref": env_ref, "environment_name": snap,
+                    "instance_id": False, "unattributed": True,
+                    "method": "equal", "amount": total, "computed_at": now,
+                })
+        if vals_list:
+            Share.create(vals_list)
+        return len(vals_list)
 
     def _persist_forecast(self, forecast, period_start, period_end, now):
         """Upsert de la fila de proyección (is_forecast=True, no agrupada)."""
