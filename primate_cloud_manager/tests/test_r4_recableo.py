@@ -464,8 +464,10 @@ class TestR4B3Impersonate(TransactionCase):
 
     def _patch_ssm(self):
         fake = mock.Mock()
-        fake.run_script.return_value = {"stdout": "PCM_NGINX:ok",
-                                        "status": "Success"}
+        # stdout con AMBOS centinelas: el del install verificado (hallazgo
+        # central R4-B7) y el del allowlist nginx. Ambos parseos usan ``in``.
+        fake.run_script.return_value = {
+            "stdout": "PCM_IMP_INSTALL_OK\nPCM_NGINX:ok", "status": "Success"}
         return mock.patch.object(type(self.machine), "_get_ssm_service",
                                  return_value=fake), fake
 
@@ -486,6 +488,46 @@ class TestR4B3Impersonate(TransactionCase):
         self.assertIn("public_key", scripts)
         self.assertIn("instance_ref", scripts)
         self.assertTrue(self.inst_b.impersonate_pubkey)
+        # --no-http en el -i (hallazgo E2E R4-B7): sin esto choca con el puerto
+        # de la unit corriendo (Address already in use) y el módulo NO instala.
+        self.assertIn("-i pcm_impersonate --stop-after-init --no-http", scripts)
+        # Detiene la unit del target ANTES del -i (2º hallazgo E2E: sin liberar
+        # su RAM, el 3er proceso Odoo del install OOM-ea en instancias chicas).
+        stop_idx = scripts.find("systemctl stop odoo-cliente-b")
+        install_idx = scripts.find("-i pcm_impersonate")
+        self.assertTrue(0 <= stop_idx < install_idx,
+                        "el stop de la unit debe ir ANTES del -i")
+        # El install corre SIN heredar el límite de memoria de la instancia
+        # (3er hallazgo E2E: limit_memory_hard de prod → RLIMIT_AS → MemoryError).
+        self.assertIn("--limit-memory-hard=0", scripts)
+        self.assertIn("--workers=0", scripts)
+
+    def test_deploy_aborta_ruidoso_si_install_falla(self):
+        # HALLAZGO CENTRAL R4-B7: run_script NO levanta ante exit!=0. Si el -i
+        # del companion FALLA (status Failed / sin PCM_IMP_INSTALL_OK), el deploy
+        # debe ABORTAR RUIDOSO — NO tragarse el fallo, NO escribir params (que
+        # quedarían HUÉRFANOS y harían chocar toda reinstalación futura con
+        # UniqueViolation), NO reportar éxito.
+        fake = mock.Mock()
+
+        def _reply(instance_id, script, **kw):
+            if "-i pcm_impersonate" in script:      # el install: FALLA
+                return {"stdout": "", "stderr": "boom", "status": "Failed"}
+            return {"stdout": "PCM_NGINX:ok", "status": "Success"}
+        fake.run_script.side_effect = _reply
+        with mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=fake), \
+                mock.patch.object(type(self.machine),
+                                  "_ensure_custom_addons_path"), \
+                mock.patch.object(type(self.machine), "restart_odoo") as restart:
+            with self.assertRaises(UserError) as ctx:
+                self.inst_b.deploy_impersonate(["db_b"])
+        self.assertIn("pcm_impersonate", str(ctx.exception))
+        # No escribió NINGÚN parámetro tras el install fallido.
+        ejecutados = "\n".join(c[0][1] for c in fake.run_script.call_args_list)
+        self.assertNotIn("public_key", ejecutados)
+        self.assertNotIn("instance_ref", ejecutados)
+        restart.assert_not_called()   # abortó antes del restart
 
     def test_nginx_allowlist_camino_feliz_y_puerto_propio(self):
         patcher, fake = self._patch_ssm()  # stdout PCM_NGINX:ok

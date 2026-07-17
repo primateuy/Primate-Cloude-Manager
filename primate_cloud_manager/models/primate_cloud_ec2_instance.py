@@ -1017,13 +1017,54 @@ class PrimateCloudEc2Instance(models.Model):
             shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3"),
             shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin"),
             shlex.quote(target.conf_path or LEGACY_CONF_PATH))
+        # Detener la unit del TARGET durante su propio install (hallazgo E2E
+        # R4-B7): el ``-i`` levanta un 3er proceso Odoo que carga la base; en
+        # una instancia chica con varios Odoo vivos, eso OOM-ea (MemoryError) y
+        # el módulo NO instala. Parar el target libera SU RAM para el install;
+        # las instancias VECINAS siguen corriendo (no se las toca). El
+        # ``restart_odoo`` del final la levanta de nuevo.
+        service = shlex.quote(target.service_name or LEGACY_SERVICE)
+        ssm.run_script(
+            self.aws_instance_id, "sudo systemctl stop %s" % service,
+            region=self.region, comment="pcm impersonate stop-for-install",
+            timeout=45, agent_timeout=20)
         for db in dbs:
-            ssm.run_script(
+            # --no-http OBLIGATORIO (hallazgo del E2E real de R4-B7): en
+            # multi-Odoo la unit de la instancia YA está corriendo y bindea su
+            # http_port; sin --no-http, ``odoo-bin -i`` intenta bindear el mismo
+            # puerto → OSError: Address already in use → el módulo NUNCA instala.
+            # El install no necesita servir HTTP.
+            # --workers=0 --limit-memory-hard=0 (2º hallazgo E2E R4-B7): el
+            # install NO debe heredar el límite de memoria de PRODUCCIÓN de la
+            # instancia. Con ``limit_memory_hard`` (aunque sea legítimo) el
+            # proceso del ``-i`` recibe un RLIMIT_AS que revienta al cargar los
+            # módulos → MemoryError → no instala. El install corre sin límite.
+            install = ssm.run_script(
                 self.aws_instance_id,
-                "%s -d %s -i pcm_impersonate --stop-after-init"
+                "%s -d %s -i pcm_impersonate --stop-after-init --no-http "
+                "--workers=0 --limit-memory-hard=0 --limit-memory-soft=0 "
+                "&& echo PCM_IMP_INSTALL_OK"
                 % (odoo_bin, shlex.quote(db)),
                 region=self.region, comment="pcm impersonate install",
                 timeout=300, agent_timeout=30)
+            # HALLAZGO CENTRAL R4-B7: verificar que el install OCURRIÓ. run_script
+            # NO levanta ante exit!=0 (devuelve status="Failed"); si no se mira,
+            # un install fallido se traga en SILENCIO → el módulo NO queda
+            # instalado (/pcm/impersonate 404) y, peor, los set_param de abajo
+            # dejan params HUÉRFANOS (sin external-id) que hacen chocar TODA
+            # reinstalación futura con UniqueViolation sobre ir_config_parameter.
+            # Levantar acá corta la cadena ANTES de escribir params ni reportar
+            # éxito (regla: nunca tragarse errores en silencio).
+            if (install.get("status") != "Success"
+                    or "PCM_IMP_INSTALL_OK" not in (install.get("stdout") or "")):
+                raise UserError(_(
+                    "Falló la instalación del companion pcm_impersonate en la "
+                    "BD %(db)s de la instancia %(inst)s. El módulo NO quedó "
+                    "instalado y no se escribió ningún parámetro. Revisá el log "
+                    "de la instancia (%(log)s). Estado SSM: %(st)s.",
+                    db=db, inst=target.display_name,
+                    log=target.log_path or "logfile de la instancia",
+                    st=(install.get("stderr") or install.get("status") or "")[:400]))
             self._impersonate_set_param(
                 db, "pcm.impersonate.public_key", pubkey, target)
             # Claim de aislamiento: el companion valida instance_ref del token
