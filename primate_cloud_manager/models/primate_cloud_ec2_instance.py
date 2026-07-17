@@ -1099,15 +1099,36 @@ class PrimateCloudEc2Instance(models.Model):
                     "try:\n ep=int(p.get_param('pcm.impersonate.epoch','0'))\n"
                     "except Exception:\n ep=0\n"
                     "p.set_param('pcm.impersonate.epoch', str(ep+1))\n")
+            want = "True" if enabled else "False"
             script = ("p = env['ir.config_parameter'].sudo()\n"
                       "p.set_param('pcm.impersonate.enabled', %r)\n%s"
                       "env.cr.commit()\n"
-                      % ("True" if enabled else "False", bump))
-            self._get_ssm_service().run_script(
+                      # Releer y confirmar que quedó grabado: el kill-switch NO
+                      # puede reportar éxito sin haber cortado de verdad. Si no
+                      # coincide (p. ej. caché de ir.config_parameter, ya cazado
+                      # una vez), aborta SIN imprimir el centinela.
+                      "assert p.get_param('pcm.impersonate.enabled') == %r\n"
+                      "print('PCM_IMP_ENABLE_OK')\n"
+                      % (want, bump, want))
+            out = self._get_ssm_service().run_script(
                 self.aws_instance_id,
                 self._odoo_shell_heredoc(db, script, target),
                 region=self.region, comment="pcm impersonate enable",
                 timeout=120, agent_timeout=30)
+            # run_script NO levanta ante exit!=0. Sin este chequeo, un disable
+            # que falla reporta éxito y deja la impersonación VIVA mientras el
+            # operador cree que la cortó (el peor de los fallos silenciosos del
+            # barrido de run_script). Verificar status Y centinela; levantar si
+            # el cambio no quedó confirmado en el servidor.
+            if (out.get("status") != "Success"
+                    or "PCM_IMP_ENABLE_OK" not in (out.get("stdout") or "")):
+                raise UserError(_(
+                    "No se pudo %(action)s la impersonación en la BD %(db)s de "
+                    "la instancia %(inst)s: el cambio NO quedó confirmado en el "
+                    "servidor. Estado SSM: %(st)s.",
+                    action=_("habilitar") if enabled else _("DESHABILITAR"),
+                    db=db, inst=target.display_name,
+                    st=(out.get("stderr") or out.get("status") or "")[:400]))
 
     # Transform PURO de UN vhost (fuente única: se embebe en el script remoto
     # y se ejercita en los tests con exec — bug 2 verificado de verdad, no por

@@ -464,10 +464,11 @@ class TestR4B3Impersonate(TransactionCase):
 
     def _patch_ssm(self):
         fake = mock.Mock()
-        # stdout con AMBOS centinelas: el del install verificado (hallazgo
-        # central R4-B7) y el del allowlist nginx. Ambos parseos usan ``in``.
+        # stdout con TODOS los centinelas: install verificado, enable/kill-switch
+        # verificado y allowlist nginx. Todos los parseos usan ``in``.
         fake.run_script.return_value = {
-            "stdout": "PCM_IMP_INSTALL_OK\nPCM_NGINX:ok", "status": "Success"}
+            "stdout": "PCM_IMP_INSTALL_OK\nPCM_IMP_ENABLE_OK\nPCM_NGINX:ok",
+            "status": "Success"}
         return mock.patch.object(type(self.machine), "_get_ssm_service",
                                  return_value=fake), fake
 
@@ -630,6 +631,25 @@ class TestR4B3Impersonate(TransactionCase):
         self.assertIn("pcm.impersonate.epoch", script)
         self.assertIn("/etc/odoo/cliente-a.conf", script)
         self.assertNotIn("cliente-b", script)
+        # El script relee y confirma el valor grabado + imprime el centinela:
+        # el kill-switch no puede reportar éxito sin haber cortado de verdad.
+        self.assertIn("PCM_IMP_ENABLE_OK", script)
+        self.assertIn("assert p.get_param('pcm.impersonate.enabled')", script)
+
+    def test_killswitch_falla_ruidoso_si_no_confirma(self):
+        # EL PEOR FALLO SILENCIOSO del barrido de run_script: un disable del
+        # kill-switch que FALLA (status Failed / sin PCM_IMP_ENABLE_OK) NO puede
+        # reportar éxito — dejaría la impersonación VIVA con el operador creyendo
+        # que la cortó. Debe LEVANTAR.
+        for stdout, status in (("", "Failed"),          # SSM falló
+                               ("", "Success")):         # corrió pero sin confirmar
+            fake = mock.Mock()
+            fake.run_script.return_value = {"stdout": stdout, "status": status}
+            with mock.patch.object(type(self.machine), "_get_ssm_service",
+                                   return_value=fake):
+                with self.assertRaises(UserError) as ctx:
+                    self.inst_a.set_impersonate_enabled(["db_a"], False)
+            self.assertIn("DESHABILITAR", str(ctx.exception))
 
     def test_login_as_audita_sobre_la_instancia(self):
         admin_grp = self.env.ref("primate_cloud_manager.group_cloud_admin")
