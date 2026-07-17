@@ -20,3 +20,4 @@ from . import test_autodiscovery
 from . import test_r1_modelo
 from . import test_r3_multiodoo
 from . import test_r4_recableo
+from . import test_r5_costos

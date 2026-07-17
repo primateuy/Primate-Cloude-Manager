@@ -59,10 +59,12 @@ class TestR3Scripts(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner_a = self.env["res.partner"].create({"name": "Cliente Test R3 A"})
+        self.partner_b = self.env["res.partner"].create({"name": "Cliente Test R3 B"})
         self.project_a = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner_a.id})
         self.project_b = self.env["primate.cloud.project"].create(
-            {"name": "Cliente B", "account_id": self.account.id})
+            {"name": "Cliente B", "account_id": self.account.id, "partner_id": self.partner_b.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Servidor compartido", "project_id": self.project_a.id,
             "env_type": "production", "odoo_version": "19",
@@ -283,8 +285,9 @@ class TestR3B2PuertosYLock(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R3"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Servidor", "project_id": self.project.id,
             "env_type": "production", "odoo_version": "19",
@@ -367,10 +370,12 @@ class TestR3B2Jobs(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner_a = self.env["res.partner"].create({"name": "Cliente Test R3 A"})
+        self.partner_b = self.env["res.partner"].create({"name": "Cliente Test R3 B"})
         self.project_a = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner_a.id})
         self.project_b = self.env["primate.cloud.project"].create(
-            {"name": "Cliente B", "account_id": self.account.id})
+            {"name": "Cliente B", "account_id": self.account.id, "partner_id": self.partner_b.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Servidor compartido", "project_id": self.project_a.id,
             "env_type": "production", "odoo_version": "19",
@@ -614,8 +619,9 @@ class TestR3B2Cadena(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R3 Forum"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id})
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
             "env_type": "production", "odoo_version": "19",
@@ -694,10 +700,12 @@ class TestR3B3Wizard(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner_a = self.env["res.partner"].create({"name": "Cliente Test R3 A"})
+        self.partner_b = self.env["res.partner"].create({"name": "Cliente Test R3 B"})
         self.project_a = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner_a.id})
         self.project_b = self.env["primate.cloud.project"].create(
-            {"name": "Cliente B", "account_id": self.account.id})
+            {"name": "Cliente B", "account_id": self.account.id, "partner_id": self.partner_b.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Servidor compartido", "project_id": self.project_a.id,
             "env_type": "production", "odoo_version": "19",

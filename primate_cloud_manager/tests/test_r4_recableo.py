@@ -24,8 +24,9 @@ class TestR4B1(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R4 A"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner.id})
         self.policy = self.env["primate.cloud.backup.policy"].create({
             "name": "Diaria", "expected_frequency": "daily",
             "managed_by_pcm": True, "s3_bucket": "pcm-test-bucket",
@@ -188,8 +189,9 @@ class TestR4B2(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R4"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Cliente", "account_id": self.account.id})
+            {"name": "Cliente", "account_id": self.account.id, "partner_id": self.partner.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Multi", "project_id": self.project.id,
             "env_type": "production", "odoo_version": "19",
@@ -377,10 +379,12 @@ class TestR4B3Impersonate(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner_a = self.env["res.partner"].create({"name": "Cliente Test R4 A"})
+        self.partner_b = self.env["res.partner"].create({"name": "Cliente Test R4 B"})
         self.proj_a = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner_a.id})
         self.proj_b = self.env["primate.cloud.project"].create(
-            {"name": "Cliente B", "account_id": self.account.id})
+            {"name": "Cliente B", "account_id": self.account.id, "partner_id": self.partner_b.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Compartido", "project_id": self.proj_a.id,
             "env_type": "production", "odoo_version": "19",
@@ -681,10 +685,12 @@ class TestR4B4Backups(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner_a = self.env["res.partner"].create({"name": "Cliente Test R4 A"})
+        self.partner_b = self.env["res.partner"].create({"name": "Cliente Test R4 B"})
         self.proj_a = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner_a.id})
         self.proj_b = self.env["primate.cloud.project"].create(
-            {"name": "Cliente B", "account_id": self.account.id})
+            {"name": "Cliente B", "account_id": self.account.id, "partner_id": self.partner_b.id})
         self.policy = self.env["primate.cloud.backup.policy"].create({
             "name": "Diaria", "expected_frequency": "daily",
             "managed_by_pcm": True, "s3_bucket": "pcm-bucket",
@@ -920,8 +926,9 @@ class TestR4B5Staging(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R4 A"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner.id})
         # Servidor origen (multi-Odoo), producción, con su instancia + BD.
         self.origin = self.env["primate.cloud.environment"].create({
             "name": "Prod", "project_id": self.project.id,
@@ -1113,8 +1120,9 @@ class TestEnvTypeFriction(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R4 P"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "P", "account_id": self.account.id})
+            {"name": "P", "account_id": self.account.id, "partner_id": self.partner.id})
         # Servidor cuya PRIMARIA es STAGING (env_type del servidor = staging,
         # arbitrario post-R1) pero que hospeda una instancia de PRODUCCIÓN.
         self.server = self.env["primate.cloud.environment"].create({
@@ -1216,8 +1224,9 @@ class TestR4B6Shims(TransactionCase):
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R4 P"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "P", "account_id": self.account.id})
+            {"name": "P", "account_id": self.account.id, "partner_id": self.partner.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "S", "project_id": self.project.id,
             "env_type": "production", "odoo_version": "19",
@@ -1303,10 +1312,12 @@ class TestR4B6Pantallas(TransactionCase):
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.partner_a = self.env["res.partner"].create({"name": "Cliente Test R4 A"})
+        self.partner_b = self.env["res.partner"].create({"name": "Cliente Test R4 B"})
         self.proj_a = self.env["primate.cloud.project"].create(
-            {"name": "Cliente A", "account_id": self.account.id})
+            {"name": "Cliente A", "account_id": self.account.id, "partner_id": self.partner_a.id})
         self.proj_b = self.env["primate.cloud.project"].create(
-            {"name": "Cliente B", "account_id": self.account.id})
+            {"name": "Cliente B", "account_id": self.account.id, "partner_id": self.partner_b.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "Compartido", "project_id": self.proj_a.id,
             "env_type": "production", "odoo_version": "19",
@@ -1480,8 +1491,9 @@ class TestR4B6DnsYRefresh(TransactionCase):
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R4 P"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "P", "account_id": self.account.id})
+            {"name": "P", "account_id": self.account.id, "partner_id": self.partner.id})
         self.server = self.env["primate.cloud.environment"].create({
             "name": "S", "project_id": self.project.id,
             "env_type": "production", "odoo_version": "19",

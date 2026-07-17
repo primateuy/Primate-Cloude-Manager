@@ -303,16 +303,23 @@ class PrimateCloudEnvironment(models.Model):
     def _cost_attribution_refs(self):
         """Devuelve ``(environment_ref, client_ref)`` para los tags estables.
 
-        Materializa el ref del partner (lazy) AL taggear. **Degrada limpio** si
-        falta proyecto o partner: devuelve ``client_ref = False`` (el tag de
-        cliente no se emite) — NUNCA rompe el aprovisionamiento. Un recurso sin
-        tag de cliente es un problema de reporte (tolerable); un provision que
-        aborta por un ref de cliente ausente, NO.
+        Materializa el ref del partner (lazy) AL taggear. **No emite tag de
+        cliente** (``client_ref = False``) cuando el partner es el CENTINELA
+        "⚠ SIN CLIENTE" (proyecto sin cliente real, R5): taggear un cliente
+        falso sería peor que no taggear. Desde R5 ``partner_id`` es required, así
+        que el caso "sin partner" ya no ocurre por proyecto; el equivalente es el
+        centinela. Igual se conserva la degradación defensiva: un ref ausente
+        NUNCA rompe el aprovisionamiento (un recurso sin tag de cliente es un
+        problema de reporte tolerable; un provision que aborta, NO).
         """
         self.ensure_one()
         partner = self.project_id.partner_id
+        # El centinela no es cliente real: no se emite su tag (mismo criterio
+        # que el viejo "sin partner"). Id en el param rename-proof de la migración.
+        sentinel_id = int(self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.unassigned_partner_id") or 0)
         client_ref = False
-        if partner:
+        if partner and partner.id != sentinel_id:
             try:
                 client_ref = partner._ensure_pcm_ref()
             except Exception:  # noqa: BLE001 - un ref ausente no aborta el provision

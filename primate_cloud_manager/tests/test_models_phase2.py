@@ -8,8 +8,9 @@ class TestProjectEnvironment(TransactionCase):
     def setUp(self):
         super().setUp()
         self.account = self.env["primate.cloud.account"].create({"name": "Cuenta Proj"})
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase2"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
 
     def test_environment_hereda_cuenta_del_proyecto(self):

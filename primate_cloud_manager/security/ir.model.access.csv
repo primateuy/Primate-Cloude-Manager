@@ -11,6 +11,9 @@ access_monitor_snapshot_admin,primate.cloud.monitor.snapshot admin,model_primate
 access_cost_entry_viewer,primate.cloud.cost.entry viewer,model_primate_cloud_cost_entry,group_cloud_viewer,1,0,0,0
 access_cost_entry_operator,primate.cloud.cost.entry operator,model_primate_cloud_cost_entry,group_cloud_operator,1,0,1,0
 access_cost_entry_admin,primate.cloud.cost.entry admin,model_primate_cloud_cost_entry,group_cloud_admin,1,1,1,1
+access_cost_share_viewer,primate.cloud.cost.share viewer,model_primate_cloud_cost_share,group_cloud_viewer,1,0,0,0
+access_cost_share_operator,primate.cloud.cost.share operator,model_primate_cloud_cost_share,group_cloud_operator,1,0,0,0
+access_cost_share_admin,primate.cloud.cost.share admin,model_primate_cloud_cost_share,group_cloud_admin,1,1,1,1
 access_backup_viewer,primate.cloud.backup viewer,model_primate_cloud_backup,group_cloud_viewer,1,0,0,0
 access_backup_operator,primate.cloud.backup operator,model_primate_cloud_backup,group_cloud_operator,1,0,1,0
 access_backup_admin,primate.cloud.backup admin,model_primate_cloud_backup,group_cloud_admin,1,1,1,0

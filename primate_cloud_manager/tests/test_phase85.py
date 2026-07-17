@@ -35,8 +35,9 @@ class TestDnsModelPhase85(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase85"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.prod = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
@@ -216,8 +217,9 @@ class TestDnsJobsPhase85(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase85"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.env_prod = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
@@ -408,8 +410,9 @@ class TestRoute53ServicePhase85(TransactionCase):
                 "name": "moto", "default_region": "us-east-1",
                 "iam_access_key_id": "testing", "iam_secret_access_key": "testing",
             })
+            partner = self.env["res.partner"].create({"name": "Cliente Test Phase85 moto"})
             project = self.env["primate.cloud.project"].create(
-                {"name": "P", "account_id": account.id})
+                {"name": "P", "account_id": account.id, "partner_id": partner.id})
             environment = self.env["primate.cloud.environment"].create({
                 "name": "E", "project_id": project.id, "env_type": "staging",
                 "state": "active"})
@@ -443,8 +446,9 @@ class TestDnsWizardsPhase85(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase85"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.prod = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,

@@ -47,8 +47,9 @@ class TestStaging(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase7"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.origin = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id, "env_type": "production",

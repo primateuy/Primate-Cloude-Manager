@@ -48,8 +48,9 @@ class TestInventorySync(TransactionCase):
 
     def test_ec2_no_pisa_entorno(self):
         Ec2 = self.env["primate.cloud.ec2.instance"]
+        partner = self.env["res.partner"].create({"name": "Cliente Test SyncPhase2"})
         env = self.env["primate.cloud.environment"].create(
-            {"name": "Env", "project_id": self.env["primate.cloud.project"].create({"name": "P"}).id}
+            {"name": "Env", "project_id": self.env["primate.cloud.project"].create({"name": "P", "partner_id": partner.id}).id}
         )
         data = [{"aws_instance_id": "i-9", "name": "s", "instance_state": "running",
                  "region": "us-east-1", "tags": {}, "created_at": None}]

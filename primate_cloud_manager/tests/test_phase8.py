@@ -27,8 +27,9 @@ class TestPhase8Foundations(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase8"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.env_a = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
@@ -305,8 +306,9 @@ class TestBackupCompliance(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase8"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.environment = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
@@ -621,8 +623,9 @@ class TestProvisionUpsertDatabase(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase8"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.environment = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
@@ -676,8 +679,9 @@ class TestManagedBackups(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase8 Uy"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum Uy", "account_id": self.account.id}
+            {"name": "Forum Uy", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.environment = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
@@ -1027,8 +1031,9 @@ class TestBackupRestore(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase8"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.prod = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,
@@ -1351,8 +1356,9 @@ class TestStagingInstanceAware(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase8"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Forum", "account_id": self.account.id}
+            {"name": "Forum", "account_id": self.account.id, "partner_id": self.partner.id}
         )
         self.origin = self.env["primate.cloud.environment"].create({
             "name": "Forum Prod", "project_id": self.project.id,

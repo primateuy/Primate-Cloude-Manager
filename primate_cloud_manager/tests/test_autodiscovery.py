@@ -168,8 +168,9 @@ class TestProvisionAutodiscovery(TransactionCase):
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Autodiscovery"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "P", "account_id": self.account.id})
+            {"name": "P", "account_id": self.account.id, "partner_id": self.partner.id})
         self.env_ = self.env["primate.cloud.environment"].create(
             {"name": "E", "project_id": self.project.id})
         self.Setup = self.env["primate.cloud.region.setup"]

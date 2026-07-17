@@ -166,10 +166,19 @@ class TestAttributionRefsPhase9(TransactionCase):
         })
         self.partner = self.env["res.partner"].create({"name": "Cliente X"})
 
-    def _env(self, partner=True):
+    def _sentinel_partner(self):
+        """Crea el partner centinela y lo registra en el param (como la
+        migración). Desde R5 partner_id es required: el escenario 'sin cliente'
+        se representa con el centinela, NO con partner=False (imposible)."""
+        p = self.env["res.partner"].create({"name": "⚠ SIN CLIENTE (asignar)"})
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.unassigned_partner_id", str(p.id))
+        return p
+
+    def _env(self, partner=None):
         project = self.env["primate.cloud.project"].create({
             "name": "P", "account_id": self.account.id,
-            "partner_id": self.partner.id if partner else False,
+            "partner_id": (partner or self.partner).id,
         })
         return self.env["primate.cloud.environment"].create({
             "name": "E", "project_id": project.id, "env_type": "production",
@@ -177,7 +186,7 @@ class TestAttributionRefsPhase9(TransactionCase):
         })
 
     def test_refs_con_partner_materializa_lazy(self):
-        env = self._env(partner=True)
+        env = self._env()
         # El partner aún no tiene ref (lazy).
         self.assertFalse(self.partner.pcm_ref)
         env_ref, client_ref = env._cost_attribution_refs()
@@ -187,19 +196,21 @@ class TestAttributionRefsPhase9(TransactionCase):
         self.assertTrue(client_ref.startswith("pcm_cli_"))
         self.assertEqual(self.partner.pcm_ref, client_ref)
 
-    def test_refs_sin_partner_degrada_limpio(self):
-        """Entorno cuyo proyecto no tiene partner: client_ref = False, sin
-        romper. El tag de cliente simplemente no se emite."""
-        env = self._env(partner=False)
+    def test_refs_centinela_no_emite_tag_de_cliente(self):
+        """Proyecto con el partner CENTINELA (sin cliente real, R5): client_ref
+        = False, no se emite tag de cliente falso. Es el equivalente moderno del
+        viejo 'sin partner' (imposible ahora que partner_id es required)."""
+        env = self._env(partner=self._sentinel_partner())
         env_ref, client_ref = env._cost_attribution_refs()
         self.assertEqual(env_ref, env.pcm_ref)
         self.assertFalse(client_ref)
 
-    def test_provision_ec2_sin_partner_no_aborta(self):
-        """CASO CRÍTICO: entorno sin partner → el aprovisionamiento arma los
-        tags y llama RunInstances IGUAL; el tag de cliente ausente no aborta."""
+    def test_provision_ec2_centinela_no_aborta(self):
+        """CASO CRÍTICO: entorno del proyecto centinela → el aprovisionamiento
+        arma los tags y llama RunInstances IGUAL; el tag de cliente ausente
+        (centinela) no aborta."""
         from unittest import mock
-        env = self._env(partner=False)
+        env = self._env(partner=self._sentinel_partner())
         base = mock.Mock()
         client = base.get_client.return_value
         client.run_instances.return_value = {"Instances": [{"InstanceId": "i-x"}]}
@@ -576,8 +587,9 @@ class TestMetricsPhase9(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase9"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "P", "account_id": self.account.id})
+            {"name": "P", "account_id": self.account.id, "partner_id": self.partner.id})
         self.environment = self.env["primate.cloud.environment"].create({
             "name": "E", "project_id": self.project.id,
             "env_type": "production", "state": "active"})
@@ -705,8 +717,9 @@ class TestSnapshotRetentionPhase9(TransactionCase):
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase9"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "P", "account_id": self.account.id})
+            {"name": "P", "account_id": self.account.id, "partner_id": self.partner.id})
         self.env_ = self.env["primate.cloud.environment"].create({
             "name": "E", "project_id": self.project.id,
             "env_type": "production", "state": "active"})
@@ -764,8 +777,9 @@ class TestCostOverviewAndLogsPhase9(TransactionCase):
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test Phase9"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "P", "account_id": self.account.id})
+            {"name": "P", "account_id": self.account.id, "partner_id": self.partner.id})
         self.env_ = self.env["primate.cloud.environment"].create({
             "name": "E", "project_id": self.project.id,
             "env_type": "production", "state": "active"})

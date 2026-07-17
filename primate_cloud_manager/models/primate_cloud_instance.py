@@ -173,6 +173,16 @@ class PrimateCloudInstance(models.Model):
         string="Peso de costo", default=1.0,
         help="Peso para el método de reparto 'por peso' (R5).",
     )
+    # hosted_from = create_date (la instancia NO se mueve de servidor: dos
+    # fechas alcanzan, no un ledger de intervalos). hosted_until se estampa al
+    # archivar — dato GRATIS ahora e IRRECONSTRUIBLE después (lección pcm_ref):
+    # el prorrateo por instancia-días del reparto (R5) lo necesita. Vacío =
+    # sigue hospedada (cuenta hasta el fin del período).
+    hosted_until = fields.Datetime(
+        string="Hospedada hasta", readonly=True, copy=False,
+        help="Momento en que la instancia dejó de estar hospedada (se archivó). "
+             "Vacío = sigue viva. Alimenta el prorrateo del reparto de costos.",
+    )
 
     # --- Impersonación (Login-as) POR INSTANCIA (R4-B3, D-R4.3) ---
     # El par Ed25519 es de ESTA instancia: la privada (cifrada con la Fernet
@@ -232,6 +242,32 @@ class PrimateCloudInstance(models.Model):
             if not vals.get("pcm_ref"):
                 vals["pcm_ref"] = self._new_pcm_ref()
         return super().create(vals_list)
+
+    def write(self, vals):
+        """Estampa ``hosted_until`` al archivar (choke point único del dato).
+
+        Sin importar QUÉ flujo archiva la instancia (barrido, teardown, acción
+        manual), el paso a ``archived`` deja registrado CUÁNDO dejó de estar
+        hospedada — lo necesita el prorrateo por días del reparto (R5). Solo se
+        estampa si está vacío (idempotente: re-archivar NO pisa la fecha real);
+        si vuelve a un estado vivo se limpia (edge de reactivación). Un
+        ``hosted_until`` explícito en el mismo write manda (no se toca).
+        """
+        if vals.get("state") == "archived" and "hosted_until" not in vals:
+            now = fields.Datetime.now()
+            sin_sello = self.filtered(lambda r: not r.hosted_until)
+            resto = self - sin_sello
+            res = True
+            if sin_sello:
+                res = super(PrimateCloudInstance, sin_sello).write(
+                    dict(vals, hosted_until=now))
+            if resto:
+                res = super(PrimateCloudInstance, resto).write(vals) and res
+            return res
+        if (vals.get("state") and vals["state"] != "archived"
+                and "hosted_until" not in vals and self.filtered("hosted_until")):
+            vals = dict(vals, hosted_until=False)   # reactivación: limpia el sello
+        return super().write(vals)
 
     def _compute_display_name(self):
         for rec in self:

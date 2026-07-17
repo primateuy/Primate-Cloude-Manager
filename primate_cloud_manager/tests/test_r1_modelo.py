@@ -20,8 +20,9 @@ class TestR1Modelo(TransactionCase):
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
         })
+        self.partner = self.env["res.partner"].create({"name": "Cliente Test R1 X"})
         self.project = self.env["primate.cloud.project"].create(
-            {"name": "Cliente X", "account_id": self.account.id}
+            {"name": "Cliente X", "account_id": self.account.id, "partner_id": self.partner.id}
         )
 
     def _new_env(self, **extra):
@@ -77,8 +78,9 @@ class TestR1Modelo(TransactionCase):
     # --- proyectos hospedados (servidor compartido) --------------------
     def test_project_ids_refleja_clientes_hospedados(self):
         env_rec = self._new_env()
+        other_partner = self.env["res.partner"].create({"name": "Cliente Test R1 Y"})
         other = self.env["primate.cloud.project"].create(
-            {"name": "Cliente Y", "account_id": self.account.id})
+            {"name": "Cliente Y", "account_id": self.account.id, "partner_id": other_partner.id})
         self.env["primate.cloud.instance"].create({
             "name": "Odoo de Y", "project_id": other.id,
             "environment_id": env_rec.id, "http_port": 8079,

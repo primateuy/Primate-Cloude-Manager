@@ -20,7 +20,12 @@ class PrimateCloudProject(models.Model):
     partner_id = fields.Many2one(
         "res.partner",
         string="Cliente",
+        required=True,
         ondelete="restrict",
+        help="Eje cliente del proyecto (prerequisito del reparto de costos, "
+             "R5). Los proyectos huérfanos de la migración llevan el partner "
+             "centinela '⚠ SIN CLIENTE (asignar)' hasta que se les asigne uno "
+             "real.",
     )
     environment_ids = fields.One2many(
         "primate.cloud.environment",
