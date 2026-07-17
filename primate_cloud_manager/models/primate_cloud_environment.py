@@ -1048,6 +1048,7 @@ class PrimateCloudEnvironment(models.Model):
         output = ssm.run_script(
             machine.aws_instance_id, script, region=region,
             comment="pcm bootstrap: %s" % self.name, timeout=900,
+            check=False,   # inspecciona status + centinela PCM_BOOTSTRAP_OK
         )
         stdout = output.get("stdout") or ""
         ok = output.get("status") == "Success" and "PCM_BOOTSTRAP_OK" in stdout
@@ -1217,6 +1218,7 @@ class PrimateCloudEnvironment(models.Model):
             machine.aws_instance_id, script, region=region,
             comment="pcm instance install: %s" % instance.slug,
             timeout=params.get("install_timeout") or 900,
+            check=False,   # inspecciona status + centinela PCM_INSTALL_OK
         )
         stdout = output.get("stdout") or ""
         ok = output.get("status") == "Success" and "PCM_INSTALL_OK" in stdout
@@ -1286,10 +1288,12 @@ class PrimateCloudEnvironment(models.Model):
             return False
         command = ("curl -s -o /dev/null -m 5 -w '%%{http_code}' "
                    "http://127.0.0.1:%d/web/login || true") % instance.http_port
+        # check=False: es un probe read-only; un fallo de SSM degrada a "muerto"
+        # (código no-dígito → False), no a excepción.
         output = ssm.run_script(
             machine.aws_instance_id, command, region=region,
             comment="pcm health probe: %s" % instance.slug,
-            timeout=30, agent_timeout=30)
+            timeout=30, agent_timeout=30, check=False)
         code = (output.get("stdout") or "").strip()
         # curl imprime 000 cuando NO pudo conectar: eso es muerto, no vivo.
         return code.isdigit() and 100 <= int(code) < 500
@@ -1348,9 +1352,13 @@ class PrimateCloudEnvironment(models.Model):
         """Corre el teardown por slug en el servidor y lo deja en el chatter."""
         script = self._build_instance_teardown_script(
             instance, db_name=params.get("db_name"), drop_db=True)
+        # check=False BY DECISION: el teardown es best-effort (script sin -e,
+        # desmonta todo lo que pueda); su éxito se mide por el centinela
+        # PCM_TEARDOWN_DONE, no por el exit code, y reporta INCOMPLETO si falta.
         output = ssm.run_script(
             machine.aws_instance_id, script, region=region,
-            comment="pcm instance teardown: %s" % instance.slug, timeout=300)
+            comment="pcm instance teardown: %s" % instance.slug, timeout=300,
+            check=False)
         done = "PCM_TEARDOWN_DONE" in (output.get("stdout") or "")
         self.message_post(body=_(
             "Teardown de la instancia %(slug)s: %(result)s.",
@@ -1545,6 +1553,7 @@ class PrimateCloudEnvironment(models.Model):
             instance.aws_instance_id, script, region=region,
             comment="pcm provision: %s" % self.name,
             timeout=params.get("install_timeout") or 900,
+            check=False,   # inspecciona status y lo refleja en el chatter/estado
         )
         ok = output.get("status") == "Success"
         self.message_post(body=_("Instalación Odoo (SSM) — estado: %s.") % output.get("status"))
@@ -2100,6 +2109,7 @@ class PrimateCloudEnvironment(models.Model):
             instance.aws_instance_id,
             self._build_neutralize_script(staging_db, sql),
             region=region, comment="pcm staging neutralize: %s" % self.name,
+            check=False,   # chequea status != Success y levanta con su mensaje
         )
         log_text = "%s\n%s" % (output.get("stdout") or "", output.get("stderr") or "")
         self.staging_neutralization_log = log_text.strip()
@@ -2634,6 +2644,9 @@ class PrimateCloudEnvironment(models.Model):
                 region=instance.region or region,
                 comment="pcm backup: %s" % database.name,
                 timeout=3600,
+                # check=False: el except de abajo es SOLO para SSM inaccesible;
+                # un comando que corre y falla lo detecta el status+PCM_BACKUP_OK.
+                check=False,
             )
         except Exception as error:  # noqa: BLE001 - SSM inaccesible: se registra
             record.write({"state": "failed",
@@ -2910,6 +2923,9 @@ class PrimateCloudEnvironment(models.Model):
                 region=instance.region or region,
                 comment="pcm restore: %s" % db_name,
                 timeout=3600,
+                # check=False: el except de abajo es SOLO para SSM inaccesible;
+                # un comando que corre y falla lo detecta el status+PCM_RESTORE_OK.
+                check=False,
             )
         except Exception as error:  # noqa: BLE001 - SSM inaccesible
             return fail(_("SSM inaccesible: %s") % error)

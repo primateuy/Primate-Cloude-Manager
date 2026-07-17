@@ -336,7 +336,10 @@ class PrimateCloudEc2Instance(models.Model):
         command = "%s | tail -n %d" % (base, lines)
         output = self._get_ssm_service().run_script(
             self.aws_instance_id, command, region=self.region,
-            comment="pcm logs: %s" % source, timeout=120)
+            comment="pcm logs: %s" % source, timeout=120,
+            # Lectura interactiva: degrada a mostrar el status en la UI; una
+            # unit caída devuelve no-Success y ESE es un resultado válido.
+            check=False)
         text = (output.get("stdout") or "") or (output.get("stderr") or "")
         return {"status": output.get("status") or "Unknown", "text": text}
 
@@ -382,7 +385,8 @@ class PrimateCloudEc2Instance(models.Model):
                else self._file_stream_cmd(path, from_cursor, lines, grep))
         output = self._get_ssm_service().run_script(
             self.aws_instance_id, cmd, region=self.region,
-            comment="pcm logs stream: %s" % source, timeout=45, agent_timeout=20)
+            comment="pcm logs stream: %s" % source, timeout=45, agent_timeout=20,
+            check=False)   # lectura interactiva: degrada, no levanta
         text = output.get("stdout") or ""
         status = output.get("status") or "Unknown"
         return (self._parse_journal_stream(text, status, from_cursor) if journal
@@ -540,7 +544,8 @@ class PrimateCloudEc2Instance(models.Model):
         output = self._get_ssm_service().run_script(
             self.aws_instance_id, self._python_heredoc(script),
             region=self.region, comment="pcm config read", timeout=45,
-            agent_timeout=20)
+            agent_timeout=20,
+            check=False)   # lectura interactiva del odoo.conf: degrada a vacío
         return self._parse_config_read(output.get("stdout") or "")
 
     def _validate_config(self, edits, internal_keys=frozenset()):
@@ -653,7 +658,11 @@ class PrimateCloudEc2Instance(models.Model):
         out = ssm.run_script(
             self.aws_instance_id, self._python_heredoc(apply_script),
             region=self.region, comment="pcm config apply", timeout=60,
-            agent_timeout=30)
+            agent_timeout=30,
+            # check=False: inspecciona el centinela PCM_RESULT (applied/stale/
+            # invalid) y notifica al usuario en cada caso; un raise se llevaría
+            # puesto ese toast.
+            check=False)
         stdout = out.get("stdout") or ""
         result = self._config_marker(stdout, "PCM_RESULT:")
 
@@ -688,10 +697,14 @@ class PrimateCloudEc2Instance(models.Model):
         diff = self._config_diff_text(old_values, edits)
 
         # Reinicio + health check con timeout generoso — de LA instancia.
+        # check=False A PROPÓSITO: si el restart falla, la RED DE SEGURIDAD es
+        # el health_check + rollback de abajo (restaura el conf anterior). Con
+        # check=True esto levantaría ANTES de correr esa recuperación y dejaría
+        # la instancia con el conf nuevo (malo) sin restaurar.
         ssm.run_script(self.aws_instance_id,
                        "sudo systemctl restart %s" % shlex.quote(service),
                        region=self.region, comment="pcm config restart",
-                       timeout=45, agent_timeout=20)
+                       timeout=45, agent_timeout=20, check=False)
         health = self._config_health_check(port, http_was_ok=http_was_ok,
                                            service=service)
 
@@ -735,9 +748,13 @@ class PrimateCloudEc2Instance(models.Model):
         waited = 0
         last_active = False
         while True:
+            # check=False OBLIGATORIO: ``systemctl is-active`` sobre una unit
+            # caída devuelve exit≠0 → status no-Success, y eso es justo la
+            # respuesta que el health check necesita LEER (no un error a levantar).
             out = (ssm.run_script(
                 self.aws_instance_id, cmd, region=self.region,
-                comment="pcm config health", timeout=20, agent_timeout=20
+                comment="pcm config health", timeout=20, agent_timeout=20,
+                check=False
             ).get("stdout") or "")
             last_active = "PCM_ACTIVE:active" in out
             if last_active and "PCM_HTTP:ok" in out:
@@ -863,7 +880,8 @@ class PrimateCloudEc2Instance(models.Model):
             addons_dir=target.addons_dir or CUSTOM_ADDONS_DIR)
         out = self._get_ssm_service().run_script(
             self.aws_instance_id, script, region=self.region,
-            comment="pcm addon clone", timeout=180, agent_timeout=60)
+            comment="pcm addon clone", timeout=180, agent_timeout=60,
+            check=False)   # el éxito se mide por el centinela PCM_CLONE:ok
         return "PCM_CLONE:ok" in (out.get("stdout") or "")
 
     def restart_odoo(self, odoo_instance=None):
@@ -884,7 +902,8 @@ class PrimateCloudEc2Instance(models.Model):
             self.aws_instance_id,
             "ls %s/*/__manifest__.py 2>/dev/null | wc -l" % shlex.quote(path),
             region=self.region, comment="pcm addon modules", timeout=45,
-            agent_timeout=30)
+            agent_timeout=30,
+            check=False)   # conteo read-only: degrada a 0, no levanta
         try:
             return int((out.get("stdout") or "0").strip().split("\n")[0])
         except (ValueError, IndexError):
@@ -912,7 +931,8 @@ class PrimateCloudEc2Instance(models.Model):
             "sudo -u postgres psql -d %s -tAF'|' -c %s"
             % (shlex.quote(db), shlex.quote(sql)),
             region=self.region, comment="pcm impersonate users", timeout=45,
-            agent_timeout=20)
+            agent_timeout=20,
+            check=False)   # listado read-only para Login as: degrada a vacío
         users = []
         for line in (out.get("stdout") or "").splitlines():
             parts = line.split("|")
@@ -1046,7 +1066,10 @@ class PrimateCloudEc2Instance(models.Model):
                 "&& echo PCM_IMP_INSTALL_OK"
                 % (odoo_bin, shlex.quote(db)),
                 region=self.region, comment="pcm impersonate install",
-                timeout=300, agent_timeout=30)
+                timeout=300, agent_timeout=30,
+                # check=False: la verificación de abajo (status + centinela
+                # PCM_IMP_INSTALL_OK) da un mensaje curado con la BD/instancia.
+                check=False)
             # HALLAZGO CENTRAL R4-B7: verificar que el install OCURRIÓ. run_script
             # NO levanta ante exit!=0 (devuelve status="Failed"); si no se mira,
             # un install fallido se traga en SILENCIO → el módulo NO queda
@@ -1114,7 +1137,10 @@ class PrimateCloudEc2Instance(models.Model):
                 self.aws_instance_id,
                 self._odoo_shell_heredoc(db, script, target),
                 region=self.region, comment="pcm impersonate enable",
-                timeout=120, agent_timeout=30)
+                timeout=120, agent_timeout=30,
+                # check=False: la verificación de abajo (status + centinela
+                # PCM_IMP_ENABLE_OK) da el mensaje curado del kill-switch.
+                check=False)
             # run_script NO levanta ante exit!=0. Sin este chequeo, un disable
             # que falla reporta éxito y deja la impersonación VIVA mientras el
             # operador cree que la cortó (el peor de los fallos silenciosos del
@@ -1211,7 +1237,8 @@ class PrimateCloudEc2Instance(models.Model):
         out = self._get_ssm_service().run_script(
             self.aws_instance_id, self._python_heredoc(script),
             region=self.region, comment="pcm nginx allowlist", timeout=60,
-            agent_timeout=30)
+            agent_timeout=30,
+            check=False)   # inspecciona el centinela PCM_NGINX y levanta él mismo
         stdout = out.get("stdout") or ""
         if "PCM_NGINX:novhost" in stdout:
             raise UserError(_(
@@ -1597,11 +1624,16 @@ class PrimateCloudEc2Instance(models.Model):
         self.ensure_one()
         try:
             service = self._get_ssm_service()
+            # check=False A PROPÓSITO: es un runner de comandos genérico; un
+            # comando que sale no-cero es un RESULTADO a mostrar (status+stdout+
+            # stderr en el chatter), no un error de infra a levantar. Con
+            # check=True perderíamos ese detalle en el except de abajo.
             output = service.run_script(
                 self.aws_instance_id,
                 command,
                 region=self.region,
                 comment="pcm: %s" % (self.name or self.aws_instance_id),
+                check=False,
             )
         except Exception as error:  # noqa: BLE001
             self.message_post(body=_("Error al ejecutar comando: %s") % error)

@@ -85,10 +85,65 @@ class TestSsmService(TransactionCase):
         base, client = _base_with_client()
         client.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
         client.get_command_invocation.return_value = {"Status": "InProgress"}
+        # check=False para inspeccionar el dict TimedOut (con check=True levanta,
+        # cubierto por test_run_script_check_levanta_en_timeout).
         out = aws_ssm.AwsSsmService(base).run_script(
-            "i-1", "sleep 999", timeout=2, poll_interval=1, _sleep=lambda s: None
+            "i-1", "sleep 999", timeout=2, poll_interval=1, check=False,
+            _sleep=lambda s: None
         )
         self.assertEqual(out["status"], "TimedOut")
+
+    # --- Contrato invertido (check=True por default): fallar RUIDOSO ---------
+    def test_run_script_check_levanta_en_status_no_success(self):
+        base, client = _base_with_client()
+        client.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
+        client.get_command_invocation.return_value = {
+            "Status": "Failed", "StandardOutputContent": "",
+            "StandardErrorContent": "boom", "ResponseCode": 1}
+        with self.assertRaises(aws_ssm.SsmCommandError) as ctx:
+            aws_ssm.AwsSsmService(base).run_script(
+                "i-42", "sudo systemctl restart odoo-x",
+                region="us-east-2", comment="pcm test op",
+                poll_interval=0, _sleep=lambda s: None)
+        # El mensaje trae QUÉ (comando/operación), DÓNDE (instancia+región) y
+        # el stderr — accionable a las 3 AM, no "exit 1".
+        msg = str(ctx.exception)
+        self.assertIn("i-42", msg)
+        self.assertIn("us-east-2", msg)
+        self.assertIn("pcm test op", msg)
+        self.assertIn("boom", msg)
+        self.assertIn("Failed", msg)
+
+    def test_run_script_check_levanta_en_timeout(self):
+        base, client = _base_with_client()
+        client.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
+        client.get_command_invocation.return_value = {"Status": "InProgress"}
+        with self.assertRaises(aws_ssm.SsmCommandError):
+            aws_ssm.AwsSsmService(base).run_script(
+                "i-1", "sleep 999", timeout=2, poll_interval=1,
+                _sleep=lambda s: None)
+
+    def test_run_script_check_false_devuelve_el_dict_de_fallo(self):
+        # check=False es la vía explícita para TOLERAR: no levanta, devuelve el
+        # dict para que el llamador decida (lecturas que degradan, best-effort).
+        base, client = _base_with_client()
+        client.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
+        client.get_command_invocation.return_value = {
+            "Status": "Failed", "StandardOutputContent": "",
+            "StandardErrorContent": "boom", "ResponseCode": 1}
+        out = aws_ssm.AwsSsmService(base).run_script(
+            "i-1", "cmd", check=False, poll_interval=0, _sleep=lambda s: None)
+        self.assertEqual(out["status"], "Failed")
+
+    def test_run_script_default_es_check_true(self):
+        # El default DEBE ser el seguro: sin pasar check, un fallo levanta.
+        base, client = _base_with_client()
+        client.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
+        client.get_command_invocation.return_value = {
+            "Status": "Failed", "StandardOutputContent": "", "ResponseCode": 1}
+        with self.assertRaises(aws_ssm.SsmCommandError):
+            aws_ssm.AwsSsmService(base).run_script(
+                "i-1", "cmd", poll_interval=0, _sleep=lambda s: None)
 
 
 @tagged("post_install", "-at_install", "primate_cloud")

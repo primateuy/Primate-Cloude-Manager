@@ -169,6 +169,7 @@ class PrimateCloudDeployment(models.Model):
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id, script, region=instance.region,
                 comment="pcm deploy: %s" % self.name, timeout=1200,
+                check=False,   # el except cubre SSM caído; status+centinelas → estado
             )
         except Exception as error:  # noqa: BLE001 - se normaliza y se audita
             self.write({"state": "failed", "execution_log": str(error)})

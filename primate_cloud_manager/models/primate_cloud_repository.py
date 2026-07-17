@@ -267,6 +267,7 @@ class PrimateCloudRepository(models.Model):
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id, command, region=instance.region,
                 comment="pcm check_sync: %s" % self.name,
+                check=False,   # el except cubre SSM caído; el status → sync_state
             )
         except Exception as error:  # noqa: BLE001
             self.sync_state = "error"
@@ -372,6 +373,7 @@ class PrimateCloudRepository(models.Model):
         output = ssm.run_script(
             instance.aws_instance_id, script, region=instance.region,
             comment="pcm scan_modules: %s" % self.name,
+            check=False,   # chequea status y levanta su propio UserError
         )
         if output.get("status") != "Success":
             raise UserError(_("El escaneo de módulos falló: %s")
@@ -394,6 +396,7 @@ class PrimateCloudRepository(models.Model):
         output = ssm.run_script(
             instance.aws_instance_id, command, region=instance.region,
             comment="pcm db_modules: %s" % self.name,
+            check=False,   # degrada a sin-cruce (no fatal) si falla, no levanta
         )
         if output.get("status") != "Success":
             # No es fatal: se reporta y se sigue sin cruce.
