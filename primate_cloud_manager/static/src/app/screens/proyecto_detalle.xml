@@ -11,44 +11,72 @@
                 <div class="o_pcm_hero o_pcm_card">
                     <div class="o_pcm_hero_head">
                         <h1 t-out="d.name"/>
+                        <span t-if="d.is_unassigned" class="o_pcm o_pcm_chip o_pcm_unassigned"
+                              title="Bandeja de pendientes de asignación — no es un cliente">
+                            sin asignar
+                        </span>
                         <span class="o_pcm_spacer"/>
                     </div>
-                </div>
-
-                <div class="o_pcm_cols2">
-                    <div class="o_pcm_card">
-                        <h2>General</h2>
-                        <div class="o_pcm_kv">
-                            <span class="o_pcm_muted">Cuenta</span>
-                            <span t-if="d.account_id" class="o_pcm_link"
-                                  t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account_name)"
-                                  t-out="d.account_name"/>
-                            <span t-else="">—</span>
-                        </div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Cliente</span><span t-out="d.partner_name or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Entornos</span><span t-out="d.environment_count"/></div>
-                    </div>
-                    <div class="o_pcm_card" t-if="d.notes">
-                        <h2>Notas</h2>
-                        <div t-out="d.notes"/>
+                    <div class="o_pcm_kv"><span class="o_pcm_muted">Cliente</span><span t-out="d.partner_name or '—'"/></div>
+                    <div class="o_pcm_kv">
+                        <span class="o_pcm_muted">Cuenta</span>
+                        <span t-if="d.account_id" class="o_pcm_link"
+                              t-on-click="() => this.openRecord('primate.cloud.account', d.account_id, d.account_name)"
+                              t-out="d.account_name"/>
+                        <span t-else="">—</span>
                     </div>
                 </div>
 
-                <!-- Entornos -->
+                <!-- Instancias del cliente (donde sea que vivan) -->
                 <div class="o_pcm_card">
-                    <h2>Entornos</h2>
-                    <div t-foreach="d.environments" t-as="it" t-key="it.id"
+                    <h2>Instancias <span class="o_pcm_muted" t-out="'(' + d.instance_count + ')'"/></h2>
+                    <div t-foreach="d.instances" t-as="it" t-key="it.id"
                          class="o_pcm_line o_pcm_line_click"
-                         t-on-click="() => this.openRecord('primate.cloud.environment', it.id, it.name)">
+                         t-on-click="() => this.openRecord('primate.cloud.instance', it.id, it.name)">
                         <div class="o_pcm_line_main">
                             <span class="o_pcm_line_name" t-out="it.name"/>
-                            <span t-if="it.env_type_label" class="o_pcm o_pcm_chip" t-out="it.env_type_label"/>
+                            <span t-if="it.is_staging" class="o_pcm o_pcm_chip" title="Instancia de staging (se factura)">staging</span>
+                            <span t-elif="it.env_type_label" class="o_pcm o_pcm_chip" t-out="it.env_type_label"/>
                         </div>
-                        <PcmStatusBadge value="it.state" model="'primate.cloud.environment'"
+                        <span t-if="it.server_name" class="o_pcm_muted o_pcm_line_sub">
+                            en <span t-out="it.server_name"/>
+                        </span>
+                        <PcmStatusBadge value="it.state" model="'primate.cloud.instance'"
                                         field="'state'" label="it.state_label"/>
                         <i class="fa fa-angle-right o_pcm_muted"/>
                     </div>
-                    <div t-if="!d.environments.length" class="o_pcm_muted">Vacío.</div>
+                    <div t-if="!d.instances.length" class="o_pcm_muted">Este cliente no tiene instancias.</div>
+                </div>
+
+                <!-- Reparto de costo del mes (cost.share) -->
+                <div class="o_pcm_card">
+                    <h2>Costo del mes</h2>
+                    <t t-if="d.cost_lines.length">
+                        <div t-foreach="d.cost_lines" t-as="cl" t-key="cl_index" class="o_pcm_line">
+                            <div class="o_pcm_line_main">
+                                <span class="o_pcm_line_name" t-out="cl.instance_name"/>
+                                <span t-if="cl.shared_server" class="o_pcm o_pcm_chip"
+                                      title="Porción de un servidor compartido con otros clientes">compartido</span>
+                            </div>
+                            <span class="o_pcm_muted o_pcm_line_sub">
+                                <span t-if="cl.server_name" t-out="cl.server_name"/>
+                                <span> · </span><span t-out="cl.method_label"/> · prorrateado por días
+                            </span>
+                            <span class="o_pcm_mono" t-out="this.money(cl.amount) + ' ' + d.cost_currency"/>
+                        </div>
+                        <!-- Total: suma VISIBLE de las MISMAS líneas de arriba -->
+                        <div class="o_pcm_line o_pcm_line_total">
+                            <span class="o_pcm_line_name">Total</span>
+                            <span class="o_pcm_spacer"/>
+                            <span class="o_pcm_mono" t-out="this.money(d.cost_total) + ' ' + d.cost_currency"/>
+                        </div>
+                        <!-- Honestidad: nunca un número sin su fecha -->
+                        <div class="o_pcm_muted o_pcm_note">
+                            <span t-if="d.cost_pulled_at">datos al <span t-out="d.cost_pulled_at"/> (UTC)</span>
+                            <span t-else="">datos al: —</span>
+                        </div>
+                    </t>
+                    <div t-else="" class="o_pcm_muted">Sin datos de costo del mes todavía.</div>
                 </div>
             </t>
         </div>

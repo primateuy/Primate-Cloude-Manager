@@ -5,9 +5,10 @@ import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
 
 /**
- * Detalle de un proyecto: datos generales, notas y sus entornos.
- * Solo lectura, sin acciones.
- * Datos de `primate.cloud.dashboard.get_project_detail`.
+ * Detalle de un proyecto = la vista del CLIENTE (eje cliente, R6): sus
+ * instancias (estén en el servidor que estén) y su reparto de costo del mes
+ * (cost.share de R5) con la honestidad obligatoria (método + "datos al").
+ * Solo lectura. Datos de `primate.cloud.dashboard.get_project_detail`.
  */
 export class ProyectoDetalle extends Component {
     static template = "primate_cloud_manager.ProyectoDetalle";
@@ -44,5 +45,9 @@ export class ProyectoDetalle extends Component {
         if (this.props.onOpenRecord && id) {
             this.props.onOpenRecord(model, id, name);
         }
+    }
+
+    money(amount) {
+        return (amount || 0).toFixed(2);
     }
 }

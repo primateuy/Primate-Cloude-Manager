@@ -58,6 +58,8 @@
                     <Entornos t-elif="current.type === 'entornos'"
                               onOpenEnv="(id, name) => this.openEnvDetail(id, name)"
                               onManage="(id, name) => this.manageEnv(id, name)"/>
+                    <Proyectos t-elif="current.type === 'proyectos'"
+                               onOpenProject="(id, name) => this.openRecord('primate.cloud.project', id, name)"/>
                     <EntornoDetalle t-elif="current.type === 'envDetail'"
                                     envId="current.resId"
                                     onBack="() => this.pop()"

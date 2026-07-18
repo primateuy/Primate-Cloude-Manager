@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.Proyectos">
+        <div class="o_pcm_screen_body">
+            <div class="o_pcm_toolbar">
+                <input type="text" class="o_pcm_search" placeholder="Buscar proyecto o cliente…"
+                       t-on-input="onSearch"/>
+            </div>
+
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-else="">
+                <div class="o_pcm_muted o_pcm_note">
+                    Costo del mes en curso · el método y la fecha de los datos están en cada proyecto.
+                </div>
+                <div class="o_pcm_grid">
+                    <div t-foreach="filtered" t-as="p" t-key="p.id"
+                         t-attf-class="o_pcm_card o_pcm_card_click {{ p.is_unassigned ? 'o_pcm_unassigned_card' : '' }}"
+                         t-on-click="() => this.open(p.id, p.name)">
+                        <div class="o_pcm_hero_head">
+                            <h3 t-out="p.name"/>
+                            <span t-if="p.is_unassigned" class="o_pcm o_pcm_chip o_pcm_unassigned"
+                                  title="Bandeja de pendientes de asignación — no es un cliente">
+                                sin asignar
+                            </span>
+                        </div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Cliente</span><span t-out="p.partner_name or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Instancias</span><span t-out="p.instance_count"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Costo del mes</span><span class="o_pcm_mono" t-out="this.money(p)"/></div>
+                    </div>
+                    <div t-if="!filtered.length" class="o_pcm_muted">Sin proyectos.</div>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

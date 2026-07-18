@@ -479,3 +479,117 @@ class TestR5B3Retag(TransactionCase):
             self.server._job_sync_client_tag()
         fake.create_tags.assert_not_called()
         fake.delete_tags.assert_not_called()
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR6ProyectoAxis(TransactionCase):
+    """Eje proyecto (R6-B1): get_project_detail / get_projects — la vista del cliente."""
+
+    def setUp(self):
+        super().setUp()
+        self.dash = self.env["primate.cloud.dashboard"]
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.partner = self.env["res.partner"].create({"name": "Cliente R6"})
+        self.other = self.env["res.partner"].create({"name": "Otro Cliente"})
+        self.sentinel = self.env["res.partner"].create(
+            {"name": "⚠ SIN CLIENTE (asignar)"})
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.unassigned_partner_id", str(self.sentinel.id))
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Proyecto R6", "account_id": self.account.id,
+             "partner_id": self.partner.id})
+        self.other_project = self.env["primate.cloud.project"].create(
+            {"name": "Otro", "account_id": self.account.id,
+             "partner_id": self.other.id})
+        self.sent_project = self.env["primate.cloud.project"].create(
+            {"name": "Bandeja", "account_id": self.account.id,
+             "partner_id": self.sentinel.id})
+        # Servidor A dedicado al cliente; Servidor B compartido (cliente + otro).
+        self.srv_a = self.env["primate.cloud.environment"].create({
+            "name": "A", "project_id": self.project.id, "env_type": "production",
+            "odoo_version": "19", "odoo_edition": "community"})
+        self.srv_b = self.env["primate.cloud.environment"].create({
+            "name": "B", "project_id": self.project.id, "env_type": "production",
+            "odoo_version": "19", "odoo_edition": "community"})
+        self.inst_a = self.srv_a.primary_instance_id
+        self.inst_b = self.srv_b.primary_instance_id
+        # instancia de OTRO cliente en B → B compartido
+        self.srv_b._create_instance_with_ports(
+            {"name": "OtroOdoo", "project_id": self.other_project.id})
+        self.month_start = fields.Date.context_today(self.dash).replace(day=1)
+
+    def _share(self, server, instance, amount):
+        return self.env["primate.cloud.cost.share"].create({
+            "account_id": self.account.id,
+            "period_start": self.month_start,
+            "period_end": self.month_start,   # irrelevante para la vista
+            "granularity": "monthly",
+            "environment_id": server.id, "environment_ref": server.pcm_ref,
+            "environment_name": server.name,
+            "instance_id": instance.id, "instance_ref": instance.pcm_ref,
+            "instance_name": instance.name,
+            "project_id": self.project.id, "partner_id": self.partner.id,
+            "method": "equal", "amount": amount,
+        })
+
+    def test_detail_instancias_cruzan_servidores(self):
+        d = self.dash.get_project_detail(self.project.id)
+        names = {i["name"]: i for i in d["instances"]}
+        # las instancias del cliente aparecen con SU servidor (cruce de ejes)
+        self.assertIn(self.inst_a.display_name, names)
+        self.assertIn(self.inst_b.display_name, names)
+        self.assertEqual(names[self.inst_a.display_name]["server_name"], "A")
+        self.assertEqual(names[self.inst_b.display_name]["server_name"], "B")
+
+    def test_detail_total_suma_las_mismas_shares(self):
+        # Precisión (a): total = suma de las líneas listadas (mismo recordset),
+        # no un cálculo aparte. 3.33+3.33+3.34 = 10.00.
+        self._share(self.srv_a, self.inst_a, 3.33)
+        self._share(self.srv_b, self.inst_b, 3.34)
+        # una 3ª share sobre A (otra instancia del cliente para sumar)
+        extra = self.srv_a._create_instance_with_ports(
+            {"name": "Extra", "project_id": self.project.id})
+        self._share(self.srv_a, extra, 3.33)
+        d = self.dash.get_project_detail(self.project.id)
+        suma_lineas = round(sum(cl["amount"] for cl in d["cost_lines"]), 2)
+        self.assertEqual(round(d["cost_total"], 2), suma_lineas)
+        self.assertEqual(round(d["cost_total"], 2), 10.0)
+
+    def test_detail_marca_shared_server(self):
+        self._share(self.srv_a, self.inst_a, 5.0)   # A dedicado
+        self._share(self.srv_b, self.inst_b, 5.0)   # B compartido
+        d = self.dash.get_project_detail(self.project.id)
+        by_srv = {cl["server_name"]: cl for cl in d["cost_lines"]}
+        self.assertFalse(by_srv["A"]["shared_server"])
+        self.assertTrue(by_srv["B"]["shared_server"])
+
+    def test_detail_marca_staging(self):
+        self.inst_b.env_type = "staging"
+        d = self.dash.get_project_detail(self.project.id)
+        names = {i["name"]: i for i in d["instances"]}
+        self.assertTrue(names[self.inst_b.display_name]["is_staging"])
+
+    def test_detail_honestidad_datos_al(self):
+        # sin pull → "datos al" vacío; con pull → fecha presente
+        d = self.dash.get_project_detail(self.project.id)
+        self.assertEqual(d["cost_pulled_at"], "")
+        self.account.cost_pulled_at = fields.Datetime.now()
+        d2 = self.dash.get_project_detail(self.project.id)
+        self.assertTrue(d2["cost_pulled_at"])
+
+    def test_projects_centinela_flag_y_ultimo(self):
+        out = self.dash.get_projects()
+        by_id = {p["id"]: p for p in out}
+        self.assertTrue(by_id[self.sent_project.id]["is_unassigned"])
+        self.assertFalse(by_id[self.project.id]["is_unassigned"])
+        # el centinela va al final
+        self.assertTrue(out[-1]["is_unassigned"])
+
+    def test_projects_cuenta_instancias(self):
+        out = self.dash.get_projects()
+        proj = next(p for p in out if p["id"] == self.project.id)
+        # A (primary) + B (primary) + Extra? no; solo primarias A y B del cliente
+        self.assertEqual(proj["instance_count"], 2)

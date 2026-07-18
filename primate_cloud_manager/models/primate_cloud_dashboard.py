@@ -894,26 +894,115 @@ class PrimateCloudDashboard(models.AbstractModel):
         }
 
     @api.model
+    def _unassigned_partner_id(self):
+        """Id del partner centinela "⚠ SIN CLIENTE" (0 si no hay)."""
+        return int(self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.unassigned_partner_id") or 0)
+
     def get_project_detail(self, project_id):
-        """Serializa el detalle de un proyecto para la app (read-only)."""
+        """Detalle del PROYECTO = la vista del CLIENTE (eje cliente, R6).
+
+        Sus instancias estén en el servidor que estén (eje cliente cruzando el
+        eje infraestructura en la instancia) + su reparto de costo del mes
+        (``cost.share`` de R5), con la honestidad obligatoria: método + "datos
+        al". El TOTAL se suma de LAS MISMAS shares que se listan (mismo
+        recordset): la vista del proyecto filtra un subconjunto (las shares del
+        cliente en varios servidores) donde el invariante de R5 (Σ = crudo del
+        SERVIDOR) no aplica — un total calculado aparte podría descuadrar.
+        """
         proj = self.env["primate.cloud.project"].browse(project_id).exists()
         if not proj:
             return {}
-        Env = self.env["primate.cloud.environment"]
-        state_labels = dict(Env._fields["state"].selection)
-        type_labels = dict(self.env["primate.cloud.instance"]._fields["env_type"].selection)
+        Instance = self.env["primate.cloud.instance"]
+        Share = self.env["primate.cloud.cost.share"]
+        type_labels = dict(Instance._fields["env_type"].selection)
+        state_labels = dict(Instance._fields["state"].selection)
+        method_labels = dict(Share._fields["method"].selection)
+
+        # --- Instancias del cliente (donde sea que vivan) ---
+        instances = Instance.search([("project_id", "=", proj.id)])
+        inst_data = [{
+            "id": inst.id, "name": inst.display_name,
+            "server_id": inst.environment_id.id or False,
+            "server_name": inst.environment_id.display_name or "",
+            "env_type": inst.env_type,
+            "env_type_label": type_labels.get(inst.env_type, ""),
+            "is_staging": inst.env_type == "staging",
+            "state": inst.state,
+            "state_label": state_labels.get(inst.state, inst.state or ""),
+            "main_url": inst.main_url or "",
+        } for inst in instances]
+
+        # --- Reparto del mes en curso (las MISMAS shares → total y desglose) ---
+        today = fields.Date.context_today(self)
+        month_start = today.replace(day=1)
+        shares = Share.search([
+            ("project_id", "=", proj.id),
+            ("period_start", "=", month_start),
+            ("granularity", "=", "monthly"),
+        ])
+        cost_lines = []
+        cost_total = 0.0
+        for share in shares:
+            cost_total += share.amount           # total = suma de ESTAS shares
+            server = share.environment_id
+            shared = bool(server) and (
+                server._dedicated_client_partner() != proj.partner_id)
+            cost_lines.append({
+                "instance_id": share.instance_id.id or False,
+                "instance_name": (share.instance_name
+                                  or _("(sin instancia)")),
+                "server_name": share.environment_name or "",
+                "amount": share.amount,
+                "method_label": method_labels.get(share.method, share.method or ""),
+                "shared_server": shared,
+                "unattributed": share.unattributed,
+            })
+        pulled = proj.account_id.cost_pulled_at
         return {
-            "id": proj.id,
-            "name": proj.display_name,
+            "id": proj.id, "name": proj.display_name,
             "account_id": proj.account_id.id or False,
             "account_name": proj.account_id.display_name or "",
             "partner_name": proj.partner_id.display_name or "",
+            "is_unassigned": proj.partner_id.id == self._unassigned_partner_id(),
             "notes": proj.notes or "",
-            "environment_count": proj.environment_count,
-            "environments": [{
-                "id": env.id, "name": env.display_name,
-                "env_type_label": type_labels.get(env.env_type, ""),
-                "state": env.state,
-                "state_label": state_labels.get(env.state, env.state or ""),
-            } for env in proj.environment_ids],
+            "instances": inst_data,
+            "instance_count": len(inst_data),
+            "cost_total": cost_total,
+            "cost_lines": cost_lines,
+            "cost_currency": shares[:1].currency or "USD",
+            # Honestidad: nunca un número sin su método y su fecha.
+            "cost_pulled_at": (fields.Datetime.to_string(pulled)
+                               if pulled else ""),
         }
+
+    def get_projects(self):
+        """Lista de PROYECTOS = el eje cliente (R6). Cada proyecto con su nº de
+        instancias y su costo del mes (suma de sus shares). El proyecto centinela
+        "⚠ SIN CLIENTE" se marca ``is_unassigned`` (bandeja de pendientes, no un
+        cliente) y va al final."""
+        Project = self.env["primate.cloud.project"]
+        Instance = self.env["primate.cloud.instance"]
+        Share = self.env["primate.cloud.cost.share"]
+        sentinel_id = self._unassigned_partner_id()
+        today = fields.Date.context_today(self)
+        month_start = today.replace(day=1)
+        out = []
+        for proj in Project.search([]):
+            shares = Share.search([
+                ("project_id", "=", proj.id),
+                ("period_start", "=", month_start),
+                ("granularity", "=", "monthly"),
+            ])
+            out.append({
+                "id": proj.id, "name": proj.display_name,
+                "partner_name": proj.partner_id.display_name or "",
+                "is_unassigned": proj.partner_id.id == sentinel_id,
+                "instance_count": Instance.search_count(
+                    [("project_id", "=", proj.id)]),
+                "cost_total": sum(shares.mapped("amount")),
+                "cost_currency": shares[:1].currency or "USD",
+            })
+        # Centinela (bandeja de pendientes) al final.
+        out.sort(key=lambda p: (p["is_unassigned"], p["name"].lower()))
+        return out

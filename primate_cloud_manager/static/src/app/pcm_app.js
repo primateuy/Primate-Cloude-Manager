@@ -20,6 +20,7 @@ import { DespliegueDetalle } from "./screens/despliegue_detalle";
 import { DnsDetalle } from "./screens/dns_detalle";
 import { CuentaDetalle } from "./screens/cuenta_detalle";
 import { ProyectoDetalle } from "./screens/proyecto_detalle";
+import { Proyectos } from "./screens/proyectos";
 
 // Presets de acento (name -> accent / ink-sobre-claro / tint-de-fondo).
 export const ACCENT_PRESETS = {
@@ -103,14 +104,14 @@ const NAV_GROUPS = [
         { key: "cuentas", label: "Cuentas AWS", icon: "fa-key",
           route: { type: "nativeList", model: "primate.cloud.account" } },
         { key: "proyectos", label: "Proyectos", icon: "fa-folder-o",
-          route: { type: "nativeList", model: "primate.cloud.project" } },
+          route: { type: "proyectos" } },
     ] },
 ];
 
 export class PcmApp extends Component {
     static template = "primate_cloud_manager.App";
     static components = {
-        Inicio, Costos, Entornos, EntornoDetalle, ServidorDetalle, InstanciaDetalle,
+        Inicio, Costos, Entornos, Proyectos, EntornoDetalle, ServidorDetalle, InstanciaDetalle,
         BaseDatosDetalle, RepositorioDetalle, DespliegueDetalle, DnsDetalle,
         CuentaDetalle, ProyectoDetalle, View, PcmWizardDrawer,
     };
@@ -210,6 +211,8 @@ export class PcmApp extends Component {
             title = "Costos";
         } else if (route.type === "entornos") {
             title = "Entornos";
+        } else if (route.type === "proyectos") {
+            title = "Proyectos";
         } else if (route.type === "nativeList") {
             const item = this.navItems.find(
                 (n) => n.route.type === "nativeList" && n.route.model === route.model
@@ -411,7 +414,7 @@ export class PcmApp extends Component {
         for (const part of decodeURIComponent(match[1]).split("~")) {
             const dashIdx = part.indexOf("-");
             const prefix = dashIdx === -1 ? part : part.slice(0, dashIdx);
-            if (part === "inicio" || part === "entornos") {
+            if (part === "inicio" || part === "entornos" || part === "proyectos") {
                 stack.push(this.withTitle({ type: part }));
             } else if (HASH_DETAIL[prefix]) {
                 const type = HASH_DETAIL[prefix];
