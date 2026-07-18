@@ -593,3 +593,83 @@ class TestR6ProyectoAxis(TransactionCase):
         proj = next(p for p in out if p["id"] == self.project.id)
         # A (primary) + B (primary) + Extra? no; solo primarias A y B del cliente
         self.assertEqual(proj["instance_count"], 2)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR6Crossing(TransactionCase):
+    """El cruce (R6-B2): porción de costo en la instancia + crudo/reparto en el servidor."""
+
+    def setUp(self):
+        super().setUp()
+        self.dash = self.env["primate.cloud.dashboard"]
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.partner = self.env["res.partner"].create({"name": "Cliente R6X"})
+        self.project = self.env["primate.cloud.project"].create(
+            {"name": "Proyecto R6X", "account_id": self.account.id,
+             "partner_id": self.partner.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "srv", "project_id": self.project.id, "env_type": "production",
+            "odoo_version": "19", "odoo_edition": "community"})
+        self.machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "m", "account_id": self.account.id, "aws_instance_id": "i-1",
+            "instance_state": "running", "region": "us-east-1",
+            "environment_id": self.server.id, "provisioned_by_pcm": True})
+        self.server.ec2_instance_id = self.machine
+        self.inst = self.server.primary_instance_id
+        self.month_start = fields.Date.context_today(self.dash).replace(day=1)
+
+    def _entry(self, amount):
+        return self.env["primate.cloud.cost.entry"].create({
+            "account_id": self.account.id, "period_start": self.month_start,
+            "period_end": self.month_start, "granularity": "monthly",
+            "environment_ref": self.server.pcm_ref, "environment_name": "srv",
+            "service": "AmazonEC2", "amount": amount})
+
+    def _share(self, amount):
+        return self.env["primate.cloud.cost.share"].create({
+            "account_id": self.account.id, "period_start": self.month_start,
+            "period_end": self.month_start, "granularity": "monthly",
+            "environment_id": self.server.id, "environment_ref": self.server.pcm_ref,
+            "environment_name": "srv",
+            "instance_id": self.inst.id, "instance_ref": self.inst.pcm_ref,
+            "instance_name": self.inst.name,
+            "project_id": self.project.id, "partner_id": self.partner.id,
+            "client_name": self.partner.name, "method": "equal", "amount": amount})
+
+    # --- instancia: su porción, con contexto (precisión 2) -------------
+    def test_instance_detail_porcion_con_contexto(self):
+        self._share(10.0)
+        self.account.cost_pulled_at = fields.Datetime.now()
+        d = self.dash.get_odoo_instance_detail(self.inst.id)
+        self.assertTrue(d["cost"])
+        self.assertEqual(d["cost"]["amount"], 10.0)
+        self.assertTrue(d["cost"]["method_label"])      # método presente
+        self.assertTrue(d["cost"]["pulled_at"])         # "datos al" presente
+        self.assertFalse(d["cost"]["shared_server"])    # servidor dedicado
+
+    def test_instance_detail_env_type_es_de_la_instancia(self):
+        # Precisión 1: el env_type sale de la INSTANCIA, no del servidor.
+        self.inst.env_type = "staging"
+        d = self.dash.get_odoo_instance_detail(self.inst.id)
+        self.assertEqual(d["env_type"], "staging")
+        self.assertFalse(d["is_production"])
+
+    # --- servidor: crudo (máquina) vs reparto (precisión 3) ------------
+    def test_server_detail_crudo_es_la_maquina(self):
+        self._entry(30.0)          # AWS factura $30 por la máquina
+        self._share(30.0)          # se reparte (una instancia acá → todo a ella)
+        self.account.cost_pulled_at = fields.Datetime.now()
+        d = self.dash.get_server_detail(self.machine.id)
+        self.assertTrue(d["cost"]["has_data"])
+        self.assertEqual(d["cost"]["crudo"], 30.0)              # la máquina entera
+        self.assertEqual(d["cost"]["shares_total"], 30.0)      # = repartido (invariante R5)
+        self.assertEqual(len(d["cost"]["shares"]), 1)
+        self.assertTrue(d["cost"]["pulled_at"])
+
+    def test_server_detail_sin_costo_no_rompe(self):
+        d = self.dash.get_server_detail(self.machine.id)
+        self.assertFalse(d["cost"]["has_data"])
+        self.assertEqual(d["cost"]["crudo"], 0.0)

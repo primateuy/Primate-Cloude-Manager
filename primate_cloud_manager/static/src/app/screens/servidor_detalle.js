@@ -72,4 +72,8 @@ export class ServidorDetalle extends Component {
             this.props.onOpenInstance(instanceId, name);
         }
     }
+
+    money(amount) {
+        return (amount || 0).toFixed(2);
+    }
 }

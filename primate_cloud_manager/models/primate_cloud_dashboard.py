@@ -423,6 +423,51 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "ram_available": False,
                 "disk_available": False,
             },
+            # Costo del servidor: el CRUDO de la máquina + cómo se reparte (R6-B2).
+            "cost": self._server_cost_breakdown(env),
+        }
+
+    def _server_cost_breakdown(self, env):
+        """Costo de un servidor: el CRUDO (lo que AWS factura por LA MÁQUINA,
+        indivisible) y cómo se reparte entre las instancias hospedadas.
+
+        Son dos números CONCEPTUALMENTE distintos aunque el invariante de R5 los
+        iguale (Σ shares del servidor = su crudo): el crudo es la máquina entera;
+        cada share es la porción de un cliente. En un server compartido la
+        diferencia importa — la UI dice "AWS factura $X por esta máquina; se
+        reparte así". Con la honestidad de siempre: "datos al".
+        """
+        if not env:
+            return False
+        Entry = self.env["primate.cloud.cost.entry"]
+        Share = self.env["primate.cloud.cost.share"]
+        today = fields.Date.context_today(self)
+        month_start = today.replace(day=1)
+        entries = Entry.search([
+            ("account_id", "=", env.account_id.id),
+            ("period_start", "=", month_start),
+            ("granularity", "=", "monthly"),
+            ("is_forecast", "=", False),
+            ("environment_ref", "=", env.pcm_ref),
+        ])
+        shares = Share.search([
+            ("environment_id", "=", env.id),
+            ("period_start", "=", month_start),
+            ("granularity", "=", "monthly"),
+        ])
+        pulled = env.account_id.cost_pulled_at
+        return {
+            "crudo": sum(entries.mapped("amount")),
+            "has_data": bool(entries),
+            "currency": (entries[:1].currency or shares[:1].currency or "USD"),
+            "shares": [{
+                "instance_name": s.instance_name or _("(sin instancia)"),
+                "client_name": s.client_name or "",
+                "amount": s.amount,
+                "unattributed": s.unattributed,
+            } for s in shares],
+            "shares_total": sum(shares.mapped("amount")),
+            "pulled_at": (fields.Datetime.to_string(pulled) if pulled else ""),
         }
 
     @api.model
@@ -522,6 +567,37 @@ class PrimateCloudDashboard(models.AbstractModel):
             # DNS best-effort (R4-B6.4): motivo del DNS pendiente si lo hay.
             "dns_pending": inst._dns_pending_data() if hasattr(
                 inst, "_dns_pending_data") else False,
+            # Porción de costo de ESTA instancia (su share del mes, R6-B2), con
+            # la misma honestidad que el proyecto: método + prorrateo + "datos
+            # al" + si el servidor es compartido.
+            "cost": self._instance_cost_portion(inst),
+        }
+
+    def _instance_cost_portion(self, inst):
+        """Share del mes en curso de una instancia (o None). Método + fecha +
+        flag de servidor compartido — ningún número sin su contexto."""
+        Share = self.env["primate.cloud.cost.share"]
+        today = fields.Date.context_today(self)
+        month_start = today.replace(day=1)
+        shares = Share.search([
+            ("instance_id", "=", inst.id),
+            ("period_start", "=", month_start),
+            ("granularity", "=", "monthly"),
+        ])
+        if not shares:
+            return False
+        method_labels = dict(Share._fields["method"].selection)
+        server = inst.environment_id
+        shared = bool(server) and (
+            server._dedicated_client_partner() != inst.project_id.partner_id)
+        pulled = inst.environment_id.account_id.cost_pulled_at
+        return {
+            "amount": sum(shares.mapped("amount")),
+            "currency": shares[:1].currency or "USD",
+            "method_label": method_labels.get(
+                shares[:1].method, shares[:1].method or ""),
+            "shared_server": shared,
+            "pulled_at": (fields.Datetime.to_string(pulled) if pulled else ""),
         }
 
     # ------------------------------------------------------------------

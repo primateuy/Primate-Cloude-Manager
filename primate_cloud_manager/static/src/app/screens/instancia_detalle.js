@@ -419,4 +419,8 @@ export class InstanciaDetalle extends Component {
             this._polling = false;
         }
     }
+
+    money(amount) {
+        return (amount || 0).toFixed(2);
+    }
 }
