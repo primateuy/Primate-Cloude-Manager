@@ -369,6 +369,37 @@ def s05_salir_y_volver(pg):
     pg.screenshot(path=f"{SHOT}/s05_remontaje.png")
 
 
+@scenario
+def s10_proyecto_eje_cliente(pg):
+    """R6: el EJE CLIENTE — el que Daryl pidió cuando encontró el error
+    conceptual. Entrar por Proyectos → un cliente → sus instancias (en
+    servidores DISTINTOS) → click → la instancia. Y el reparto visible con su
+    contexto (método + datos al)."""
+    open_app(pg)
+    pg.click(".o_pcm_nav_item:has-text('Proyectos')")
+    pg.wait_for_selector(".o_pcm_card_click", timeout=10000)
+    pg.screenshot(path=f"{SHOT}/s10_proyectos.png")
+    # Abrir el cliente Alfa (tiene instancias en 2 servidores).
+    pg.locator(".o_pcm_card_click:has-text('Proyecto Alfa (smoke)')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000)
+    body = pg.locator(".o_pcm_detalle").inner_text()
+    # (1) Sus instancias EN SERVIDORES DISTINTOS (el cruce por el eje cliente).
+    lineas = pg.locator(".o_pcm_line_click")
+    assert lineas.count() >= 2, \
+        f"el proyecto no lista sus instancias en varios servidores: {lineas.count()}"
+    assert MULTI_ENV in body and "SMOKE MULTI B" in body, \
+        "las instancias del cliente no muestran servidores distintos"
+    # (2) El reparto con su contexto (método + datos al) — honestidad R6.
+    assert "Costo del mes" in body, "falta el bloque de costo del proyecto"
+    assert "datos al" in body, "el costo del proyecto no muestra 'datos al'"
+    pg.screenshot(path=f"{SHOT}/s10_proyecto.png")
+    # (3) Click a una instancia → su pantalla (el cruce cierra en la instancia).
+    lineas.first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000)
+    assert len(crumbs(pg)) >= 2, f"drill proyecto→instancia falló: {crumbs(pg)}"
+    pg.screenshot(path=f"{SHOT}/s10_instancia.png")
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -386,7 +417,8 @@ def main():
         for fn in (s01_app_y_sidebar, s02_hub_y_drill, s03_drawer_cancelar,
                    s04_drawer_error_correccion_exito,
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
-                   s09_servidor_vs_instancia, s05_salir_y_volver):
+                   s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
+                   s05_salir_y_volver):
             fn(pg)
         br.close()
 

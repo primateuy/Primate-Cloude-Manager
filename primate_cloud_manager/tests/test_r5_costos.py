@@ -673,3 +673,72 @@ class TestR6Crossing(TransactionCase):
         d = self.dash.get_server_detail(self.machine.id)
         self.assertFalse(d["cost"]["has_data"])
         self.assertEqual(d["cost"]["crudo"], 0.0)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestR6B3CostosDashboard(TransactionCase):
+    """R6-B3: KPI de costo del inicio (crudo) + reparto por cliente en Costos."""
+
+    def setUp(self):
+        super().setUp()
+        self.dash = self.env["primate.cloud.dashboard"]
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "C", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
+        })
+        self.p1 = self.env["res.partner"].create({"name": "Cliente Uno"})
+        self.p2 = self.env["res.partner"].create({"name": "Cliente Dos"})
+        self.proj1 = self.env["primate.cloud.project"].create(
+            {"name": "P1", "account_id": self.account.id, "partner_id": self.p1.id})
+        self.proj2 = self.env["primate.cloud.project"].create(
+            {"name": "P2", "account_id": self.account.id, "partner_id": self.p2.id})
+        self.server = self.env["primate.cloud.environment"].create({
+            "name": "srv", "project_id": self.proj1.id, "env_type": "production",
+            "odoo_version": "19", "odoo_edition": "community"})
+        self.month_start = fields.Date.context_today(self.dash).replace(day=1)
+
+    def _entry(self, amount, service="AmazonEC2"):
+        return self.env["primate.cloud.cost.entry"].create({
+            "account_id": self.account.id, "period_start": self.month_start,
+            "period_end": self.month_start, "granularity": "monthly",
+            "environment_ref": self.server.pcm_ref, "environment_name": "srv",
+            "service": service, "amount": amount})
+
+    def _share(self, project, partner, amount):
+        return self.env["primate.cloud.cost.share"].create({
+            "account_id": self.account.id, "period_start": self.month_start,
+            "period_end": self.month_start, "granularity": "monthly",
+            "environment_id": self.server.id, "environment_ref": self.server.pcm_ref,
+            "environment_name": "srv",
+            # instance_ref distinto por share (el UNIQUE es por instancia).
+            "instance_ref": "inst_%s" % partner.id,
+            "project_id": project.id, "partner_id": partner.id,
+            "client_name": partner.name, "method": "equal", "amount": amount})
+
+    def _cost_kpi(self, data):
+        return next(k for k in data["kpis"] if k["key"] == "cost")
+
+    def test_home_kpi_costo_es_crudo_con_fecha(self):
+        self._entry(18.0, "AmazonEC2")
+        self._entry(7.0, "AmazonEBS")   # crudo total = 25.00 (lo que factura AWS)
+        self.account.cost_pulled_at = fields.Datetime.now()
+        kpi = self._cost_kpi(self.dash.get_home_data())
+        self.assertIn("25.00", kpi["value"])       # el crudo, no shares
+        self.assertIn("datos al", kpi["hint"])      # honestidad
+
+    def test_home_kpi_sin_datos(self):
+        kpi = self._cost_kpi(self.dash.get_home_data())
+        self.assertEqual(kpi["value"], "—")
+        self.assertIn("sin datos", kpi["hint"])
+
+    def test_cost_overview_by_client_share_es_el_reparto(self):
+        # crudo 20 repartido: 12 al cliente 1, 8 al cliente 2
+        self._entry(20.0)
+        self._share(self.proj1, self.p1, 12.0)
+        self._share(self.proj2, self.p2, 8.0)
+        data = self.dash.get_cost_overview(self.account.id)
+        by = {r["label"]: r["amount"] for r in data["by_client_share"]}
+        self.assertEqual(by["Cliente Uno"], 12.0)
+        self.assertEqual(by["Cliente Dos"], 8.0)
+        # el reparto suma el crudo (invariante R5 en la vista global)
+        self.assertEqual(round(sum(by.values()), 2), 20.0)

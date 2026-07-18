@@ -157,6 +157,61 @@ if not multi:
         "db_type": "local_pg", "instance_id": inst_b.id,
         "ec2_instance_id": machine.id})
 
+# 2º servidor para el EJE PROYECTO cross-server (R6): otra instancia del cliente
+# Alfa en OTRA máquina → el proyecto Alfa tiene instancias en 2 servidores.
+MULTI_B_NAME = "SMOKE MULTI B (borrar)"
+multi_b = Env.search([("name", "=", MULTI_B_NAME)], limit=1)
+if not multi_b:
+    multi_b = Env.create({
+        "name": MULTI_B_NAME, "project_id": proj_a.id, "account_id": fake.id,
+        "env_type": "production", "state": "active",
+        "odoo_version": "19", "odoo_edition": "community",
+    })
+    machine_b = Ec2.create({
+        "name": MULTI_B_NAME, "account_id": fake.id,
+        "aws_instance_id": "i-smokemultib", "instance_state": "running",
+        "region": region, "public_ip": "203.0.113.10",
+        "instance_type": "t3.micro", "provisioned_by_pcm": True,
+        "environment_id": multi_b.id,
+    })
+    multi_b.ec2_instance_id = machine_b
+    inst_a2 = multi_b.primary_instance_id
+    inst_a2.write({"name": "Odoo Alfa 2", "project_id": proj_a.id,
+                   "slug": "cliente-a2", "state": "active",
+                   "env_type": "production", "main_url": "alfa2.smoke.local"})
+    multi_b._materialize_multiodoo_layout(inst_a2, {"db_mode": "local_pg"})
+
+# Costos sembrados: crudo (cost.entry) + reparto (cost.share) del mes en curso,
+# para que los bloques de costo (proyecto/servidor/instancia/costos) rendericen
+# CON datos y con "datos al" — el smoke ejercita la honestidad de R5/R6.
+Entry = env["primate.cloud.cost.entry"]
+Share = env["primate.cloud.cost.share"].with_context(pcm_cost_regen=True)
+# inst_a/inst_b viven en la rama de creación del multi; se re-resuelven acá por
+# slug para que la siembra funcione aunque el multi ya existiera.
+inst_a = multi.instance_ids.filtered(lambda i: i.slug == "cliente-a")[:1]
+inst_b = multi.instance_ids.filtered(lambda i: i.slug == "cliente-b")[:1]
+_today = fields.Date.context_today(fake)
+_m0 = _today.replace(day=1)
+if inst_a and inst_b and not Entry.search_count(
+        [("account_id", "=", fake.id), ("period_start", "=", _m0),
+         ("environment_ref", "=", multi.pcm_ref)]):
+    Entry.create({
+        "account_id": fake.id, "period_start": _m0, "period_end": _m0,
+        "granularity": "monthly", "environment_ref": multi.pcm_ref,
+        "environment_name": MULTI_NAME, "service": "AmazonEC2", "amount": 20.0})
+    # Servidor compartido (Alfa + Beta) → reparto 50/50.
+    for _inst, _proj, _partner, _amt in (
+            (inst_a, proj_a, partner_a, 10.0), (inst_b, proj_b, partner_b, 10.0)):
+        Share.create({
+            "account_id": fake.id, "period_start": _m0, "period_end": _m0,
+            "granularity": "monthly", "environment_id": multi.id,
+            "environment_ref": multi.pcm_ref, "environment_name": MULTI_NAME,
+            "instance_id": _inst.id, "instance_ref": _inst.pcm_ref,
+            "instance_name": _inst.name, "project_id": _proj.id,
+            "partner_id": _partner.id, "client_name": _partner.name,
+            "method": "equal", "amount": _amt})
+    fake.cost_pulled_at = fields.Datetime.now()
+
 env.cr.commit()
 print("FIXTURE_ENV_ID", fx.id, "cuenta", fx.account_id.name, "estado", fx.state)
 print("FIXTURE_DNS_ENV_ID", dns_env.id)

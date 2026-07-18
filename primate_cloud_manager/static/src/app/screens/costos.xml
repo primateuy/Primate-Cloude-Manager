@@ -49,9 +49,13 @@
                 </div>
 
                 <div class="o_pcm_card">
-                    <h2>Por cliente</h2>
-                    <div t-if="!d.by_client.length" class="o_pcm_muted">Sin datos.</div>
-                    <div t-foreach="d.by_client" t-as="row" t-key="row_index" class="o_pcm_line">
+                    <h2>Por cliente <span class="o_pcm_muted">(reparto)</span></h2>
+                    <div class="o_pcm_muted o_pcm_note">
+                        Reparto del crudo entre clientes (partes iguales/por peso, prorrateado por días).
+                        En servidores compartidos, el tag por cliente no existe: esta es la atribución real.
+                    </div>
+                    <div t-if="!d.by_client_share.length" class="o_pcm_muted">Sin datos.</div>
+                    <div t-foreach="d.by_client_share" t-as="row" t-key="row_index" class="o_pcm_line">
                         <div class="o_pcm_line_main"><span class="o_pcm_line_name" t-out="row.label"/></div>
                         <span class="o_pcm_mono"><t t-out="row.amount"/> <t t-out="d.currency"/></span>
                     </div>

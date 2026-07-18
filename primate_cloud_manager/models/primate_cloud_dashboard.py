@@ -140,13 +140,32 @@ class PrimateCloudDashboard(models.AbstractModel):
             + self.env["primate.cloud.dns.record"].search_count(
                 [("sync_state", "=", "divergent")])
         )
+        # Costo mensual GLOBAL = el CRUDO de todas las cuentas (lo que factura
+        # AWS), NO la suma de shares (misma plata contada por otro lado). En un
+        # mundo de servidores compartidos, el número del dashboard es la factura.
+        Entry = self.env["primate.cloud.cost.entry"]
+        today = fields.Date.context_today(self)
+        month_start = today.replace(day=1)
+        month_entries = Entry.search([
+            ("period_start", "=", month_start),
+            ("granularity", "=", "monthly"),
+            ("is_forecast", "=", False),
+        ])
+        crudo_total = sum(month_entries.mapped("amount"))
+        currency = month_entries[:1].currency or "USD"
+        pulled_dates = [d for d in Account.search([]).mapped("cost_pulled_at")
+                        if d]
+        pulled = max(pulled_dates) if pulled_dates else None
         kpis = [
             {"key": "env_active", "label": "Entornos activos", "icon": "fa-cubes",
              "value": Environment.search_count([("state", "=", "active")])},
             {"key": "ec2_running", "label": "Servidores activos", "icon": "fa-server",
              "value": Ec2.search_count([("instance_state", "=", "running")])},
-            {"key": "cost", "label": "Costo mensual", "icon": "fa-line-chart",
-             "value": "—", "hint": "Disponible con la fase de costos"},
+            {"key": "cost", "label": "Costo mensual (AWS)", "icon": "fa-line-chart",
+             "value": ("%.2f %s" % (crudo_total, currency)
+                       if month_entries else "—"),
+             "hint": ("datos al %s (UTC)" % fields.Datetime.to_string(pulled)
+                      if pulled else "sin datos de costo aún")},
             {"key": "alerts", "label": "Alertas", "icon": "fa-bell", "value": alerts},
         ]
 
@@ -770,6 +789,23 @@ class PrimateCloudDashboard(models.AbstractModel):
         pulled_dates = [d for d in accounts.mapped("cost_pulled_at") if d]
         pulled = max(pulled_dates) if pulled_dates else False
         currency = (current[:1].currency or "USD")
+        # Por cliente = el REPARTO (cost.share), NO el tag crudo: en servidores
+        # compartidos el tag primate:client_id se retira (una EC2 no tiene dueño
+        # único) y el crudo caería en "Sin atribuir". El reparto sí atribuye la
+        # porción de cada cliente. Suma el crudo (invariante R5).
+        Share = self.env["primate.cloud.cost.share"]
+        share_domain = ([("account_id", "=", account_id)] if account_id else [])
+        shares_current = Share.search(share_domain + [
+            ("period_start", "=", month_start), ("granularity", "=", "monthly")])
+        share_by_client = {}
+        for sh in shares_current:
+            key = (sh.client_name if not sh.unattributed and sh.client_name
+                   else _("Sin atribuir"))
+            share_by_client.setdefault(key, 0.0)
+            share_by_client[key] += sh.amount
+        by_client_share = [{"label": k, "amount": round(v, 2)}
+                           for k, v in sorted(share_by_client.items(),
+                                              key=lambda x: -x[1])]
         return {
             "pulled_at": fields.Datetime.to_string(pulled) if pulled else "",
             "currency": currency,
@@ -778,7 +814,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "forecast_total": round(sum(forecast.mapped("amount")), 2),
             "by_environment": _agg(current, "environment_name", None),
             "by_service": _agg(current, "service", None),
-            "by_client": _agg(current, "client_name", None),
+            # Reparto por cliente (la vista honesta en multi-tenant).
+            "by_client_share": by_client_share,
         }
 
     @api.model
@@ -969,12 +1006,12 @@ class PrimateCloudDashboard(models.AbstractModel):
             } for inst in Ec2.search([("account_id", "=", acc.id)])],
         }
 
-    @api.model
     def _unassigned_partner_id(self):
         """Id del partner centinela "⚠ SIN CLIENTE" (0 si no hay)."""
         return int(self.env["ir.config_parameter"].sudo().get_param(
             "pcm.unassigned_partner_id") or 0)
 
+    @api.model
     def get_project_detail(self, project_id):
         """Detalle del PROYECTO = la vista del CLIENTE (eje cliente, R6).
 
@@ -1052,6 +1089,7 @@ class PrimateCloudDashboard(models.AbstractModel):
                                if pulled else ""),
         }
 
+    @api.model
     def get_projects(self):
         """Lista de PROYECTOS = el eje cliente (R6). Cada proyecto con su nº de
         instancias y su costo del mes (suma de sus shares). El proyecto centinela
