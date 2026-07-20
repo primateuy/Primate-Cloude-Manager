@@ -320,8 +320,10 @@ def s09_servidor_vs_instancia(pg):
 
 @scenario
 def s07_dns_crud(pg):
-    """Fase 8.5: sección DNS del hub — crear registro (wizard en drawer) y la
-    fricción ALTA al intentar borrar un registro de producción (alerta roja)."""
+    """Fase 8.5 + B2: sección DNS del hub con el FORM OWL nuevo. Crear abre el
+    formulario propio (no el wizard nativo) y valida con errores inline
+    accionables (no "Missing required fields"); borrar un registro de producción
+    exige fricción alta (banner de peligro + conformidad + tipear el nombre)."""
     open_app(pg)
     dr = ".o_pcm_drawer"
     open_env(pg, DNS_ENV)
@@ -330,21 +332,46 @@ def s07_dns_crud(pg):
                          timeout=10000)
     assert pg.locator(".o_pcm_line:has-text('prod.smoke.local')").count() >= 1, \
         "falta el registro DNS sembrado en el hub"
-    # 1) Crear registro: abre el wizard REAL en el drawer.
+
+    # 1) Crear: abre el FORM OWL (no el wizard nativo). Sus campos son inputs
+    # propios (o_pcm_input / o_pcm_select / o_pcm_textarea), no [name=...].
     pg.click("button:has-text('Agregar registro')")
-    pg.wait_for_selector(dr, timeout=10000)
-    pg.wait_for_selector(f"{dr} [name='name']", timeout=8000)
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    for sel in ("input.o_pcm_input", ".o_pcm_select", "textarea.o_pcm_textarea"):
+        assert pg.locator(f"{dr} {sel}").count() >= 1, \
+            f"el form OWL de DNS no montó su control {sel}"
+    # Validación accionable: confirmar con el valor vacío NO cierra el drawer y
+    # muestra el error inline (no el genérico nativo en inglés).
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
+    assert pg.locator(dr).count() == 1, \
+        "el form se cerró pese al error de validación (debía quedar abierto)"
     pg.screenshot(path=f"{SHOT}/s07_dns_create.png")
-    pg.click(f"{dr} .modal-footer button:has-text('Cancelar')")
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
     pg.wait_for_selector(dr, state="detached", timeout=8000)
-    # 2) Borrar el registro de producción: wizard con fricción alta (alerta roja).
+
+    # 2) Borrar el registro de producción: FORM OWL con fricción alta.
     pg.click(".o_pcm_line:has-text('prod.smoke.local') button[title='Eliminar']")
-    pg.wait_for_selector(dr, timeout=10000)
-    pg.wait_for_selector(f"{dr} [name='confirm_name']", timeout=8000)
-    alert = pg.locator(f"{dr} .alert-danger:has-text('PRODUCCIÓN')")
-    assert alert.count() >= 1, "no apareció la fricción alta de borrado en prod"
+    pg.wait_for_selector(f"{dr} .o_pcm_form_banner_danger", timeout=10000)
+    # Producción => conformidad requerida (ack) + tipear el nombre.
+    assert pg.locator(f"{dr} .o_pcm_form_check").count() >= 1, \
+        "borrar en producción debe pedir la conformidad (ack)"
+    delete_btn = pg.locator(f"{dr} .o_pcm_btn_danger")
+    assert delete_btn.is_disabled(), \
+        "el botón de borrar debe arrancar deshabilitado (falta tipear el nombre)"
+    # Nombre incorrecto => sigue deshabilitado.
+    pg.fill(f"{dr} input.o_pcm_input", "no-es-el-nombre")
+    pg.wait_for_timeout(150)
+    assert delete_btn.is_disabled(), \
+        "con el nombre equivocado el botón NO debe habilitarse"
+    # Nombre correcto + conformidad => habilita (no se confirma: se preserva).
+    pg.fill(f"{dr} input.o_pcm_input", "prod.smoke.local")
+    pg.check(f"{dr} .o_pcm_form_check input[type='checkbox']")
+    pg.wait_for_timeout(150)
+    assert not delete_btn.is_disabled(), \
+        "con el nombre exacto y la conformidad el botón debe habilitarse"
     pg.screenshot(path=f"{SHOT}/s07_dns_delete_prod.png")
-    pg.click(f"{dr} .modal-footer button:has-text('Cancelar')")
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
     pg.wait_for_selector(dr, state="detached", timeout=8000)
 
 
@@ -437,28 +464,37 @@ def s11_temas(pg):
 
     # (3) El panel del drawer debe ser OPACO en los 3 temas — guarda contra un
     # tokenizado futuro que lo vuelva transparente sin que nadie lo note (los
-    # formularios quedarían ilegibles). Abre el drawer por tema y mide el alpha.
-    def drawer_alpha():
+    # formularios quedarían ilegibles). Se miden LOS DOS vectores de translucidez:
+    # el alpha del background Y la propiedad `opacity` (un `opacity:.5` no baja el
+    # alpha del color; hay que mirar ambos). Se espera a que termine el slide-in.
+    def drawer_opacity():
         return pg.evaluate(r"""() => {
             const d = document.querySelector('.o_pcm_drawer');
             if (!d) return null;
-            const bg = getComputedStyle(d).backgroundColor;
-            if (bg === 'transparent') return 0;
-            const m = bg.match(/rgba?\(([^)]+)\)/);
-            if (!m) return 1;
-            const parts = m[1].split(',').map(s => s.trim());
-            return parts.length === 4 ? parseFloat(parts[3]) : 1;
+            const cs = getComputedStyle(d);
+            const bg = cs.backgroundColor;
+            let bgAlpha = 1;
+            if (bg === 'transparent') {
+                bgAlpha = 0;
+            } else {
+                const m = bg.match(/rgba?\(([^)]+)\)/);
+                if (m) {
+                    const parts = m[1].split(',').map((s) => s.trim());
+                    bgAlpha = parts.length === 4 ? parseFloat(parts[3]) : 1;
+                }
+            }
+            return { bgAlpha, opacity: parseFloat(cs.opacity) };
         }""")
     for theme in ("Consola", "Panel", "Editorial"):
         pg.click(f".o_pcm_theme_opt:has-text('{theme}')")
         pg.wait_for_timeout(250)
         pg.click(".o_pcm_nav_item:has-text('Crear instancia EC2')")
         pg.wait_for_selector(".o_pcm_drawer", timeout=8000)
-        pg.wait_for_timeout(300)
-        alpha = drawer_alpha()
-        assert alpha is not None and alpha >= 0.99, \
-            f"el panel del drawer NO es opaco en Tema {theme} " \
-            f"(alpha={alpha}) — los formularios quedan ilegibles"
+        pg.wait_for_timeout(500)  # dejar terminar el slide-in (0.16s) + margen
+        op = drawer_opacity()
+        assert op and op["bgAlpha"] >= 0.99 and op["opacity"] >= 0.99, \
+            f"el panel del drawer NO es opaco en Tema {theme} ({op}) — los " \
+            f"formularios quedan ilegibles"
         pg.click(".o_pcm_drawer_head .o_pcm_icon_btn")
         pg.wait_for_selector(".o_pcm_drawer", state="detached", timeout=6000)
 

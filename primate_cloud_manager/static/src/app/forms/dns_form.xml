@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.DnsForm">
+        <div class="o_pcm_form">
+            <!-- Bloqueado (alias / inexistente): sólo el motivo y cerrar. -->
+            <t t-if="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-else="">
+                <!-- Error del servidor / validación, accionable (sin traceback). -->
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <PcmField label="'Nombre'" required="!isEdit"
+                          error="state.errors.name"
+                          help="'Ej.: forum.primate.cloud'">
+                    <input class="o_pcm_input" type="text"
+                           t-att-value="state.name"
+                           t-att-readonly="isEdit ? 'readonly' : undefined"
+                           t-att-placeholder="'forum.primate.cloud'"
+                           t-on-input="(ev) => this.onInput('name', ev)"/>
+                </PcmField>
+
+                <PcmField label="'Tipo'">
+                    <PcmSelect value="state.record_type" options="typeOptions"
+                               disabled="isEdit"
+                               onChange="(v) => this.setType(v)"/>
+                </PcmField>
+
+                <PcmField label="'Hosted Zone ID'" required="!isEdit"
+                          error="state.errors.hosted_zone_id"
+                          help="'La zona de Route 53 donde vive el registro.'">
+                    <input class="o_pcm_input" type="text"
+                           t-att-value="state.hosted_zone_id"
+                           t-att-readonly="isEdit ? 'readonly' : undefined"
+                           t-att-placeholder="'Z0123456789ABCDEFGHIJ'"
+                           t-on-input="(ev) => this.onInput('hosted_zone_id', ev)"/>
+                </PcmField>
+
+                <PcmField label="'Valor(es)'" required="true"
+                          error="state.errors.record_value"
+                          help="valueHint">
+                    <textarea class="o_pcm_textarea" rows="4"
+                              t-att-value="state.record_value"
+                              t-on-input="(ev) => this.onInput('record_value', ev)"/>
+                </PcmField>
+
+                <PcmField label="'TTL (segundos)'"
+                          help="'Cuánto cachean los resolvers. 300 es un buen defecto.'">
+                    <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                           min="0" t-att-value="state.ttl"
+                           t-on-input="(ev) => this.onTtlInput(ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Aplicando…</t>
+                        <t t-else="">Aplicar en Route 53</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

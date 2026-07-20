@@ -39,6 +39,15 @@ export function handlePcmActionResult(env, res) {
 }
 
 /**
+ * Extrae el mensaje LIMPIO de un error de RPC para mostrarlo inline en la UI,
+ * sin traceback ni el diálogo stock "Oops". Los UserError/ValidationError del
+ * servidor traen el texto accionable en `data.message`.
+ */
+export function pcmErrorMessage(error) {
+    return (error && (error.data?.message || error.message)) || String(error);
+}
+
+/**
  * Llama a un método de acción de un modelo (opcionalmente tras confirmar) y
  * despacha su resultado. Devuelve true si se ejecutó, false si se canceló.
  */

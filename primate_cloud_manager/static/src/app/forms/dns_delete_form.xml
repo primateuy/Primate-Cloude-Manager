@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.DnsDeleteForm">
+        <div class="o_pcm_form">
+            <t t-if="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-elif="!state.loading">
+                <!-- Advertencia de peligrosidad. -->
+                <div class="o_pcm_form_banner o_pcm_form_banner_danger">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span>
+                        Borrar un registro DNS puede tirar abajo el dominio que
+                        apunta a él. Esta acción se aplica en Route 53.
+                    </span>
+                </div>
+
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <!-- Qué se va a borrar (contexto para no equivocarse). -->
+                <div class="o_pcm_form_summary">
+                    <div class="o_pcm_form_summary_row">
+                        <span class="o_pcm_muted">Registro</span>
+                        <span class="o_pcm_mono" t-out="state.name"/>
+                    </div>
+                    <div t-if="state.record_value" class="o_pcm_form_summary_row">
+                        <span class="o_pcm_muted">Valor actual</span>
+                        <span class="o_pcm_mono" t-out="state.record_value"/>
+                    </div>
+                    <div t-if="state.environment_name" class="o_pcm_form_summary_row">
+                        <span class="o_pcm_muted">Entorno</span>
+                        <span t-out="state.environment_name"/>
+                    </div>
+                </div>
+
+                <PcmField label="'Escribí el nombre exacto del registro'" required="true"
+                          help="'Para confirmar, escribí: ' + state.name">
+                    <input class="o_pcm_input" type="text"
+                           t-att-value="state.confirm_name"
+                           t-att-placeholder="state.name"
+                           t-on-input="(ev) => state.confirm_name = ev.target.value"/>
+                </PcmField>
+
+                <label t-if="state.needs_ack" class="o_pcm_form_check">
+                    <input type="checkbox" t-att-checked="state.acknowledge"
+                           t-on-change="(ev) => state.acknowledge = ev.target.checked"/>
+                    <span>
+                        Este registro es de un entorno productivo o de origen
+                        desconocido. Entiendo que borrarlo puede tirar abajo el
+                        dominio.
+                    </span>
+                </label>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_danger"
+                            t-att-disabled="(!canSubmit or state.submitting) ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Borrando…</t>
+                        <t t-else="">Eliminar registro</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

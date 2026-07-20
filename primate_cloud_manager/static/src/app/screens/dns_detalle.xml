@@ -32,6 +32,20 @@
                     </div>
                 </div>
 
+                <!-- Error de sync accionable, visible en el panel (no sólo en la
+                     bitácora): qué pasó y qué hacer, con el crudo plegable. -->
+                <div t-if="d.sync_state === 'error' and d.sync_error"
+                     class="o_pcm_form_banner o_pcm_form_banner_error o_pcm_panel_banner">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <div class="o_pcm_panel_banner_body">
+                        <div t-out="d.sync_error"/>
+                        <details t-if="d.sync_error_detail" class="o_pcm_banner_detail">
+                            <summary>Ver detalle técnico</summary>
+                            <pre class="o_pcm_mono o_pcm_banner_pre" t-out="d.sync_error_detail"/>
+                        </details>
+                    </div>
+                </div>
+
                 <div class="o_pcm_cols2">
                     <div class="o_pcm_card">
                         <h2>General</h2>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.PcmField">
+        <div t-attf-class="o_pcm_field {{ props.error ? 'o_pcm_field_invalid' : '' }}">
+            <label t-if="props.label" class="o_pcm_field_label">
+                <t t-out="props.label"/>
+                <span t-if="props.required" class="o_pcm_field_req" title="Requerido">*</span>
+            </label>
+            <div class="o_pcm_field_control">
+                <t t-slot="default"/>
+            </div>
+            <div t-if="props.error" class="o_pcm_field_err" t-out="props.error"/>
+            <div t-elif="props.help" class="o_pcm_field_help" t-out="props.help"/>
+        </div>
+    </t>
+
+</templates>

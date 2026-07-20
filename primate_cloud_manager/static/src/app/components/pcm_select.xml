@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.PcmSelect">
+        <select class="o_pcm_select"
+                t-att-disabled="props.disabled ? 'disabled' : undefined"
+                t-on-change="onChange">
+            <option t-foreach="props.options" t-as="opt" t-key="opt.value"
+                    t-att-value="opt.value"
+                    t-att-selected="isSelected(opt.value)"
+                    t-out="opt.label"/>
+        </select>
+    </t>
+
+</templates>

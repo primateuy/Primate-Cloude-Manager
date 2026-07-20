@@ -8,6 +8,7 @@ import { browser } from "@web/core/browser/browser";
 import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
 import { View } from "@web/views/view";
 import { PcmWizardDrawer } from "./components/wizard_drawer";
+import { PcmFormDrawer } from "./components/pcm_form_drawer";
 import { Inicio } from "./screens/inicio";
 import { Costos } from "./screens/costos";
 import { Entornos } from "./screens/entornos";
@@ -172,7 +173,7 @@ export class PcmApp extends Component {
     static components = {
         Inicio, Costos, Entornos, Proyectos, EntornoDetalle, ServidorDetalle, InstanciaDetalle,
         BaseDatosDetalle, RepositorioDetalle, DespliegueDetalle, DnsDetalle,
-        CuentaDetalle, ProyectoDetalle, View, PcmWizardDrawer,
+        CuentaDetalle, ProyectoDetalle, View, PcmWizardDrawer, PcmFormDrawer,
     };
     static props = ["*"];
 
@@ -188,6 +189,7 @@ export class PcmApp extends Component {
         useSubEnv({
             pcm: {
                 openWizard: (model, ctx, title) => this.openWizardDrawer(model, ctx, title),
+                openForm: (component, props, title) => this.openFormDrawer(component, props, title),
                 notify: (message, opts) => this.notification.add(message, opts),
                 doAction: (action) => this.action.doAction(action),
                 openRecord: (model, resId, title) => this.openRecord(model, resId, title),
@@ -210,6 +212,8 @@ export class PcmApp extends Component {
             stack: [{ type: "inicio", title: "Inicio" }],
             // Wizard activo en el drawer lateral (o null). { model, context, title }.
             wizard: null,
+            // Formulario OWL activo en el drawer (o null). { component, props, title }.
+            form: null,
             // Grupos del sidebar colapsados (por clave). Por defecto expandidos.
             collapsed: {},
         });
@@ -413,6 +417,16 @@ export class PcmApp extends Component {
 
     closeWizardDrawer() {
         this.state.wizard = null;
+    }
+
+    // Abrir un FORMULARIO OWL propio en el drawer (no un wizard nativo). El que
+    // abre pasa la clase del componente y sus props; recibe `onClose`.
+    openFormDrawer(component, props, title) {
+        this.state.form = { component, props: props || {}, title: title || "" };
+    }
+
+    closeFormDrawer() {
+        this.state.form = null;
     }
 
     // Crear un registro nuevo con el form nativo embebido (inline, sin modal).

@@ -18,6 +18,13 @@
     --pcm-accent-ink: #0F5E4E;
     --pcm-accent-tint: #E3F3EF;
 
+    // Buckets de ESTADO (fijos, independientes del acento y del tema). Mismos
+    // hex que pcm_theme.scss (.o_pcm): se redeclaran acá para que resuelvan en
+    // la app sin depender de un ancestro .o_pcm (banners, botón danger, etc.).
+    --pcm-ok-dot: #2E9E5B;      --pcm-ok-bg: #E7F4EC;      --pcm-ok-ink: #1E6B45;
+    --pcm-warn-dot: #EF9F27;    --pcm-warn-bg: #FAEEDA;    --pcm-warn-ink: #854F0B;
+    --pcm-error-dot: #E24B4A;   --pcm-error-bg: #FCEBEB;   --pcm-error-ink: #A32D2D;
+
     // Tokens de TEMA — capa ortogonal al acento: densidad/forma/tipografía,
     // NUNCA color (solo referencian tokens de paleta FIJOS). Estos DEFAULTS son
     // los valores ACTUALES (red de seguridad §6.4: si el JS no cargó, se ve como
@@ -914,7 +921,15 @@
             padding: 16px 20px;
             border-bottom: 1px solid var(--pcm-line);
 
-            h2 { font-size: 1.1rem; font-weight: 600; margin: 0; }
+            // Título del drawer: usa la tipografía de display del tema (serif en
+            // Editorial) — el drawer es la superficie que se mira al crear/editar,
+            // un título sans ahí rompería la coherencia justo en el momento de uso.
+            h2 {
+                font-size: var(--pcm-fs-title);
+                font-weight: var(--pcm-fw-title);
+                font-family: var(--pcm-font-display);
+                margin: 0;
+            }
         }
 
         .o_pcm_drawer_body {
@@ -941,6 +956,138 @@
 
             &:empty { display: none; }
         }
+    }
+
+    // ========================================================================
+    // Kit de formulario OWL (DNS y futuros bloques). Estructura ÚNICA; el
+    // aspecto por tema sale de los tokens (radios/espacios/tipografía), NUNCA de
+    // markup distinto. Vive dentro del drawer y también en el panel (banners).
+    // ========================================================================
+    .o_pcm_form {
+        display: flex;
+        flex-direction: column;
+        gap: var(--pcm-space-gap);
+        padding: 4px 2px;
+    }
+
+    .o_pcm_field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .o_pcm_field_label {
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--pcm-soft);
+    }
+    .o_pcm_field_req { color: var(--pcm-error-dot); margin-left: 2px; }
+    .o_pcm_field_help { font-size: 0.8rem; color: var(--pcm-soft); }
+    .o_pcm_field_err { font-size: 0.8rem; color: var(--pcm-error-ink); }
+
+    // Controles: radio/tipografía por token; foco con el acento.
+    .o_pcm_input, .o_pcm_textarea, .o_pcm_select {
+        width: 100%;
+        font-size: var(--pcm-fs-base);
+        font-family: var(--pcm-font-ui);
+        color: var(--pcm-ink-text);
+        background: #fff;
+        border: 1px solid var(--pcm-line);
+        border-radius: var(--pcm-radius-control);
+        padding: 8px 10px;
+        outline: none;
+        transition: border-color 0.12s, box-shadow 0.12s;
+
+        &:focus {
+            border-color: var(--pcm-accent);
+            box-shadow: 0 0 0 3px var(--pcm-accent-tint);
+        }
+        &:read-only, &:disabled {
+            background: var(--pcm-surface);
+            color: var(--pcm-soft);
+            cursor: not-allowed;
+        }
+    }
+    .o_pcm_textarea {
+        resize: vertical;
+        min-height: 84px;
+        font-family: var(--pcm-font-mono);
+    }
+    .o_pcm_input_narrow { max-width: 140px; }
+    .o_pcm_field_invalid {
+        .o_pcm_input, .o_pcm_textarea, .o_pcm_select {
+            border-color: var(--pcm-error-dot);
+        }
+    }
+
+    // Banner accionable (error / aviso / peligro): mismo layout, color por bucket.
+    .o_pcm_form_banner {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: var(--pcm-radius-control);
+        font-size: 0.86rem;
+        line-height: 1.4;
+        > i { margin-top: 2px; flex: 0 0 auto; }
+    }
+    .o_pcm_form_banner_error  { background: var(--pcm-error-bg); color: var(--pcm-error-ink); }
+    .o_pcm_form_banner_danger {
+        background: var(--pcm-error-bg); color: var(--pcm-error-ink);
+        border: 1px solid var(--pcm-error-dot);
+    }
+    .o_pcm_form_banner_warn { background: var(--pcm-warn-bg); color: var(--pcm-warn-ink); }
+
+    // Resumen "qué se va a borrar" (contexto en el form de borrado).
+    .o_pcm_form_summary {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 10px 12px;
+        background: var(--pcm-surface);
+        border-radius: var(--pcm-radius-control);
+    }
+    .o_pcm_form_summary_row {
+        display: flex;
+        gap: 10px;
+        justify-content: space-between;
+        flex-wrap: wrap;
+    }
+
+    .o_pcm_form_check {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        font-size: 0.86rem;
+        color: var(--pcm-ink-text);
+        cursor: pointer;
+        input { margin-top: 3px; flex: 0 0 auto; }
+    }
+
+    .o_pcm_form_foot {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 4px;
+        padding-top: 12px;
+        border-top: 1px solid var(--pcm-line);
+    }
+
+    // Banner de error de sync en el PANEL (pantalla del registro, no drawer):
+    // el mensaje accionable + el crudo plegable.
+    .o_pcm_panel_banner { align-items: flex-start; }
+    .o_pcm_panel_banner_body { flex: 1 1 auto; min-width: 0; }
+    .o_pcm_banner_detail {
+        margin-top: 6px;
+        summary { cursor: pointer; font-size: 0.8rem; opacity: 0.85; }
+    }
+    .o_pcm_banner_pre {
+        margin: 6px 0 0;
+        padding: 8px;
+        background: rgba(0, 0, 0, 0.05);
+        border-radius: 6px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 0.78rem;
     }
 
     @keyframes o_pcm_fade_in { from { opacity: 0; } to { opacity: 1; } }

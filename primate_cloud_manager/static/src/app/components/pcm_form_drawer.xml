@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.PcmFormDrawer">
+        <!-- Scrim: click fuera cierra. Mismo chrome que el wizard nativo. -->
+        <div class="o_pcm_drawer_scrim" t-on-click="() => this.props.onClose()">
+            <div class="o_pcm_drawer" t-on-click.stop="">
+                <div class="o_pcm_drawer_head">
+                    <h2 t-out="props.title or 'Formulario'"/>
+                    <button class="o_pcm_icon_btn" t-on-click="() => this.props.onClose()"
+                            aria-label="Cerrar">
+                        <i class="fa fa-times"/>
+                    </button>
+                </div>
+                <div class="o_pcm_drawer_body">
+                    <t t-component="props.component" t-props="childProps"/>
+                </div>
+            </div>
+        </div>
+    </t>
+
+</templates>

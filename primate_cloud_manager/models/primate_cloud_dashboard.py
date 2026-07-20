@@ -9,11 +9,83 @@ from datetime import timedelta
 from odoo import _, api, fields, models
 
 
+def _friendly_sync_error(raw):
+    """Traduce un error crudo de AWS/Route 53 a copy ACCIONABLE en español.
+
+    La pantalla OWL no debe mostrar el traceback de boto3: este helper reconoce
+    las firmas de fallo más comunes y devuelve qué hacer al respecto. El crudo se
+    conserva aparte (detalle técnico plegable para el admin), nunca se pierde.
+
+    Args:
+        raw (str): mensaje de error tal cual lo devolvió AWS/boto3.
+
+    Returns:
+        str: mensaje orientado a la acción, en español.
+    """
+    text = (raw or "").strip()
+    low = text.lower()
+    if not text:
+        return _("La sincronización con Route 53 falló. Revisá la bitácora para "
+                 "el detalle.")
+    if any(k in low for k in ("accessdenied", "not authorized",
+                              "unauthorizedoperation", "is not authorized")):
+        return _("La cuenta AWS no tiene permisos para cambiar registros en esta "
+                 "zona de Route 53. Revisá la política IAM (hace falta "
+                 "route53:ChangeResourceRecordSets sobre la zona) y reintentá.")
+    if "nosuchhostedzone" in low or "hosted zone" in low and "not" in low:
+        return _("La zona alojada ya no existe en Route 53. Verificá el Hosted "
+                 "Zone ID o volvé a sincronizar las zonas desde AWS.")
+    if any(k in low for k in ("invalidchangebatch", "already exists",
+                              "it already exists", "conflict")):
+        return _("Route 53 rechazó el cambio: el registro ya existe o entra en "
+                 "conflicto con otro. Verificá el nombre y el tipo antes de "
+                 "reintentar.")
+    if any(k in low for k in ("throttl", "rate exceeded", "toomanyrequests",
+                              "slow down")):
+        return _("AWS está limitando las solicitudes (throttling). Esperá unos "
+                 "segundos y reintentá.")
+    if any(k in low for k in ("signaturedoesnotmatch", "invalidclienttokenid",
+                              "authfailure", "expiredtoken", "expired",
+                              "invalid credentials")):
+        return _("Las credenciales de la cuenta AWS son inválidas o expiraron. "
+                 "Actualizá las claves de la cuenta y reintentá.")
+    if any(k in low for k in ("timed out", "timeout", "could not connect",
+                              "connection", "endpointconnectionerror",
+                              "network")):
+        return _("No se pudo conectar con AWS (red o timeout). Reintentá; si "
+                 "persiste, revisá la conectividad de red.")
+    # Genérico: primer renglón, sin volcar el traceback entero en la UI.
+    return _("La sincronización con Route 53 falló: %s") % text.splitlines()[0]
+
+
 class PrimateCloudDashboard(models.AbstractModel):
     """Fuente de datos del panel de inicio del módulo."""
 
     _name = "primate.cloud.dashboard"
     _description = "Panel Cloud"
+
+    def _last_sync_error(self, record):
+        """Último error de sync de un registro: copy accionable + crudo.
+
+        Busca la última entrada FALLIDA de la bitácora para el recurso y traduce
+        su ``error_message`` a un mensaje accionable (sin traceback). Sólo aplica
+        cuando el ``sync_state`` es ``error``; en otro caso devuelve vacío.
+
+        Args:
+            record (recordset): el registro (DNS, repo, ...) a inspeccionar.
+
+        Returns:
+            dict: ``{"sync_error": str, "sync_error_detail": str}``.
+        """
+        if getattr(record, "sync_state", False) != "error":
+            return {"sync_error": "", "sync_error_detail": ""}
+        log = self.env["primate.cloud.operation.log"].sudo().search([
+            ("resource_model", "=", record._name),
+            ("resource_id", "=", record.id),
+            ("result", "=", "failed"),
+        ], order="execution_date desc, id desc", limit=1)
+        raw = log.error_message or ""
+        return {"sync_error": _friendly_sync_error(raw), "sync_error_detail": raw}
 
     @api.model
     def get_dashboard_data(self):
@@ -960,6 +1032,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             "last_change_id": rec.last_change_id or "",
             "delete_needs_ack": rec.delete_needs_ack,
             "is_deleted": rec.state == "deleted",
+            "is_alias": rec.is_alias,
             "record_type": rec.record_type,
             "record_value": rec.record_value or "",
             "ttl": rec.ttl or 0,
@@ -969,6 +1042,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "account_name": rec.account_id.display_name or "",
             "environment_id": rec.environment_id.id or False,
             "environment_name": rec.environment_id.display_name or "",
+            # Error de sync accionable (sin traceback) + crudo plegable.
+            **self._last_sync_error(rec),
         }
 
     @api.model

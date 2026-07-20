@@ -4,6 +4,8 @@ import { Component, onWillStart, onWillUpdateProps, useState } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
 import { runPcmModelAction } from "../pcm_actions";
+import { DnsForm } from "../forms/dns_form";
+import { DnsDeleteForm } from "../forms/dns_delete_form";
 
 /**
  * Detalle de un registro DNS: datos generales y asociación (entorno, cuenta).
@@ -56,7 +58,20 @@ export class DnsDetalle extends Component {
         }
     }
 
-    editDns() { return this._run("action_open_edit"); }
-    deleteDns() { return this._run("action_open_delete"); }
+    editDns() {
+        this.env.pcm.openForm(DnsForm, {
+            mode: "edit", recordId: this.props.recordId,
+            onSaved: () => this.load(this.props.recordId),
+        }, "Editar registro DNS");
+    }
+
+    deleteDns() {
+        this.env.pcm.openForm(DnsDeleteForm, {
+            recordId: this.props.recordId,
+            onSaved: () => this.load(this.props.recordId),
+        }, "Eliminar registro DNS");
+    }
+
+    // Verificar contra Route 53 sigue siendo un job (no un formulario).
     checkDns() { return this._run("action_check_sync_state"); }
 }

@@ -4,6 +4,8 @@ import { Component, onWillStart, onWillUpdateProps, useState } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
 import { runPcmModelAction } from "../pcm_actions";
+import { DnsForm } from "../forms/dns_form";
+import { DnsDeleteForm } from "../forms/dns_delete_form";
 
 /**
  * Hub del entorno: barra de acciones (aprovisionar/staging/sincronizar), sección
@@ -124,28 +126,32 @@ export class EntornoDetalle extends Component {
     }
 
     addDns() {
-        // Wizard de creación en el drawer (no form nativo). Prefija la zona
-        // desde un registro existente del entorno, si hay.
+        // Formulario OWL de creación en el drawer. Prefija la zona desde un
+        // registro existente del entorno, si hay.
         const zoneHint = (this.d.dns_records || [])
             .map((r) => r.hosted_zone_id).find(Boolean) || "";
-        this.env.pcm.openWizard("primate.cloud.dns.record.wizard", {
-            default_environment_id: this.props.envId,
-            default_account_id: this.d.account_id || false,
-            default_hosted_zone_id: zoneHint,
+        this.env.pcm.openForm(DnsForm, {
+            mode: "create",
+            accountId: this.d.account_id || false,
+            environmentId: this.props.envId,
+            hostedZoneId: zoneHint,
+            onSaved: () => this.load(this.props.envId),
         }, "Nuevo registro DNS");
     }
 
-    // Editar / borrar / verificar un registro DNS (wizards en drawer o job).
-    async editDns(recordId) {
-        await runPcmModelAction(
-            this.env, this.orm, "primate.cloud.dns.record",
-            "action_open_edit", [recordId]);
+    // Editar / borrar / verificar un registro DNS (forms OWL en drawer o job).
+    editDns(recordId) {
+        this.env.pcm.openForm(DnsForm, {
+            mode: "edit", recordId,
+            onSaved: () => this.load(this.props.envId),
+        }, "Editar registro DNS");
     }
 
-    async deleteDns(recordId) {
-        await runPcmModelAction(
-            this.env, this.orm, "primate.cloud.dns.record",
-            "action_open_delete", [recordId]);
+    deleteDns(recordId) {
+        this.env.pcm.openForm(DnsDeleteForm, {
+            recordId,
+            onSaved: () => this.load(this.props.envId),
+        }, "Eliminar registro DNS");
     }
 
     async checkDns(recordId) {

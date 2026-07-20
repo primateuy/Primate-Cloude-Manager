@@ -117,6 +117,13 @@
                              context="state.wizard.context"
                              title="state.wizard.title"
                              onClose="() => this.closeWizardDrawer()"/>
+
+            <!-- Drawer de formulario OWL propio (DNS, etc.): mismo chrome. -->
+            <PcmFormDrawer t-if="state.form"
+                           component="state.form.component"
+                           props="state.form.props"
+                           title="state.form.title"
+                           onClose="() => this.closeFormDrawer()"/>
         </div>
     </t>
 
