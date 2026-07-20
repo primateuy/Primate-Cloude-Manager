@@ -36,6 +36,7 @@
     --pcm-space-row: 6px 0;
     --pcm-space-kpi-row: 12px;
     --pcm-fs-hero: 1.5rem;
+    --pcm-fs-cardtitle: 1.02rem;
     --pcm-fs-title: 1.1rem;
     --pcm-fw-title: 600;
     --pcm-fs-kpi: 1.4rem;
@@ -468,7 +469,7 @@
                     color: var(--pcm-accent-ink);
                     flex: 0 0 auto;
                 }
-                .o_pcm_kpi_value { font-size: var(--pcm-fs-kpi); font-weight: var(--pcm-fw-kpi); font-family: var(--pcm-font-display); line-height: 1; }
+                .o_pcm_kpi_value { font-size: var(--pcm-fs-kpi); font-weight: var(--pcm-fw-kpi); font-family: var(--pcm-font-display); line-height: 1; white-space: nowrap; }
                 .o_pcm_kpi_label { color: var(--pcm-soft); font-size: 0.9rem; margin-top: 2px; }
                 .o_pcm_kpi_hint { color: var(--pcm-soft); font-size: 0.75rem; font-style: italic; }
             }
@@ -491,7 +492,7 @@
                 & + .o_pcm_recent_row { border-top: 1px solid var(--pcm-line); }
 
                 .o_pcm_recent_main { flex: 1 1 auto; min-width: 0; }
-                .o_pcm_recent_name { font-weight: 600; }
+                .o_pcm_recent_name { font-weight: 600; font-size: var(--pcm-fs-cardtitle); font-family: var(--pcm-font-display); }
                 .o_pcm_recent_meta {
                     display: flex;
                     flex-direction: column;
@@ -594,7 +595,7 @@
                 gap: 10px;
                 margin-bottom: 4px;
             }
-            .o_pcm_env_name { font-weight: 600; font-size: 1.02rem; }
+            .o_pcm_env_name { font-weight: 600; font-size: var(--pcm-fs-cardtitle); font-family: var(--pcm-font-display); }
             .o_pcm_env_sub {
                 display: flex;
                 align-items: center;
@@ -753,7 +754,7 @@
                 gap: 20px;
                 @media (max-width: 900px) { grid-template-columns: 1fr; }
 
-                h3 { font-size: 0.95rem; font-weight: 600; margin: 0 0 8px; }
+                h3 { font-size: var(--pcm-fs-cardtitle); font-weight: 600; font-family: var(--pcm-font-display); margin: 0 0 8px; }
             }
 
             .o_pcm_mod_table {
