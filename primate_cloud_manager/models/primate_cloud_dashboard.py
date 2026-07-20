@@ -1220,6 +1220,44 @@ class PrimateCloudDashboard(models.AbstractModel):
         }
 
     @api.model
+    def get_instance_form_data(self, env_id):
+        """Datos para el formulario OWL de "Agregar Odoo" (otro Odoo en un
+        servidor existente). Reusa los computes del instance.create.wizard para
+        el preview de puertos y la advertencia de RAM, y valida las guardas de
+        apertura (servidor activo, no legacy) devolviendo un motivo si bloquea.
+        """
+        server = self.env["primate.cloud.environment"].browse(env_id).exists()
+        if not server:
+            return {}
+        if server.state != "active":
+            return {"blocked": _("Solo se agregan instancias a un servidor activo.")}
+        if server._is_legacy_layout():
+            return {"blocked": _(
+                "Este servidor tiene layout legacy (un solo Odoo pre-R3): "
+                "montarle un segundo Odoo requiere adoptarlo al layout "
+                "multi-Odoo (mini-fase pendiente). Para un Odoo nuevo hoy, "
+                "creá un entorno.")}
+        Wizard = self.env["primate.cloud.instance.create.wizard"]
+        wiz = Wizard.new({"environment_id": env_id})  # dispara los computes
+
+        def options(field):
+            return [{"value": v, "label": l}
+                    for v, l in Wizard._fields[field].selection]
+
+        projects = [{"value": p.id, "label": p.display_name}
+                    for p in self.env["primate.cloud.project"].search([])]
+        return {
+            "environment_id": env_id,
+            "server_name": server.display_name,
+            "projects": projects,
+            "http_port_preview": wiz.http_port_preview or 0,
+            "gevent_port_preview": wiz.gevent_port_preview or 0,
+            "ram_warning": wiz.ram_warning or "",
+            "odoo_versions": options("odoo_version"),
+            "odoo_editions": options("odoo_edition"),
+        }
+
+    @api.model
     def get_account_detail(self, account_id):
         """Serializa el detalle de una cuenta AWS para la app (read-only).
 

@@ -652,6 +652,49 @@ def s14_deploy_form(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s15_instance_form(pg):
+    """B4: el form OWL de "Agregar Odoo" (otro Odoo en un servidor existente)
+    sobre el tema EDITORIAL (no-default). Verifica lo que pidió el diseño R3: el
+    preview de puertos con su nota "se asignará al confirmar" y la advertencia
+    ADVISORIA de RAM (SMOKE MULTI: 2 Odoo en t3.small la disparan). Más el
+    condicional de DNS, el password de admin y la validación inline."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    pg.wait_for_timeout(300)
+    open_env(pg, MULTI_ENV)
+
+    pg.click("button:has-text('Agregar Odoo (instancia)')")
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    pg.wait_for_timeout(400)
+    # Preview de puertos tentativo (siempre presente) y RAM advisoria (multi).
+    assert pg.get_by_text("se asignará al confirmar").count() >= 1, \
+        "falta el preview de puertos tentativo"
+    assert pg.get_by_text("instancia por GB").count() >= 1, \
+        "falta la advertencia advisoria de RAM en el servidor multi-Odoo"
+    # La contraseña admin es un campo password.
+    assert pg.locator(f"{dr} input[type='password']").count() == 1, \
+        "la contraseña admin debe ser un campo password"
+    pg.screenshot(path=f"{SHOT}/s15_instance.png")
+
+    # Validación accionable: confirmar vacío deja el drawer abierto con errores.
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
+    assert pg.locator(dr).count() == 1, "el form se cerró pese al error (no debía)"
+    # Condicional de DNS.
+    pg.check(f"{dr} .o_pcm_form_check input[type='checkbox']")
+    pg.wait_for_timeout(250)
+    assert pg.locator(f"{dr} .o_pcm_field_label").filter(
+        has_text="Hosted Zone ID").count() >= 1, "al tildar DNS debe pedir la zona"
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    open_app(pg)
+    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -671,7 +714,7 @@ def main():
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
-                   s05_salir_y_volver):
+                   s15_instance_form, s05_salir_y_volver):
             fn(pg)
         br.close()
 

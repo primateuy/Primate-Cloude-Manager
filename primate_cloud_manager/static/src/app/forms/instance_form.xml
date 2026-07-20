@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.InstanceForm">
+        <div class="o_pcm_form">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-elif="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-else="">
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <!-- Advertencia ADVISORIA de RAM (no bloquea; informa). -->
+                <div t-if="state.ramWarning" class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.ramWarning"/>
+                </div>
+
+                <!-- Servidor destino + preview de puertos (tentativo). -->
+                <div class="o_pcm_form_summary">
+                    <div class="o_pcm_form_summary_row">
+                        <span class="o_pcm_muted">Servidor</span>
+                        <span t-out="state.serverName"/>
+                    </div>
+                    <div class="o_pcm_form_summary_row">
+                        <span class="o_pcm_muted">Puertos</span>
+                        <span>
+                            HTTP <t t-out="state.httpPort"/> · gevent
+                            <t t-out="state.geventPort"/>
+                            <span class="o_pcm_muted"> — se asignará al confirmar</span>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Proyecto (cliente)'" required="true"
+                              error="state.errors.project_id"
+                              help="'A quién pertenece este Odoo (puede ser otro cliente).'">
+                        <PcmSelect value="state.project_id" options="projectOptions"
+                                   onChange="(v) => this.setProject(v)"/>
+                    </PcmField>
+                    <PcmField label="'Nombre de la instancia'" required="true"
+                              error="state.errors.name"
+                              help="'El slug técnico sale de este nombre.'">
+                        <input class="o_pcm_input" type="text" t-att-value="state.name"
+                               t-on-input="(ev) => this.onInput('name', ev)"/>
+                    </PcmField>
+                </div>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Versión Odoo'">
+                        <PcmSelect value="state.odoo_version" options="state.odooVersions"
+                                   onChange="(v) => this.setSelect('odoo_version', v)"/>
+                    </PcmField>
+                    <PcmField label="'Edición'">
+                        <PcmSelect value="state.odoo_edition" options="state.odooEditions"
+                                   onChange="(v) => this.setSelect('odoo_edition', v)"/>
+                    </PcmField>
+                </div>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Dominio'" required="true"
+                              error="state.errors.domain"
+                              help="'server_name de nginx (ej.: cliente.primate.cloud).'">
+                        <input class="o_pcm_input" type="text" t-att-value="state.domain"
+                               t-att-placeholder="'cliente.primate.cloud'"
+                               t-on-input="(ev) => this.onInput('domain', ev)"/>
+                    </PcmField>
+                    <PcmField label="'Workers'"
+                              help="'0 = threaded (default multi-Odoo). Subir solo con RAM de sobra.'">
+                        <input class="o_pcm_input o_pcm_input_narrow" type="number" min="0"
+                               t-att-value="state.workers"
+                               t-on-input="(ev) => this.onIntInput('workers', ev)"/>
+                    </PcmField>
+                </div>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Nombre de la base'" required="true"
+                              error="state.errors.db_name"
+                              help="'Única en el servidor (PostgreSQL local compartido).'">
+                        <input class="o_pcm_input" type="text" t-att-value="state.db_name"
+                               t-on-input="(ev) => this.onInput('db_name', ev)"/>
+                    </PcmField>
+                    <PcmField label="'Contraseña admin (odoo.conf)'" required="true"
+                              error="state.errors.admin_password"
+                              help="'No se almacena en PCM.'">
+                        <input class="o_pcm_input" type="password"
+                               t-att-value="state.admin_password"
+                               t-on-input="(ev) => this.onInput('admin_password', ev)"/>
+                    </PcmField>
+                </div>
+
+                <!-- DNS opcional -->
+                <label class="o_pcm_form_check">
+                    <input type="checkbox" t-att-checked="state.create_dns"
+                           t-on-change="(ev) => this.toggle('create_dns', ev)"/>
+                    <span>Crear registro DNS en Route 53 para el dominio</span>
+                </label>
+                <div t-if="state.create_dns" class="o_pcm_form_row">
+                    <PcmField label="'Hosted Zone ID'" required="true"
+                              error="state.errors.hosted_zone_id">
+                        <input class="o_pcm_input" type="text"
+                               t-att-value="state.hosted_zone_id"
+                               t-att-placeholder="'Z0123456789ABCDEFGHIJ'"
+                               t-on-input="(ev) => this.onInput('hosted_zone_id', ev)"/>
+                    </PcmField>
+                    <PcmField label="'TTL (segundos)'">
+                        <input class="o_pcm_input o_pcm_input_narrow" type="number" min="0"
+                               t-att-value="state.ttl"
+                               t-on-input="(ev) => this.onIntInput('ttl', ev)"/>
+                    </PcmField>
+                </div>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Agregando…</t>
+                        <t t-else="">Agregar Odoo</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>
