@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.DbForm">
+        <div class="o_pcm_form">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-elif="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-else="">
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <PcmField label="'Nombre'" required="true" error="state.errors.name">
+                    <input class="o_pcm_input" type="text" t-att-value="state.name"
+                           t-att-placeholder="'Ej.: forum_prod'"
+                           t-on-input="(ev) => this.onInput('name', ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Modalidad'">
+                        <PcmSelect value="state.db_type" options="state.dbTypes"
+                                   onChange="(v) => this.setType(v)"/>
+                    </PcmField>
+                    <PcmField label="'Versión PostgreSQL'">
+                        <PcmSelect value="state.pg_version" options="pgOptions"
+                                   onChange="(v) => this.setPgVersion(v)"/>
+                    </PcmField>
+                </div>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Entorno'">
+                        <input class="o_pcm_input" type="text" readonly="readonly"
+                               t-att-value="state.environmentName"/>
+                    </PcmField>
+                    <PcmField label="'Cuenta AWS'">
+                        <input class="o_pcm_input" type="text" readonly="readonly"
+                               t-att-value="state.accountName"/>
+                    </PcmField>
+                </div>
+
+                <!-- Local: en qué servidor vive la base. -->
+                <PcmField t-if="isLocal" label="'Instancia (servidor)'"
+                          help="'En qué servidor del entorno vive la base.'">
+                    <PcmSelect value="state.ec2_instance_id" options="instanceOptions"
+                               onChange="(v) => this.setInstance(v)"/>
+                </PcmField>
+
+                <!-- RDS: bloque informativo (lo sincroniza AWS, no se edita). -->
+                <div t-if="isRds" class="o_pcm_form_section">
+                    <div class="o_pcm_form_section_head">
+                        RDS <span class="o_pcm_muted">— sincronizado de AWS</span>
+                    </div>
+                    <div class="o_pcm_form_summary">
+                        <div class="o_pcm_form_summary_row">
+                            <span class="o_pcm_muted">Identificador</span>
+                            <span class="o_pcm_mono" t-out="state.rds_identifier or '—'"/>
+                        </div>
+                        <div class="o_pcm_form_summary_row">
+                            <span class="o_pcm_muted">Endpoint</span>
+                            <span class="o_pcm_mono" t-out="state.rds_endpoint or '—'"/>
+                        </div>
+                        <div class="o_pcm_form_summary_row">
+                            <span class="o_pcm_muted">Clase</span>
+                            <span t-out="state.rds_instance_class or '—'"/>
+                        </div>
+                        <div class="o_pcm_form_summary_row">
+                            <span class="o_pcm_muted">Almacenamiento</span>
+                            <span t-out="state.rds_storage_gb ? state.rds_storage_gb + ' GB' : '—'"/>
+                        </div>
+                        <div class="o_pcm_form_summary_row">
+                            <span class="o_pcm_muted">Multi-AZ</span>
+                            <span t-out="state.rds_multi_az ? 'Sí' : 'No'"/>
+                        </div>
+                        <div class="o_pcm_form_summary_row">
+                            <span class="o_pcm_muted">Retención de backup</span>
+                            <span t-out="state.backup_retention_days ? state.backup_retention_days + ' días' : '—'"/>
+                        </div>
+                    </div>
+                </div>
+
+                <div t-if="isEdit and state.stateLabel" class="o_pcm_muted">
+                    Estado (sincronizado): <t t-out="state.stateLabel"/>
+                </div>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Guardando…</t>
+                        <t t-else="">Guardar</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

@@ -8,6 +8,7 @@ import { DnsForm } from "../forms/dns_form";
 import { DnsDeleteForm } from "../forms/dns_delete_form";
 import { EnvForm } from "../forms/env_form";
 import { RepoForm } from "../forms/repo_form";
+import { DbForm } from "../forms/db_form";
 
 /**
  * Hub del entorno: barra de acciones (aprovisionar/staging/sincronizar), sección
@@ -175,10 +176,11 @@ export class EntornoDetalle extends Component {
     }
 
     addDatabase() {
-        this.env.pcm.newRecord("primate.cloud.database", {
-            default_environment_id: this.props.envId,
-            default_account_id: this.d.account_id || false,
-        });
+        this.env.pcm.openForm(DbForm, {
+            mode: "create",
+            environmentId: this.props.envId,
+            onSaved: () => this.load(this.props.envId),
+        }, "Nueva base de datos");
     }
 
     newDeployment() {

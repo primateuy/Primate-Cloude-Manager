@@ -15,6 +15,11 @@
                                         model="'primate.cloud.database'"
                                         field="'state'" label="d.state_label"/>
                         <span class="o_pcm_spacer"/>
+                        <div class="o_pcm_actions">
+                            <button class="o_pcm_btn" t-on-click="() => this.editDb()">
+                                <i class="fa fa-pencil"/> Editar
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -62,7 +67,7 @@
                               t-on-click="() => this.openRecord('primate.cloud.ec2.instance', d.server_id, d.server_name)"
                               t-out="d.server_name"/>
                         <button t-else="" class="o_pcm_btn"
-                                t-on-click="() => this.assignInstance()">
+                                t-on-click="() => this.editDb()">
                             <i class="fa fa-link"/> Asociar a una instancia…
                         </button>
                     </div>

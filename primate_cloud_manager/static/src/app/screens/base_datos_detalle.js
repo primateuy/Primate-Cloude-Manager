@@ -3,6 +3,7 @@
 import { Component, onWillStart, onWillUpdateProps, useState } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
+import { DbForm } from "../forms/db_form";
 
 /**
  * Detalle de una base de datos: datos generales, almacenamiento/RDS y
@@ -46,11 +47,12 @@ export class BaseDatosDetalle extends Component {
         }
     }
 
-    // Base suelta: abre el form nativo en el drawer para asociarla a una
-    // instancia (write de ec2_instance_id; el constraint valida el entorno).
-    assignInstance() {
-        this.env.pcm.openRecord(
-            "primate.cloud.database", this.props.recordId, this.d.name
-        );
+    // Editar la base en el form OWL (incluye el select de instancia para
+    // asociarla; el constraint de coherencia entorno↔instancia valida server-side).
+    editDb() {
+        this.env.pcm.openForm(DbForm, {
+            mode: "edit", recordId: this.props.recordId,
+            onSaved: () => this.load(this.props.recordId),
+        }, "Editar base de datos");
     }
 }

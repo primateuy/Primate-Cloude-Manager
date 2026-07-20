@@ -1131,6 +1131,57 @@ class PrimateCloudDashboard(models.AbstractModel):
         }
 
     @api.model
+    def get_database_form_data(self, env_id=False, db_id=False):
+        """Datos para el formulario OWL de base de datos (crear/editar).
+
+        Devuelve los valores actuales (edición), las opciones de Selection y los
+        servidores del entorno (para el select de instancia en modalidad local).
+        Los campos RDS van como informativos: los sincroniza AWS, no se editan.
+        """
+        Db = self.env["primate.cloud.database"]
+        db = Db.browse(db_id).exists() if db_id else None
+        environment = (db.environment_id if db else
+                       self.env["primate.cloud.environment"].browse(env_id).exists())
+        state_labels = dict(Db._fields["state"].selection)
+
+        def options(field):
+            return [{"value": v, "label": l}
+                    for v, l in Db._fields[field].selection]
+
+        servers = [{"value": s.id, "label": s.display_name}
+                   for s in (environment.ec2_instance_ids if environment else [])]
+        data = {
+            "servers": servers,
+            "db_types": options("db_type"),
+            "pg_versions": options("pg_version"),
+            "environment_id": environment.id if environment else False,
+            "environment_name": environment.display_name if environment else "",
+            "account_id": (db.account_id.id if db else
+                           (environment.account_id.id if environment else False)),
+            "account_name": (db.account_id.display_name if db else
+                             (environment.account_id.display_name if environment else "")),
+        }
+        if db:
+            data.update({
+                "id": db.id, "name": db.name, "db_type": db.db_type,
+                "pg_version": db.pg_version or "",
+                "ec2_instance_id": db.ec2_instance_id.id or False,
+                "state": db.state, "state_label": state_labels.get(db.state, ""),
+                "rds_identifier": db.rds_identifier or "",
+                "rds_endpoint": db.rds_endpoint or "",
+                "rds_instance_class": db.rds_instance_class or "",
+                "rds_storage_gb": db.rds_storage_gb or 0,
+                "rds_multi_az": db.rds_multi_az,
+                "backup_retention_days": db.backup_retention_days or 0,
+            })
+        else:
+            data.update({
+                "id": False, "name": "", "db_type": "rds", "pg_version": "",
+                "ec2_instance_id": False, "state": False, "state_label": "",
+            })
+        return data
+
+    @api.model
     def get_account_detail(self, account_id):
         """Serializa el detalle de una cuenta AWS para la app (read-only).
 

@@ -555,6 +555,52 @@ def s12_repo_form(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s13_db_form(pg):
+    """B4: el form OWL de base de datos (editar) sobre el tema EDITORIAL
+    (no-default). Verifica el condicional por MODALIDAD: RDS muestra el bloque
+    informativo (sincronizado de AWS) y oculta la instancia; PostgreSQL local
+    muestra el select de instancia y oculta RDS. Más validación inline."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    pg.wait_for_timeout(300)
+    open_env(pg, INFRA_ENV)
+
+    # Abrir una base (RDS suelta) → su detalle → Editar.
+    pg.locator('.o_pcm_line:has-text("forum-db")').first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000)
+    pg.click("button:has-text('Editar')")
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    pg.wait_for_timeout(400)
+
+    # RDS (default): bloque informativo visible, instancia oculta.
+    assert pg.get_by_text("sincronizado de AWS").count() >= 1, \
+        "en RDS debe mostrarse el bloque informativo de AWS"
+    assert pg.get_by_text("Instancia (servidor)").count() == 0, \
+        "en RDS no debe mostrarse el select de instancia"
+    # Cambiar a PostgreSQL local → aparece la instancia, se oculta RDS.
+    pg.select_option(f"{dr} select.o_pcm_select >> nth=0", "local_pg")
+    pg.wait_for_timeout(300)
+    assert pg.get_by_text("Instancia (servidor)").count() >= 1, \
+        "en local debe mostrarse el select de instancia"
+    assert pg.get_by_text("sincronizado de AWS").count() == 0, \
+        "en local no debe mostrarse el bloque RDS"
+    pg.screenshot(path=f"{SHOT}/s13_db_local.png")
+
+    # Validación accionable: borrar el nombre y confirmar deja el drawer abierto.
+    pg.fill(f"{dr} input.o_pcm_input >> nth=0", "")
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
+    assert pg.locator(dr).count() == 1, "el form se cerró pese al error (no debía)"
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    open_app(pg)
+    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -573,7 +619,7 @@ def main():
                    s04_drawer_error_correccion_exito,
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
-                   s11_temas, s12_repo_form, s05_salir_y_volver):
+                   s11_temas, s12_repo_form, s13_db_form, s05_salir_y_volver):
             fn(pg)
         br.close()
 
