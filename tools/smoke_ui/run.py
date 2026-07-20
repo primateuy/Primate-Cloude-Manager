@@ -435,26 +435,28 @@ def s10_proyecto_eje_cliente(pg):
 def s11_temas(pg):
     """B1 del rediseño: los 3 temas andan sobre las MISMAS pantallas. Cambia
     A->B->C con el selector y verifica (1) que los tokens REALMENTE cambian —el
-    radio de una card difiere entre A y B (caza el bug silencioso de §6.4: un
-    literal sin tokenizar no cambiaría)— y (2) que las pantallas core renderizan
-    en el tema más distinto (C), sin errores de consola."""
+    padding de la pantalla (space-screen) difiere entre A (Consola, denso 16px) y
+    B (Panel, aireado 24px): caza el bug silencioso de §6.4 (un literal sin
+    tokenizar no cambiaría). Se usa el padding y no el radio porque el diseño de
+    marca afinó Panel a 8px, igualando el radio de Consola— y (2) que las
+    pantallas core renderizan en el tema más distinto (C), sin errores de consola."""
     open_app(pg)
 
-    def card_radius():
+    def screen_pad():
         return pg.evaluate("""() => {
-            const c = document.querySelector('.o_pcm_card, .o_pcm_kpi');
-            return c ? getComputedStyle(c).borderTopLeftRadius : '';
+            const s = document.querySelector('.o_pcm_screen');
+            return s ? getComputedStyle(s).paddingLeft : '';
         }""")
 
     pg.click(".o_pcm_theme_opt:has-text('Consola')")
     pg.wait_for_timeout(400)
-    radius_a = card_radius()
+    pad_a = screen_pad()
     pg.click(".o_pcm_theme_opt:has-text('Panel')")
     pg.wait_for_timeout(400)
-    radius_b = card_radius()
-    assert radius_a and radius_b and radius_a != radius_b, \
-        f"el tema no cambió el radio de las cards (¿literal sin tokenizar?): " \
-        f"A={radius_a} B={radius_b}"
+    pad_b = screen_pad()
+    assert pad_a and pad_b and pad_a != pad_b, \
+        f"el tema no cambió el padding de la pantalla (¿literal sin tokenizar?): " \
+        f"A={pad_a} B={pad_b}"
 
     # Recorrer las pantallas core en Tema C (el más distinto) sin romper.
     pg.click(".o_pcm_theme_opt:has-text('Editorial')")

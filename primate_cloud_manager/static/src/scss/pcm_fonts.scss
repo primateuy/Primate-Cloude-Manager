@@ -1,0 +1,49 @@
+// ============================================================================
+// pcm_fonts.scss — IBM Plex bundleada (SIL OFL, sin CDN). Fuente de marca de la
+// app PCM: Sans para UI/cuerpo, Mono para comandos/IPs/hashes/"datos al…".
+// Subset latin (cubre acentos del español). Se referencia por los tokens
+// --pcm-font-ui / --pcm-font-mono (pcm_app.scss).
+// ============================================================================
+
+@font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/primate_cloud_manager/static/src/fonts/IBMPlexSans-400.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/primate_cloud_manager/static/src/fonts/IBMPlexSans-500.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('/primate_cloud_manager/static/src/fonts/IBMPlexSans-600.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('/primate_cloud_manager/static/src/fonts/IBMPlexSans-700.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'IBM Plex Mono';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/primate_cloud_manager/static/src/fonts/IBMPlexMono-400.woff2') format('woff2');
+}
+@font-face {
+    font-family: 'IBM Plex Mono';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/primate_cloud_manager/static/src/fonts/IBMPlexMono-500.woff2') format('woff2');
+}

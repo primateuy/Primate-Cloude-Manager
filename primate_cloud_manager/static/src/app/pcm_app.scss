@@ -29,9 +29,14 @@
     // NUNCA color (solo referencian tokens de paleta FIJOS). Estos DEFAULTS son
     // los valores ACTUALES (red de seguridad §6.4: si el JS no cargó, se ve como
     // hoy); pcm_app.js los sobrescribe INLINE según el tema (a/b/c) del usuario.
-    --pcm-font-ui: inherit;
-    --pcm-font-mono: var(--o-mono-font-family, ui-monospace, monospace);
+    // Tipografía de marca (IBM Plex, bundleada en pcm_fonts.scss). Aplica a los
+    // 3 temas; el serif de display del Tema C lo sobrescribe THEME_TOKENS.c.
+    --pcm-font-ui: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --pcm-font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
     --pcm-font-display: var(--pcm-font-ui);
+    // Apretado tipográfico de títulos (el diseño usa tracking negativo en Panel);
+    // A/C lo dejan en normal. THEME_TOKENS lo sobrescribe por tema.
+    --pcm-title-tracking: normal;
     --pcm-fs-base: 14px;
     --pcm-radius-card: 14px;
     --pcm-radius-control: 9px;
@@ -445,7 +450,7 @@
 
         .o_pcm_greeting {
             margin-bottom: 20px;
-            h1 { font-size: var(--pcm-fs-hero); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0; }
+            h1 { font-size: var(--pcm-fs-hero); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0; }
             p { margin: 4px 0 0; }
         }
 
@@ -476,13 +481,13 @@
                     color: var(--pcm-accent-ink);
                     flex: 0 0 auto;
                 }
-                .o_pcm_kpi_value { font-size: var(--pcm-fs-kpi); font-weight: var(--pcm-fw-kpi); font-family: var(--pcm-font-display); line-height: 1; white-space: nowrap; }
+                .o_pcm_kpi_value { font-size: var(--pcm-fs-kpi); font-weight: var(--pcm-fw-kpi); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); line-height: 1; white-space: nowrap; }
                 .o_pcm_kpi_label { color: var(--pcm-soft); font-size: 0.9rem; margin-top: 2px; }
                 .o_pcm_kpi_hint { color: var(--pcm-soft); font-size: 0.75rem; font-style: italic; }
             }
         }
 
-        .o_pcm_section_head h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0 0 10px; }
+        .o_pcm_section_head h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0 0 10px; }
 
         .o_pcm_recent {
             padding: 6px 8px;
@@ -499,7 +504,7 @@
                 & + .o_pcm_recent_row { border-top: 1px solid var(--pcm-line); }
 
                 .o_pcm_recent_main { flex: 1 1 auto; min-width: 0; }
-                .o_pcm_recent_name { font-weight: 600; font-size: var(--pcm-fs-cardtitle); font-family: var(--pcm-font-display); }
+                .o_pcm_recent_name { font-weight: 600; font-size: var(--pcm-fs-cardtitle); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); }
                 .o_pcm_recent_meta {
                     display: flex;
                     flex-direction: column;
@@ -602,7 +607,7 @@
                 gap: 10px;
                 margin-bottom: 4px;
             }
-            .o_pcm_env_name { font-weight: 600; font-size: var(--pcm-fs-cardtitle); font-family: var(--pcm-font-display); }
+            .o_pcm_env_name { font-weight: 600; font-size: var(--pcm-fs-cardtitle); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); }
             .o_pcm_env_sub {
                 display: flex;
                 align-items: center;
@@ -660,7 +665,7 @@
                 display: flex;
                 align-items: center;
                 gap: 12px;
-                h1 { font-size: var(--pcm-fs-hero); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0; }
+                h1 { font-size: var(--pcm-fs-hero); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0; }
             }
             .o_pcm_hero_meta {
                 display: flex;
@@ -682,7 +687,7 @@
 
             @media (max-width: 900px) { grid-template-columns: 1fr; }
 
-            h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0 0 10px; }
+            h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0 0 10px; }
         }
 
         .o_pcm_cols3 {
@@ -737,7 +742,7 @@
             }
         }
 
-        .o_pcm_section_head h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0 0 10px; }
+        .o_pcm_section_head h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0 0 10px; }
 
         .o_pcm_repo {
             & + .o_pcm_repo { margin-top: 12px; }
@@ -764,7 +769,7 @@
                 gap: 20px;
                 @media (max-width: 900px) { grid-template-columns: 1fr; }
 
-                h3 { font-size: var(--pcm-fs-cardtitle); font-weight: 600; font-family: var(--pcm-font-display); margin: 0 0 8px; }
+                h3 { font-size: var(--pcm-fs-cardtitle); font-weight: 600; font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0 0 8px; }
             }
 
             .o_pcm_mod_table {
@@ -927,7 +932,7 @@
             h2 {
                 font-size: var(--pcm-fs-title);
                 font-weight: var(--pcm-fw-title);
-                font-family: var(--pcm-font-display);
+                font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking);
                 margin: 0;
             }
         }

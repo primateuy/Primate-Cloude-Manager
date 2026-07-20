@@ -30,6 +30,9 @@ export const ACCENT_PRESETS = {
     azul:    { accent: "#2A78D6", ink: "#0C447C", tint: "#E6F1FB" },
     violeta: { accent: "#7F77DD", ink: "#3C3489", tint: "#EEEDFE" },
     verde:   { accent: "#639922", ink: "#27500A", tint: "#EAF3DE" },
+    // Preset de marca (diseño de Daryl): violeta-índigo. Se AGREGA; el default
+    // de acento sigue siendo el que ya estaba (no se cambia acá).
+    indigo:  { accent: "#6459F5", ink: "#2E259E", tint: "#ECEAFE" },
 };
 
 // Temas visuales: capa ORTOGONAL al acento. Solo forma/densidad/tipografía —
@@ -47,7 +50,7 @@ export const THEME_TOKENS = {
         "space-row": "6px 10px", "space-kpi-row": "10px",
         "font-display": "var(--pcm-font-ui)",
         "fs-hero": "1.3rem", "fs-cardtitle": "1.02rem", "fs-title": "1.05rem", "fw-title": "600",
-        "fs-kpi": "1.4rem", "fw-kpi": "600",
+        "fs-kpi": "1.4rem", "fw-kpi": "600", "title-tracking": "normal",
         "eyebrow-spacing": "0.04em", "eyebrow-weight": "600", "eyebrow-rule": "0",
         "tab-radius": "0", "tab-bg-active": "transparent",
         "tab-indicator-w": "2px", "tab-transform": "none", "tab-pad": "6px 10px",
@@ -55,18 +58,20 @@ export const THEME_TOKENS = {
         "cmd-border": "none", "cmd-rule": "0",
         "btn-pad": "6px 12px", "chip-pad": "3px 8px",
     },
-    // B — Panel de operaciones: aireado, tarjetas grandes con sombra suave,
-    // pills redondeadas, tabs-pill con tint de acento.
+    // B — Panel de operaciones (DEFAULT): afinado al diseño de marca de Daryl.
+    // Radios 8px, sombras muy sutiles, badges pill (20px), KPIs y títulos grandes
+    // semibold con tracking negativo (apretado tipográfico del diseño).
     b: {
-        "radius-card": "16px", "radius-control": "12px", "radius-pill": "999px",
-        "card-shadow": "0 1px 3px rgba(16,41,51,.08)", "fs-base": "14px",
-        "space-screen": "24px", "space-card": "20px 24px", "space-gap": "16px",
+        "radius-card": "8px", "radius-control": "8px", "radius-pill": "20px",
+        "card-shadow": "0 1px 2px rgba(16,20,30,.04), 0 1px 3px rgba(16,20,30,.05)",
+        "fs-base": "14px",
+        "space-screen": "24px", "space-card": "18px 20px", "space-gap": "16px",
         "space-row": "10px 14px", "space-kpi-row": "16px",
         "font-display": "var(--pcm-font-ui)",
-        "fs-hero": "1.5rem", "fs-cardtitle": "1.05rem", "fs-title": "1.25rem", "fw-title": "650",
-        "fs-kpi": "1.8rem", "fw-kpi": "650",
+        "fs-hero": "1.6rem", "fs-cardtitle": "1.05rem", "fs-title": "1.375rem", "fw-title": "600",
+        "fs-kpi": "1.625rem", "fw-kpi": "600", "title-tracking": "-0.02em",
         "eyebrow-spacing": "0.06em", "eyebrow-weight": "600", "eyebrow-rule": "0",
-        "tab-radius": "999px", "tab-bg-active": "var(--pcm-accent-tint)",
+        "tab-radius": "20px", "tab-bg-active": "var(--pcm-accent-tint)",
         "tab-indicator-w": "0", "tab-transform": "none", "tab-pad": "8px 16px",
         "cmd-bg": "var(--pcm-surface)", "cmd-ink": "var(--pcm-ink-text)",
         "cmd-border": "1px solid var(--pcm-line)", "cmd-rule": "0",
@@ -81,7 +86,7 @@ export const THEME_TOKENS = {
         "space-row": "12px 14px", "space-kpi-row": "20px",
         "font-display": "Georgia, 'Times New Roman', serif",
         "fs-hero": "1.9rem", "fs-cardtitle": "1.2rem", "fs-title": "1.6rem", "fw-title": "500",
-        "fs-kpi": "2.3rem", "fw-kpi": "500",
+        "fs-kpi": "2.3rem", "fw-kpi": "500", "title-tracking": "normal",
         "eyebrow-spacing": "0.12em", "eyebrow-weight": "700", "eyebrow-rule": "2px",
         "tab-radius": "0", "tab-bg-active": "transparent",
         "tab-indicator-w": "2px", "tab-transform": "uppercase", "tab-pad": "6px 12px",
@@ -207,7 +212,7 @@ export class PcmApp extends Component {
             { name: "c", label: "Editorial" },
         ];
         this.state = useState({
-            accent: "teal", accentCustom: "", theme: "a",
+            accent: "indigo", accentCustom: "", theme: "b",
             // Pila de navegación. Cada entrada: { type, model?, resId?, title }.
             stack: [{ type: "inicio", title: "Inicio" }],
             // Wizard activo en el drawer lateral (o null). { model, context, title }.
@@ -226,9 +231,9 @@ export class PcmApp extends Component {
                 ["pcm_accent", "pcm_accent_custom", "pcm_theme"]
             );
             if (recs.length) {
-                this.state.accent = recs[0].pcm_accent || "teal";
+                this.state.accent = recs[0].pcm_accent || "indigo";
                 this.state.accentCustom = recs[0].pcm_accent_custom || "";
-                this.state.theme = recs[0].pcm_theme || "a";
+                this.state.theme = recs[0].pcm_theme || "b";
             }
         });
     }

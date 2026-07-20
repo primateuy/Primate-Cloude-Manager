@@ -61,6 +61,7 @@ Arquitectura extensible para Azure y GCP en fases futuras.
     ],
     "assets": {
         "web.assets_backend": [
+            "primate_cloud_manager/static/src/scss/pcm_fonts.scss",
             "primate_cloud_manager/static/src/scss/pcm_theme.scss",
             "primate_cloud_manager/static/src/scss/pcm_notifier.scss",
             "primate_cloud_manager/static/src/scss/dashboard.scss",

@@ -14,6 +14,7 @@ PCM_ACCENTS = [
     ("azul", "Azul"),
     ("violeta", "Violeta"),
     ("verde", "Verde"),
+    ("indigo", "Índigo"),
 ]
 
 # Temas visuales: capa ORTOGONAL al acento. Cambian densidad/tipografía/forma vía
@@ -29,17 +30,19 @@ class ResUsers(models.Model):
     _inherit = "res.users"
 
     pcm_accent = fields.Selection(
-        PCM_ACCENTS, string="Acento PCM", default="teal",
-        help="Color de acento de la interfaz de Primate Cloud Manager.",
+        PCM_ACCENTS, string="Acento PCM", default="indigo",
+        help="Color de acento de la interfaz de Primate Cloud Manager. Por "
+             "defecto índigo (el acento del diseño de marca).",
     )
     pcm_accent_custom = fields.Char(
         string="Acento personalizado (hex)",
         help="Color hex libre (ej.: #3366FF). Si se define, tiene prioridad sobre el preset.",
     )
     pcm_theme = fields.Selection(
-        PCM_THEMES, string="Tema PCM", default="a",
+        PCM_THEMES, string="Tema PCM", default="b",
         help="Estilo visual (densidad, tipografía, forma). No cambia los "
-             "colores; el acento y los estados son independientes.",
+             "colores; el acento y los estados son independientes. Por defecto "
+             "'Panel de operaciones' (el look de marca).",
     )
 
     @property
