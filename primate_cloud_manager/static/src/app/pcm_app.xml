@@ -48,6 +48,13 @@
                               t-att-title="a.name"
                               t-on-click="() => this.setAccent(a.name)"/>
                     </div>
+                    <div class="o_pcm_theme_picker">
+                        <span class="o_pcm_muted">Estilo</span>
+                        <button t-foreach="themeList" t-as="t" t-key="t.name"
+                                t-attf-class="o_pcm_theme_opt {{ isThemeActive(t.name) ? 'o_pcm_theme_opt_active' : '' }}"
+                                t-on-click="() => this.setTheme(t.name)"
+                                t-out="t.label"/>
+                    </div>
                 </div>
 
                 <div t-attf-class="o_pcm_screen {{ isNativeScreen ? 'o_pcm_native' : '' }}">

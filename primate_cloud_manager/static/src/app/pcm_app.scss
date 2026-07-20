@@ -18,6 +18,43 @@
     --pcm-accent-ink: #0F5E4E;
     --pcm-accent-tint: #E3F3EF;
 
+    // Tokens de TEMA — capa ortogonal al acento: densidad/forma/tipografía,
+    // NUNCA color (solo referencian tokens de paleta FIJOS). Estos DEFAULTS son
+    // los valores ACTUALES (red de seguridad §6.4: si el JS no cargó, se ve como
+    // hoy); pcm_app.js los sobrescribe INLINE según el tema (a/b/c) del usuario.
+    --pcm-font-ui: inherit;
+    --pcm-font-mono: var(--o-mono-font-family, ui-monospace, monospace);
+    --pcm-font-display: var(--pcm-font-ui);
+    --pcm-fs-base: 14px;
+    --pcm-radius-card: 14px;
+    --pcm-radius-control: 9px;
+    --pcm-radius-pill: 9px;
+    --pcm-card-shadow: none;
+    --pcm-space-screen: 22px;
+    --pcm-space-card: 18px 20px;
+    --pcm-space-gap: 16px;
+    --pcm-space-row: 6px 0;
+    --pcm-space-kpi-row: 12px;
+    --pcm-fs-hero: 1.5rem;
+    --pcm-fs-title: 1.1rem;
+    --pcm-fw-title: 600;
+    --pcm-fs-kpi: 1.4rem;
+    --pcm-fw-kpi: 600;
+    --pcm-eyebrow-spacing: 0.04em;
+    --pcm-eyebrow-weight: 600;
+    --pcm-eyebrow-rule: 0;
+    --pcm-tab-radius: 0;
+    --pcm-tab-bg-active: transparent;
+    --pcm-tab-indicator-w: 2px;
+    --pcm-tab-transform: none;
+    --pcm-tab-pad: 6px 10px;
+    --pcm-cmd-bg: var(--pcm-navy);
+    --pcm-cmd-ink: #D8E6E4;
+    --pcm-cmd-border: none;
+    --pcm-cmd-rule: 0;
+    --pcm-btn-pad: 6px 12px;
+    --pcm-chip-pad: 4px 10px;
+
     // Ocupa SOLO el área de acción de Odoo (debajo de la barra superior), sin
     // taparla: así Odoo sigue funcionando y se entra/sale de la app libremente.
     display: flex;
@@ -28,7 +65,8 @@
     position: relative; // ancla el drawer de wizard (overlay absoluto interno).
     background: var(--pcm-surface);
     color: var(--pcm-ink-text);
-    font-size: 14px;
+    font-size: var(--pcm-fs-base);
+    font-family: var(--pcm-font-ui);
 
     // ---------------------------------------------------------------- Sidebar
     .o_pcm_sidebar {
@@ -179,12 +217,37 @@
                     &.o_pcm_swatch_active { border-color: var(--pcm-ink-text); }
                 }
             }
+
+            // Selector de ESTILO (tema) — segmented control, al lado del acento.
+            .o_pcm_theme_picker {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+
+                .o_pcm_theme_opt {
+                    padding: 4px 10px;
+                    border: 1px solid var(--pcm-line);
+                    background: #fff;
+                    color: var(--pcm-soft);
+                    border-radius: 999px;
+                    font-size: 0.78rem;
+                    cursor: pointer;
+
+                    &:hover { color: var(--pcm-accent-ink); border-color: var(--pcm-accent); }
+                    &.o_pcm_theme_opt_active {
+                        background: var(--pcm-accent-tint);
+                        color: var(--pcm-accent-ink);
+                        border-color: var(--pcm-accent);
+                        font-weight: 600;
+                    }
+                }
+            }
         }
 
         .o_pcm_screen {
             flex: 1 1 auto;
             overflow: auto;
-            padding: 22px;
+            padding: var(--pcm-space-screen);
 
             // El área donde se montan las vistas nativas embebidas (componente View).
             &.o_pcm_native {
@@ -219,8 +282,9 @@
     .o_pcm_card {
         background: #fff;
         border: 1px solid var(--pcm-line);
-        border-radius: 14px;
-        padding: 18px 20px;
+        border-radius: var(--pcm-radius-card);
+        padding: var(--pcm-space-card);
+        box-shadow: var(--pcm-card-shadow);
     }
     .o_pcm_muted { color: var(--pcm-soft); }
     .o_pcm_spacer { flex: 1 1 auto; }
@@ -240,8 +304,8 @@
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        padding: 5px 12px;
-        border-radius: 9px;
+        padding: var(--pcm-btn-pad);
+        border-radius: var(--pcm-radius-control);
         font-size: 0.85rem;
         cursor: pointer;
         background: #fff;
@@ -280,18 +344,22 @@
             display: inline-flex;
             align-items: center;
             gap: 7px;
-            padding: 8px 16px;
+            padding: var(--pcm-tab-pad);
             border: none;
             background: transparent;
+            border-radius: var(--pcm-tab-radius);
+            text-transform: var(--pcm-tab-transform);
             cursor: pointer;
             font-size: 0.9rem;
             color: var(--pcm-soft);
-            border-bottom: 2px solid transparent;
+            // Indicador de subrayado (A/C: 2px; B lo hace el bg de la pill: 0px).
+            border-bottom: var(--pcm-tab-indicator-w) solid transparent;
             margin-bottom: -1px;
 
             &:hover:not(:disabled) { color: var(--pcm-accent-ink); }
             &.o_pcm_tab_active {
                 color: var(--pcm-accent-ink);
+                background: var(--pcm-tab-bg-active);
                 border-bottom-color: var(--pcm-accent);
                 font-weight: 500;
             }
@@ -315,9 +383,13 @@
         .o_pcm_cmd_body {
             margin: 0;
             padding: 8px 10px;
-            background: var(--pcm-ink-bg, #0F2B33);
-            color: #E8F2F0;
-            border-radius: 8px;
+            background: var(--pcm-cmd-bg);
+            color: var(--pcm-cmd-ink);
+            border: var(--pcm-cmd-border);
+            // Filete de acento a la izquierda (C: 2px; A/B: 0). Via box-shadow
+            // inset para NO pisar el border de B (que sí tiene borde completo).
+            box-shadow: inset var(--pcm-cmd-rule) 0 0 0 var(--pcm-accent);
+            border-radius: var(--pcm-radius-control);
             font-size: 0.8rem;
             overflow-x: auto;
             white-space: pre;
@@ -365,7 +437,7 @@
 
         .o_pcm_greeting {
             margin-bottom: 20px;
-            h1 { font-size: 1.6rem; font-weight: 600; margin: 0; }
+            h1 { font-size: var(--pcm-fs-hero); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0; }
             p { margin: 4px 0 0; }
         }
 
@@ -381,7 +453,7 @@
                 gap: 14px;
                 background: #fff;
                 border: 1px solid var(--pcm-line);
-                border-radius: 14px;
+                border-radius: var(--pcm-radius-card);
                 padding: 16px 18px;
 
                 .o_pcm_kpi_icon {
@@ -396,13 +468,13 @@
                     color: var(--pcm-accent-ink);
                     flex: 0 0 auto;
                 }
-                .o_pcm_kpi_value { font-size: 1.7rem; font-weight: 700; line-height: 1; }
+                .o_pcm_kpi_value { font-size: var(--pcm-fs-kpi); font-weight: var(--pcm-fw-kpi); font-family: var(--pcm-font-display); line-height: 1; }
                 .o_pcm_kpi_label { color: var(--pcm-soft); font-size: 0.9rem; margin-top: 2px; }
                 .o_pcm_kpi_hint { color: var(--pcm-soft); font-size: 0.75rem; font-style: italic; }
             }
         }
 
-        .o_pcm_section_head h2 { font-size: 1.15rem; font-weight: 600; margin: 0 0 10px; }
+        .o_pcm_section_head h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0 0 10px; }
 
         .o_pcm_recent {
             padding: 6px 8px;
@@ -412,7 +484,7 @@
                 align-items: center;
                 gap: 14px;
                 padding: 11px 12px;
-                border-radius: 10px;
+                border-radius: var(--pcm-radius-card);
                 cursor: pointer;
 
                 &:hover { background: var(--pcm-surface); }
@@ -446,7 +518,7 @@
                 gap: 8px;
                 background: #fff;
                 border: 1px solid var(--pcm-line);
-                border-radius: 10px;
+                border-radius: var(--pcm-radius-card);
                 padding: 8px 12px;
                 max-width: 420px;
 
@@ -505,7 +577,7 @@
         .o_pcm_env_card {
             background: #fff;
             border: 1px solid var(--pcm-line);
-            border-radius: 14px;
+            border-radius: var(--pcm-radius-card);
             padding: 16px 18px;
             cursor: pointer;
             transition: border-color 0.08s ease, box-shadow 0.08s ease;
@@ -573,14 +645,14 @@
 
         .o_pcm_card + .o_pcm_card,
         .o_pcm_cols2 + .o_pcm_section_head,
-        .o_pcm_card + .o_pcm_section_head { margin-top: 16px; }
+        .o_pcm_card + .o_pcm_section_head { margin-top: var(--pcm-space-gap); }
 
         .o_pcm_hero {
             .o_pcm_hero_head {
                 display: flex;
                 align-items: center;
                 gap: 12px;
-                h1 { font-size: 1.5rem; font-weight: 600; margin: 0; }
+                h1 { font-size: var(--pcm-fs-hero); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0; }
             }
             .o_pcm_hero_meta {
                 display: flex;
@@ -597,19 +669,19 @@
         .o_pcm_cols2 {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            margin-top: 16px;
+            gap: var(--pcm-space-gap);
+            margin-top: var(--pcm-space-gap);
 
             @media (max-width: 900px) { grid-template-columns: 1fr; }
 
-            h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 10px; }
+            h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0 0 10px; }
         }
 
         .o_pcm_cols3 {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
-            gap: 16px;
-            margin-top: 16px;
+            gap: var(--pcm-space-gap);
+            margin-top: var(--pcm-space-gap);
 
             @media (max-width: 900px) { grid-template-columns: 1fr; }
         }
@@ -654,7 +726,7 @@
             }
         }
 
-        .o_pcm_section_head h2 { font-size: 1.15rem; font-weight: 600; margin: 0 0 10px; }
+        .o_pcm_section_head h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); margin: 0 0 10px; }
 
         .o_pcm_repo {
             & + .o_pcm_repo { margin-top: 12px; }

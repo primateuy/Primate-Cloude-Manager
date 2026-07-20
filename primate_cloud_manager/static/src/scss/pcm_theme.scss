@@ -38,7 +38,9 @@
         align-items: center;
         gap: 6px;
         padding: 2px 10px;
-        border-radius: 999px;
+        // Forma por tema (fallback = actual: en vistas nativas fuera de la app
+        // el token no está definido y queda pill).
+        border-radius: var(--pcm-radius-pill, 999px);
         font-size: 0.8rem;
         font-weight: 500;
         line-height: 1.4;
@@ -63,7 +65,7 @@
         display: inline-flex;
         align-items: center;
         padding: 1px 9px;
-        border-radius: 6px;
+        border-radius: var(--pcm-radius-pill, 6px);
         font-size: 0.78rem;
         font-weight: 500;
         background: var(--pcm-teal-tint);

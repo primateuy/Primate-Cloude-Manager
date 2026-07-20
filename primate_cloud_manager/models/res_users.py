@@ -16,6 +16,14 @@ PCM_ACCENTS = [
     ("verde", "Verde"),
 ]
 
+# Temas visuales: capa ORTOGONAL al acento. Cambian densidad/tipografía/forma vía
+# tokens CSS, NUNCA la paleta ni el acento. El JS mapea cada tema a sus tokens.
+PCM_THEMES = [
+    ("a", "Consola técnica"),
+    ("b", "Panel de operaciones"),
+    ("c", "Editorial cálido"),
+]
+
 
 class ResUsers(models.Model):
     _inherit = "res.users"
@@ -28,11 +36,18 @@ class ResUsers(models.Model):
         string="Acento personalizado (hex)",
         help="Color hex libre (ej.: #3366FF). Si se define, tiene prioridad sobre el preset.",
     )
+    pcm_theme = fields.Selection(
+        PCM_THEMES, string="Tema PCM", default="a",
+        help="Estilo visual (densidad, tipografía, forma). No cambia los "
+             "colores; el acento y los estados son independientes.",
+    )
 
     @property
     def SELF_READABLE_FIELDS(self):
-        return super().SELF_READABLE_FIELDS + ["pcm_accent", "pcm_accent_custom"]
+        return super().SELF_READABLE_FIELDS + [
+            "pcm_accent", "pcm_accent_custom", "pcm_theme"]
 
     @property
     def SELF_WRITEABLE_FIELDS(self):
-        return super().SELF_WRITEABLE_FIELDS + ["pcm_accent", "pcm_accent_custom"]
+        return super().SELF_WRITEABLE_FIELDS + [
+            "pcm_accent", "pcm_accent_custom", "pcm_theme"]

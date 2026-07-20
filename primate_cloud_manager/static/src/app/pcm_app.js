@@ -31,6 +31,65 @@ export const ACCENT_PRESETS = {
     verde:   { accent: "#639922", ink: "#27500A", tint: "#EAF3DE" },
 };
 
+// Temas visuales: capa ORTOGONAL al acento. Solo forma/densidad/tipografía —
+// NUNCA color (los valores solo referencian tokens de paleta FIJOS). Un solo
+// markup + estos tokens = las 3 estéticas. Los tokens IGUALES en A/B/C viven de
+// default en el SCSS; acá solo los que difieren. Regla del §6.4: cada literal
+// del SCSS es un token; si uno queda fijo, ese aspecto no cambia entre temas.
+export const THEME_TOKENS = {
+    // A — Consola técnica (default): denso, radios chicos, comandos en terminal
+    // oscuro, tabs subrayadas. fs-base 13.5px (ajuste de contraste aprobado).
+    a: {
+        "radius-card": "8px", "radius-control": "6px", "radius-pill": "6px",
+        "card-shadow": "none", "fs-base": "13.5px",
+        "space-screen": "16px", "space-card": "12px 14px", "space-gap": "10px",
+        "space-row": "6px 10px", "space-kpi-row": "10px",
+        "font-display": "var(--pcm-font-ui)",
+        "fs-hero": "1.3rem", "fs-title": "1.05rem", "fw-title": "600",
+        "fs-kpi": "1.4rem", "fw-kpi": "600",
+        "eyebrow-spacing": "0.04em", "eyebrow-weight": "600", "eyebrow-rule": "0",
+        "tab-radius": "0", "tab-bg-active": "transparent",
+        "tab-indicator-w": "2px", "tab-transform": "none", "tab-pad": "6px 10px",
+        "cmd-bg": "var(--pcm-navy)", "cmd-ink": "#D8E6E4",
+        "cmd-border": "none", "cmd-rule": "0",
+        "btn-pad": "6px 12px", "chip-pad": "3px 8px",
+    },
+    // B — Panel de operaciones: aireado, tarjetas grandes con sombra suave,
+    // pills redondeadas, tabs-pill con tint de acento.
+    b: {
+        "radius-card": "16px", "radius-control": "12px", "radius-pill": "999px",
+        "card-shadow": "0 1px 3px rgba(16,41,51,.08)", "fs-base": "14px",
+        "space-screen": "24px", "space-card": "20px 24px", "space-gap": "16px",
+        "space-row": "10px 14px", "space-kpi-row": "16px",
+        "font-display": "var(--pcm-font-ui)",
+        "fs-hero": "1.5rem", "fs-title": "1.25rem", "fw-title": "650",
+        "fs-kpi": "1.8rem", "fw-kpi": "650",
+        "eyebrow-spacing": "0.06em", "eyebrow-weight": "600", "eyebrow-rule": "0",
+        "tab-radius": "999px", "tab-bg-active": "var(--pcm-accent-tint)",
+        "tab-indicator-w": "0", "tab-transform": "none", "tab-pad": "8px 16px",
+        "cmd-bg": "var(--pcm-surface)", "cmd-ink": "var(--pcm-ink-text)",
+        "cmd-border": "1px solid var(--pcm-line)", "cmd-rule": "0",
+        "btn-pad": "9px 16px", "chip-pad": "5px 12px",
+    },
+    // C — Editorial cálido: serif de display (stack del sistema, v1) en títulos y
+    // números, eyebrows en mayúsculas con línea de acento, mucho aire.
+    c: {
+        "radius-card": "10px", "radius-control": "8px", "radius-pill": "4px",
+        "card-shadow": "none", "fs-base": "15px",
+        "space-screen": "28px", "space-card": "22px 26px", "space-gap": "18px",
+        "space-row": "12px 14px", "space-kpi-row": "20px",
+        "font-display": "Georgia, 'Times New Roman', serif",
+        "fs-hero": "1.9rem", "fs-title": "1.6rem", "fw-title": "500",
+        "fs-kpi": "2.3rem", "fw-kpi": "500",
+        "eyebrow-spacing": "0.12em", "eyebrow-weight": "700", "eyebrow-rule": "2px",
+        "tab-radius": "0", "tab-bg-active": "transparent",
+        "tab-indicator-w": "2px", "tab-transform": "uppercase", "tab-pad": "6px 12px",
+        "cmd-bg": "var(--pcm-navy)", "cmd-ink": "var(--pcm-teal-tint)",
+        "cmd-border": "none", "cmd-rule": "2px",
+        "btn-pad": "8px 14px", "chip-pad": "4px 10px",
+    },
+};
+
 // Etiqueta legible por modelo (para breadcrumb y títulos).
 export const MODEL_LABELS = {
     "primate.cloud.environment": "Entorno",
@@ -140,8 +199,13 @@ export class PcmApp extends Component {
         this.accentList = Object.keys(ACCENT_PRESETS).map((name) => ({
             name, color: ACCENT_PRESETS[name].accent,
         }));
+        this.themeList = [
+            { name: "a", label: "Consola" },
+            { name: "b", label: "Panel" },
+            { name: "c", label: "Editorial" },
+        ];
         this.state = useState({
-            accent: "teal", accentCustom: "",
+            accent: "teal", accentCustom: "", theme: "a",
             // Pila de navegación. Cada entrada: { type, model?, resId?, title }.
             stack: [{ type: "inicio", title: "Inicio" }],
             // Wizard activo en el drawer lateral (o null). { model, context, title }.
@@ -154,11 +218,13 @@ export class PcmApp extends Component {
 
         onWillStart(async () => {
             const recs = await this.orm.read(
-                "res.users", [user.userId], ["pcm_accent", "pcm_accent_custom"]
+                "res.users", [user.userId],
+                ["pcm_accent", "pcm_accent_custom", "pcm_theme"]
             );
             if (recs.length) {
                 this.state.accent = recs[0].pcm_accent || "teal";
                 this.state.accentCustom = recs[0].pcm_accent_custom || "";
+                this.state.theme = recs[0].pcm_theme || "a";
             }
         });
     }
@@ -172,9 +238,19 @@ export class PcmApp extends Component {
         return ACCENT_PRESETS[this.state.accent] || ACCENT_PRESETS.teal;
     }
 
+    // Estilo del root: acento + tema en la MISMA cadena inline. Cambiar
+    // cualquiera de los dos re-emite las vars → cambio instantáneo, sin reload.
+    get themeStyle() {
+        const tokens = THEME_TOKENS[this.state.theme] || THEME_TOKENS.a;
+        return Object.entries(tokens)
+            .map(([k, v]) => `--pcm-${k}:${v};`)
+            .join("");
+    }
+
     get rootStyle() {
         const t = this.accentTokens;
-        return `--pcm-accent:${t.accent};--pcm-accent-ink:${t.ink};--pcm-accent-tint:${t.tint};`;
+        return `--pcm-accent:${t.accent};--pcm-accent-ink:${t.ink};`
+            + `--pcm-accent-tint:${t.tint};${this.themeStyle}`;
     }
 
     isAccentActive(name) {
@@ -187,6 +263,16 @@ export class PcmApp extends Component {
         await this.orm.write("res.users", [user.userId], {
             pcm_accent: name, pcm_accent_custom: false,
         });
+    }
+
+    // ------------------------------------------------------------- Tema
+    isThemeActive(name) {
+        return this.state.theme === name;
+    }
+
+    async setTheme(name) {
+        this.state.theme = name;
+        await this.orm.write("res.users", [user.userId], { pcm_theme: name });
     }
 
     // ------------------------------------------------- Pila de navegación

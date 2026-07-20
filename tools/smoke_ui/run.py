@@ -400,6 +400,46 @@ def s10_proyecto_eje_cliente(pg):
     pg.screenshot(path=f"{SHOT}/s10_instancia.png")
 
 
+@scenario
+def s11_temas(pg):
+    """B1 del rediseño: los 3 temas andan sobre las MISMAS pantallas. Cambia
+    A->B->C con el selector y verifica (1) que los tokens REALMENTE cambian —el
+    radio de una card difiere entre A y B (caza el bug silencioso de §6.4: un
+    literal sin tokenizar no cambiaría)— y (2) que las pantallas core renderizan
+    en el tema más distinto (C), sin errores de consola."""
+    open_app(pg)
+
+    def card_radius():
+        return pg.evaluate("""() => {
+            const c = document.querySelector('.o_pcm_card, .o_pcm_kpi');
+            return c ? getComputedStyle(c).borderTopLeftRadius : '';
+        }""")
+
+    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    pg.wait_for_timeout(400)
+    radius_a = card_radius()
+    pg.click(".o_pcm_theme_opt:has-text('Panel')")
+    pg.wait_for_timeout(400)
+    radius_b = card_radius()
+    assert radius_a and radius_b and radius_a != radius_b, \
+        f"el tema no cambió el radio de las cards (¿literal sin tokenizar?): " \
+        f"A={radius_a} B={radius_b}"
+
+    # Recorrer las pantallas core en Tema C (el más distinto) sin romper.
+    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    pg.wait_for_timeout(300)
+    for nav in ("Entornos", "Proyectos", "Costos"):
+        pg.click(f".o_pcm_nav_item:has-text('{nav}')")
+        pg.wait_for_selector(
+            ".o_pcm_screen .o_pcm_card, .o_pcm_env_card, .o_pcm_card_click",
+            timeout=8000)
+    pg.screenshot(path=f"{SHOT}/s11_tema_c.png")
+    # Dejar al usuario en Tema A (default) para no contaminar corridas siguientes.
+    open_app(pg)
+    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -418,7 +458,7 @@ def main():
                    s04_drawer_error_correccion_exito,
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
-                   s05_salir_y_volver):
+                   s11_temas, s05_salir_y_volver):
             fn(pg)
         br.close()
 
