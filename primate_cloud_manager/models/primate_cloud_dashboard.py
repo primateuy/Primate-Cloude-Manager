@@ -1046,6 +1046,82 @@ class PrimateCloudDashboard(models.AbstractModel):
             **self._last_sync_error(rec),
         }
 
+    # ------------------------------------------------------------------
+    # Aprovisionamiento (B3): datos para el formulario OWL de "Crear entorno".
+    # No agrega lógica: reusa el default_get + onchanges del provision.wizard.
+    # ------------------------------------------------------------------
+    @api.model
+    def get_provision_defaults(self, env_id):
+        """Precarga del formulario de aprovisionamiento (Crear entorno).
+
+        Reusa el ``default_get`` del wizard (que trae la config guardada de un
+        intento previo) y sus onchanges (prefills derivados del entorno + estado
+        cacheado de la región). Devuelve además el flag de admin (para los campos
+        avanzados) y las opciones de los Selection. Todo server-side: el form OWL
+        es pura presentación.
+        """
+        env = self.env["primate.cloud.environment"].browse(env_id).exists()
+        if not env:
+            return {}
+        Wizard = self.env["primate.cloud.provision.wizard"]
+        ctx = dict(self.env.context, default_environment_id=env_id)
+        WizardCtx = Wizard.with_context(**ctx)
+        defaults = WizardCtx.default_get(list(Wizard._fields))
+        wiz = WizardCtx.new(dict(defaults, environment_id=env_id))
+        wiz._onchange_environment_id()   # prefills derivados del entorno
+        wiz._onchange_region_status()    # semáforo cacheado (no golpea AWS)
+
+        char_int_bool = [
+            "region", "domain", "admin_password", "instance_name", "instance_type",
+            "os_type", "image_id", "disk_size_gb", "key_name", "security_group_ids",
+            "subnet_id", "instance_profile", "db_mode", "db_name", "db_user",
+            "db_password", "pg_version", "rds_identifier", "rds_instance_class",
+            "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
+            "hosted_zone_id", "ttl", "region_status", "region_detail",
+        ]
+        data = {f: (wiz[f] if wiz[f] not in (None,) else False) for f in char_int_bool}
+        region_labels = dict(Wizard._fields["region_status"].selection)
+
+        def options(field):
+            return [{"value": v, "label": l}
+                    for v, l in Wizard._fields[field].selection]
+
+        data.update({
+            "environment_id": env_id,
+            "environment_name": env.display_name,
+            "account_id": wiz.account_id.id or False,
+            "account_name": wiz.account_id.display_name or "",
+            "region_status_label": region_labels.get(wiz.region_status, ""),
+            "is_cloud_admin": self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"),
+            "os_types": options("os_type"),
+            "db_modes": options("db_mode"),
+            "pg_versions": options("pg_version"),
+            "regions": options("region"),
+        })
+        return data
+
+    @api.model
+    def verify_region(self, account_id, region):
+        """Corre el descubrimiento de la región y devuelve el semáforo.
+
+        Read-only interactivo (misma política que ``action_verify_region``):
+        alimenta el semáforo del form sin encolar. Reusa ``get_or_discover``.
+        """
+        account = self.env["primate.cloud.account"].browse(account_id).exists()
+        if not account or not region:
+            return {"status": "draft", "detail": _("Elegí cuenta y región."),
+                    "status_label": ""}
+        setup = self.env["primate.cloud.region.setup"].get_or_discover(
+            account, region)
+        labels = dict(
+            self.env["primate.cloud.region.setup"]._fields["status"].selection)
+        return {
+            "status": setup.status,
+            "detail": setup.detail or "",
+            "status_label": labels.get(setup.status, setup.status or ""),
+        }
+
     @api.model
     def get_account_detail(self, account_id):
         """Serializa el detalle de una cuenta AWS para la app (read-only).

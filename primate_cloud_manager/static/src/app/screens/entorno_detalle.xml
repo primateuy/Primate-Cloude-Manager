@@ -49,7 +49,7 @@
                     <div class="o_pcm_actions">
                         <button t-if="d.state === 'draft' or d.state === 'error'"
                                 class="o_pcm_btn o_pcm_btn_accent"
-                                t-on-click="() => this.runEnvMethod('action_provision')">
+                                t-on-click="() => this.provisionEnv()">
                             <i class="fa fa-magic"/> Aprovisionar
                         </button>
                         <!-- R3-B3: montar OTRO Odoo en este servidor (wizard en

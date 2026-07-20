@@ -1013,6 +1013,14 @@
         font-family: var(--pcm-font-mono);
     }
     .o_pcm_input_narrow { max-width: 140px; }
+    // Input + botón de acción lado a lado (ej.: AMI + "Resolver AMI").
+    .o_pcm_row_action {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        .o_pcm_input { flex: 1 1 auto; }
+        .o_pcm_btn { flex: 0 0 auto; }
+    }
     .o_pcm_field_invalid {
         .o_pcm_input, .o_pcm_textarea, .o_pcm_select {
             border-color: var(--pcm-error-dot);
@@ -1061,6 +1069,67 @@
         color: var(--pcm-ink-text);
         cursor: pointer;
         input { margin-top: 3px; flex: 0 0 auto; }
+    }
+
+    // Sección con encabezado (formularios grandes: Crear entorno). El encabezado
+    // usa el tratamiento de "eyebrow" del tema (mayúsculas + tracking en A/C).
+    .o_pcm_form_section {
+        display: flex;
+        flex-direction: column;
+        gap: var(--pcm-space-gap);
+        padding-top: 6px;
+        border-top: 1px solid var(--pcm-line);
+    }
+    .o_pcm_form_section_head {
+        font-size: 0.72rem;
+        font-weight: var(--pcm-eyebrow-weight);
+        letter-spacing: var(--pcm-eyebrow-spacing);
+        text-transform: uppercase;
+        color: var(--pcm-soft);
+    }
+
+    // Fila de campos lado a lado (colapsa a una columna en el drawer angosto).
+    .o_pcm_form_row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--pcm-space-gap);
+    }
+    @media (max-width: 620px) {
+        .o_pcm_form_row { grid-template-columns: 1fr; }
+    }
+
+    // Alerta informativa del form (qué va a pasar), tokenizada (no la Bootstrap).
+    .o_pcm_form_alert {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: var(--pcm-radius-control);
+        background: var(--pcm-accent-tint);
+        color: var(--pcm-accent-ink);
+        font-size: 0.84rem;
+        line-height: 1.4;
+        > i { margin-top: 2px; flex: 0 0 auto; }
+    }
+
+    // Semáforo de región: punto de estado + etiqueta + detalle accionable.
+    .o_pcm_semaphore {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        .o_pcm_semaphore_dot {
+            width: 9px; height: 9px; border-radius: 50%;
+            flex: 0 0 auto; background: var(--pcm-neutral-dot);
+        }
+        &.o_pcm_semaphore_ok .o_pcm_semaphore_dot { background: var(--pcm-ok-dot); }
+        &.o_pcm_semaphore_bad .o_pcm_semaphore_dot { background: var(--pcm-error-dot); }
+        .o_pcm_semaphore_label { font-weight: 600; font-size: 0.86rem; }
+    }
+    .o_pcm_semaphore_detail {
+        font-size: 0.82rem;
+        color: var(--pcm-soft);
+        margin-top: 2px;
     }
 
     .o_pcm_form_foot {

@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.EnvForm">
+        <div class="o_pcm_form">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-elif="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-else="">
+                <div class="o_pcm_form_alert">
+                    <i class="fa fa-info-circle"/>
+                    <span>
+                        Se creará la infraestructura en AWS (EC2, base de datos y
+                        DNS) y se instalará Odoo. El flujo corre en segundo plano;
+                        el entorno pasará a Activo al terminar.
+                    </span>
+                </div>
+
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <!-- Identidad + región -->
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Cuenta AWS'">
+                        <input class="o_pcm_input" type="text" readonly="readonly"
+                               t-att-value="state.accountName"/>
+                    </PcmField>
+                    <PcmField label="'Región'">
+                        <PcmSelect value="state.region" options="state.regions"
+                                   onChange="(v) => this.onSelect('region', v)"/>
+                    </PcmField>
+                </div>
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Dominio'" required="true"
+                              error="state.errors.domain"
+                              help="'Ej.: forum.primate.cloud'">
+                        <input class="o_pcm_input" type="text"
+                               t-att-value="state.domain"
+                               t-att-placeholder="'forum.primate.cloud'"
+                               t-on-input="(ev) => this.onInput('domain', ev)"/>
+                    </PcmField>
+                    <PcmField label="'Contraseña admin (odoo.conf)'"
+                              help="'La del usuario admin del Odoo nuevo.'">
+                        <input class="o_pcm_input" type="password"
+                               t-att-value="state.admin_password"
+                               t-on-input="(ev) => this.onInput('admin_password', ev)"/>
+                    </PcmField>
+                </div>
+
+                <!-- Semáforo de región -->
+                <div>
+                    <div t-attf-class="o_pcm_semaphore {{ semaphoreClass }}">
+                        <span class="o_pcm_semaphore_dot"/>
+                        <span class="o_pcm_semaphore_label"
+                              t-out="state.regionStatusLabel || 'Región sin verificar'"/>
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-att-disabled="state.busyRegion ? 'disabled' : undefined"
+                                t-on-click="() => this.verifyRegion()">
+                            <t t-if="state.busyRegion">Verificando…</t>
+                            <t t-else="">Verificar región</t>
+                        </button>
+                    </div>
+                    <div t-if="state.regionDetail and state.regionStatus !== 'ok'"
+                         class="o_pcm_semaphore_detail" t-out="state.regionDetail"/>
+                </div>
+
+                <!-- CÓMPUTO -->
+                <div class="o_pcm_form_section">
+                    <div class="o_pcm_form_section_head">Cómputo</div>
+                    <div class="o_pcm_form_row">
+                        <PcmField label="'Nombre de la instancia'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.instance_name"
+                                   t-on-input="(ev) => this.onInput('instance_name', ev)"/>
+                        </PcmField>
+                        <PcmField label="'Tipo de instancia'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.instance_type"
+                                   t-on-input="(ev) => this.onInput('instance_type', ev)"/>
+                        </PcmField>
+                    </div>
+                    <div class="o_pcm_form_row">
+                        <PcmField label="'Sistema operativo'">
+                            <PcmSelect value="state.os_type" options="state.osTypes"
+                                       onChange="(v) => this.onSelect('os_type', v)"/>
+                        </PcmField>
+                        <PcmField label="'Disco raíz (GB)'">
+                            <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                                   min="0" t-att-value="state.disk_size_gb"
+                                   t-on-input="(ev) => this.onIntInput('disk_size_gb', ev)"/>
+                        </PcmField>
+                    </div>
+
+                    <!-- Avanzado (solo admin): AMI + red. Un valor acá gana sobre
+                         el auto-discovery de la región. -->
+                    <t t-if="state.isCloudAdmin">
+                        <PcmField label="'AMI (imagen)'"
+                                  help="'Vacío = se resuelve Ubuntu 24.04 de la región.'">
+                            <div class="o_pcm_row_action">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.image_id"
+                                       t-att-placeholder="'ami-...'"
+                                       t-on-input="(ev) => this.onInput('image_id', ev)"/>
+                                <button class="o_pcm_btn"
+                                        t-att-disabled="state.busyAmi ? 'disabled' : undefined"
+                                        t-on-click="() => this.resolveAmi()">
+                                    <t t-if="state.busyAmi">Resolviendo…</t>
+                                    <t t-else="">Resolver AMI</t>
+                                </button>
+                            </div>
+                        </PcmField>
+                        <div class="o_pcm_form_row">
+                            <PcmField label="'Par de claves (SSH)'">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.key_name"
+                                       t-on-input="(ev) => this.onInput('key_name', ev)"/>
+                            </PcmField>
+                            <PcmField label="'Grupos de seguridad'"
+                                      help="'IDs separados por coma. Vacío = auto (pcm-managed).'">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.security_group_ids"
+                                       t-on-input="(ev) => this.onInput('security_group_ids', ev)"/>
+                            </PcmField>
+                        </div>
+                        <div class="o_pcm_form_row">
+                            <PcmField label="'Subred'"
+                                      help="'Vacío = auto (subnet pública).'">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.subnet_id"
+                                       t-on-input="(ev) => this.onInput('subnet_id', ev)"/>
+                            </PcmField>
+                            <PcmField label="'Perfil de instancia (IAM)'"
+                                      help="'Vacío = auto (pcm-ssm-role).'">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.instance_profile"
+                                       t-on-input="(ev) => this.onInput('instance_profile', ev)"/>
+                            </PcmField>
+                        </div>
+                    </t>
+                </div>
+
+                <!-- BASE DE DATOS -->
+                <div class="o_pcm_form_section">
+                    <div class="o_pcm_form_section_head">Base de datos</div>
+                    <PcmField label="'Modo'">
+                        <PcmSelect value="state.db_mode" options="state.dbModes"
+                                   onChange="(v) => this.onSelect('db_mode', v)"/>
+                    </PcmField>
+                    <t t-if="!dbNone">
+                        <div class="o_pcm_form_row">
+                            <PcmField label="'Nombre de la base'">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.db_name"
+                                       t-on-input="(ev) => this.onInput('db_name', ev)"/>
+                            </PcmField>
+                            <PcmField label="'Usuario PostgreSQL'">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.db_user"
+                                       t-on-input="(ev) => this.onInput('db_user', ev)"/>
+                            </PcmField>
+                        </div>
+                        <div class="o_pcm_form_row">
+                            <PcmField label="'Contraseña de la base'"
+                                      required="isRds"
+                                      error="state.errors.db_password">
+                                <input class="o_pcm_input" type="password"
+                                       t-att-value="state.db_password"
+                                       t-on-input="(ev) => this.onInput('db_password', ev)"/>
+                            </PcmField>
+                            <PcmField label="'Versión de PostgreSQL'">
+                                <PcmSelect value="state.pg_version" options="state.pgVersions"
+                                           onChange="(v) => this.onSelect('pg_version', v)"/>
+                            </PcmField>
+                        </div>
+                    </t>
+
+                    <t t-if="isRds">
+                        <div class="o_pcm_form_section_head" style="border:0;padding-top:2px;">
+                            RDS
+                        </div>
+                        <div class="o_pcm_form_row">
+                            <PcmField label="'Identificador RDS'" required="true"
+                                      error="state.errors.rds_identifier">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.rds_identifier"
+                                       t-on-input="(ev) => this.onInput('rds_identifier', ev)"/>
+                            </PcmField>
+                            <PcmField label="'Clase RDS'">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.rds_instance_class"
+                                       t-on-input="(ev) => this.onInput('rds_instance_class', ev)"/>
+                            </PcmField>
+                        </div>
+                        <div class="o_pcm_form_row">
+                            <PcmField label="'Almacenamiento RDS (GB)'">
+                                <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                                       min="0" t-att-value="state.rds_storage_gb"
+                                       t-on-input="(ev) => this.onIntInput('rds_storage_gb', ev)"/>
+                            </PcmField>
+                            <PcmField label="'Retención de backup (días)'">
+                                <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                                       min="0" t-att-value="state.backup_retention_days"
+                                       t-on-input="(ev) => this.onIntInput('backup_retention_days', ev)"/>
+                            </PcmField>
+                        </div>
+                        <label class="o_pcm_form_check">
+                            <input type="checkbox" t-att-checked="state.rds_multi_az"
+                                   t-on-change="(ev) => this.toggle('rds_multi_az', ev)"/>
+                            <span>Multi-AZ (alta disponibilidad)</span>
+                        </label>
+                    </t>
+                </div>
+
+                <!-- DNS -->
+                <div class="o_pcm_form_section">
+                    <div class="o_pcm_form_section_head">DNS</div>
+                    <label class="o_pcm_form_check">
+                        <input type="checkbox" t-att-checked="state.create_dns"
+                               t-on-change="(ev) => this.toggle('create_dns', ev)"/>
+                        <span>Crear registro DNS en Route 53 para el dominio</span>
+                    </label>
+                    <t t-if="state.create_dns">
+                        <div class="o_pcm_form_row">
+                            <PcmField label="'Hosted Zone ID'" required="true"
+                                      error="state.errors.hosted_zone_id">
+                                <input class="o_pcm_input" type="text"
+                                       t-att-value="state.hosted_zone_id"
+                                       t-att-placeholder="'Z0123456789ABCDEFGHIJ'"
+                                       t-on-input="(ev) => this.onInput('hosted_zone_id', ev)"/>
+                            </PcmField>
+                            <PcmField label="'TTL (segundos)'">
+                                <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                                       min="0" t-att-value="state.ttl"
+                                       t-on-input="(ev) => this.onIntInput('ttl', ev)"/>
+                            </PcmField>
+                        </div>
+                    </t>
+                </div>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Aprovisionando…</t>
+                        <t t-else="">Aprovisionar</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

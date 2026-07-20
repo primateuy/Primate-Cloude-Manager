@@ -6,6 +6,7 @@ import { PcmStatusBadge } from "../components/status_badge";
 import { runPcmModelAction } from "../pcm_actions";
 import { DnsForm } from "../forms/dns_form";
 import { DnsDeleteForm } from "../forms/dns_delete_form";
+import { EnvForm } from "../forms/env_form";
 
 /**
  * Hub del entorno: barra de acciones (aprovisionar/staging/sincronizar), sección
@@ -73,6 +74,16 @@ export class EntornoDetalle extends Component {
         if (ran) {
             await this.load(this.props.envId);
         }
+    }
+
+    // Aprovisionar (Crear entorno): abre el formulario OWL en el drawer. El
+    // botón sólo se muestra en estado draft/error, así que el guard de estado ya
+    // está cubierto por visibilidad.
+    provisionEnv() {
+        this.env.pcm.openForm(EnvForm, {
+            envId: this.props.envId,
+            onSaved: () => this.load(this.props.envId),
+        }, "Crear entorno");
     }
 
     // Sincronizar los servidores del entorno desde AWS (método existente de EC2).

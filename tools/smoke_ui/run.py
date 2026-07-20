@@ -136,10 +136,13 @@ def s03_drawer_cancelar(pg):
     pg.wait_for_selector(".o_pcm_drawer", state="detached", timeout=8000)
 
 
-def submit_provision(pg, dr):
-    """Click 'Aprovisionar' + acepta la confirmación de acción facturable."""
-    pg.locator(f"{dr} .modal-footer button.btn-primary").first.click()
-    # El botón lleva confirm= (recursos facturables): aparece un ConfirmationDialog.
+def submit_env_form(pg, dr):
+    """Click 'Aprovisionar' en el form OWL + acepta la confirmación facturable.
+
+    Si la validación de forma pasa, aparece el ConfirmationDialog ('Sí'); se
+    acepta. (Si falla la validación, NO hay diálogo: el error va inline.)
+    """
+    pg.locator(f"{dr} .o_pcm_btn_accent").first.click()
     pg.wait_for_selector(".o-overlay-container .modal .modal-footer .btn-primary", timeout=6000)
     pg.locator(".o-overlay-container .modal .modal-footer .btn-primary").first.click()
     pg.wait_for_timeout(900)
@@ -147,34 +150,35 @@ def submit_provision(pg, dr):
 
 @scenario
 def s04_drawer_error_correccion_exito(pg):
-    """Ciclo error->corrección->éxito en el drawer de Aprovisionar (env fixture)."""
+    """B3: ciclo error->corrección->éxito en el FORM OWL de Crear entorno.
+
+    Confirmar con campos faltantes muestra errores INLINE accionables (no el
+    "Missing required fields" nativo) y conserva lo ingresado; corregir y
+    confirmar (con la confirmación de recursos facturables) encola el
+    aprovisionamiento y cierra el drawer. Segundo uso del drawer sin colgarse."""
     open_app(pg)
     open_env(pg, FIXTURE)
     pg.click("button:has-text('Aprovisionar')")
-    pg.wait_for_selector(".o_pcm_drawer", timeout=10000)
+    pg.wait_for_selector(".o_pcm_form", timeout=10000)
     dr = ".o_pcm_drawer"
-    # region viene pre-cargada por onchange (default_region de la cuenta); solo
-    # falta el dominio para que el form sea válido. Tab para forzar el commit
-    # del campo Char (Odoo actualiza en blur, no en input).
-    pg.fill(f"{dr} [name='domain'] input", "smoke.test.local")
-    pg.locator(f"{dr} [name='domain'] input").press("Tab")
-    # Confirmar: create_dns activo por defecto hace hosted_zone_id requerido
-    # (required="create_dns" en la vista) => error de validación al confirmar.
-    submit_provision(pg, dr)
-    # El error se surfacea como notificación "Missing required fields".
-    pg.wait_for_selector(".o_notification", timeout=8000)
-    # El drawer sigue abierto y el dato ingresado se conserva.
+    pg.wait_for_timeout(400)
+    dom = f"{dr} input[placeholder='forum.primate.cloud']"
+    # Confirmar con dominio vacío (y create_dns on por defecto => hosted_zone_id
+    # requerido) => errores INLINE, sin diálogo de confirmación, drawer abierto.
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
     assert pg.locator(dr).count() == 1, "el drawer se cerró ante el error (no debía)"
-    val = pg.locator(f"{dr} [name='domain'] input").input_value()
-    assert val == "smoke.test.local", f"se perdió el dato ingresado: '{val}'"
+    assert pg.locator(f"{dr} .o_pcm_field_err").count() >= 1, \
+        "no aparecieron los errores inline accionables"
     pg.screenshot(path=f"{SHOT}/s04_error.png")
-    # Corregir: ir a la pestaña DNS y completar el hosted_zone_id que faltaba.
-    pg.locator(f"{dr} .o_notebook .nav-link:has-text('DNS')").first.click()
-    pg.wait_for_timeout(300)
-    pg.fill(f"{dr} [name='hosted_zone_id'] input", "Z00000000EXAMPLE")
-    pg.locator(f"{dr} [name='hosted_zone_id'] input").press("Tab")
-    # Confirmar de nuevo -> éxito (encola job) -> el drawer se cierra.
-    submit_provision(pg, dr)
+    # Corregir: dominio + hosted_zone_id (sección DNS, ya visible por create_dns).
+    pg.fill(dom, "smoke.test.local")
+    pg.fill(f"{dr} input[placeholder^='Z0']", "Z00000000EXAMPLE")
+    # El dato ingresado se conserva (input controlado, no se pierde al re-render).
+    assert pg.locator(dom).input_value() == "smoke.test.local", \
+        "se perdió el dominio ingresado"
+    # Confirmar de nuevo -> validación OK -> confirmación facturable -> éxito.
+    submit_env_form(pg, dr)
     pg.wait_for_selector(dr, state="detached", timeout=12000)
     # El éxito encola un job que falla RÁPIDO (creds falsas => AuthFailure en
     # ~1s): el overlay de progreso queda en su estado final con botón Cerrar
