@@ -717,7 +717,10 @@
             gap: 12px;
             padding: 8px 6px;
             & + .o_pcm_line { border-top: 1px solid var(--pcm-line); }
-            .o_pcm_line_main { flex: 1 1 auto; min-width: 0; }
+            // Flex + gap: da aire entre nombre, chip de tipo y meta (si no, en
+            // filas nombre+badge+proyecto los tres se pegan — bug reportado en
+            // el detalle de servidor / instancias hospedadas).
+            .o_pcm_line_main { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
             .o_pcm_line_name { font-weight: 500; }
 
             &.o_pcm_line_click {

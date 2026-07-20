@@ -434,6 +434,34 @@ def s11_temas(pg):
             ".o_pcm_screen .o_pcm_card, .o_pcm_env_card, .o_pcm_card_click",
             timeout=8000)
     pg.screenshot(path=f"{SHOT}/s11_tema_c.png")
+
+    # (3) El panel del drawer debe ser OPACO en los 3 temas — guarda contra un
+    # tokenizado futuro que lo vuelva transparente sin que nadie lo note (los
+    # formularios quedarían ilegibles). Abre el drawer por tema y mide el alpha.
+    def drawer_alpha():
+        return pg.evaluate(r"""() => {
+            const d = document.querySelector('.o_pcm_drawer');
+            if (!d) return null;
+            const bg = getComputedStyle(d).backgroundColor;
+            if (bg === 'transparent') return 0;
+            const m = bg.match(/rgba?\(([^)]+)\)/);
+            if (!m) return 1;
+            const parts = m[1].split(',').map(s => s.trim());
+            return parts.length === 4 ? parseFloat(parts[3]) : 1;
+        }""")
+    for theme in ("Consola", "Panel", "Editorial"):
+        pg.click(f".o_pcm_theme_opt:has-text('{theme}')")
+        pg.wait_for_timeout(250)
+        pg.click(".o_pcm_nav_item:has-text('Crear instancia EC2')")
+        pg.wait_for_selector(".o_pcm_drawer", timeout=8000)
+        pg.wait_for_timeout(300)
+        alpha = drawer_alpha()
+        assert alpha is not None and alpha >= 0.99, \
+            f"el panel del drawer NO es opaco en Tema {theme} " \
+            f"(alpha={alpha}) — los formularios quedan ilegibles"
+        pg.click(".o_pcm_drawer_head .o_pcm_icon_btn")
+        pg.wait_for_selector(".o_pcm_drawer", state="detached", timeout=6000)
+
     # Dejar al usuario en Tema A (default) para no contaminar corridas siguientes.
     open_app(pg)
     pg.click(".o_pcm_theme_opt:has-text('Consola')")
