@@ -510,6 +510,51 @@ def s11_temas(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s12_repo_form(pg):
+    """B4: el form OWL de repositorio (crear/editar) sobre el tema EDITORIAL
+    (no-default, para pescar literales sin tokenizar). Verifica validación inline
+    accionable y —clave— que el token de GitHub NUNCA se precarga en edición
+    (input vacío, sin máscara ni secreto)."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+    # Tema no-default para estresar el tokenizado.
+    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    pg.wait_for_timeout(300)
+    open_env(pg, INFRA_ENV)
+
+    # Crear: form OWL con campos propios + token como password.
+    pg.click("button:has-text('Agregar repositorio')")
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    assert pg.locator(f"{dr} input[type='password']").count() == 1, \
+        "el token de GitHub debe ser un campo password"
+    assert pg.locator(f"{dr} .o_pcm_select").count() >= 1, "falta el select de tipo"
+    # Validación accionable: confirmar sin nombre deja el drawer abierto con error.
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
+    assert pg.locator(dr).count() == 1, "el form se cerró pese al error (no debía)"
+    pg.screenshot(path=f"{SHOT}/s12_repo_crear.png")
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    # Editar un repo EXISTENTE: el token no debe precargarse (secreto no filtrado).
+    pg.locator(".o_pcm_repo_name").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000)
+    pg.click("button:has-text('Editar')")
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    pg.wait_for_timeout(300)
+    tok = pg.locator(f"{dr} input[type='password']").input_value()
+    assert tok == "", f"el token NO debe precargarse en edición (llegó: {tok!r})"
+    pg.screenshot(path=f"{SHOT}/s12_repo_editar.png")
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    # Reset a Consola para no contaminar corridas siguientes.
+    open_app(pg)
+    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -528,7 +573,7 @@ def main():
                    s04_drawer_error_correccion_exito,
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
-                   s11_temas, s05_salir_y_volver):
+                   s11_temas, s12_repo_form, s05_salir_y_volver):
             fn(pg)
         br.close()
 

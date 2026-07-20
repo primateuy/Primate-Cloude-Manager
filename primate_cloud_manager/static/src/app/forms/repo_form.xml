@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.RepoForm">
+        <div class="o_pcm_form">
+            <t t-if="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-else="">
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <PcmField label="'Nombre'" required="true" error="state.errors.name">
+                    <input class="o_pcm_input" type="text" t-att-value="state.name"
+                           t-att-placeholder="'Ej.: Addons Cliente'"
+                           t-on-input="(ev) => this.onInput('name', ev)"/>
+                </PcmField>
+
+                <PcmField label="'Tipo'">
+                    <PcmSelect value="state.repo_type" options="typeOptions"
+                               onChange="(v) => this.setType(v)"/>
+                </PcmField>
+
+                <PcmField label="'URL de GitHub'"
+                          help="'Ej.: https://github.com/organizacion/repo'">
+                    <input class="o_pcm_input" type="text" t-att-value="state.github_url"
+                           t-att-placeholder="'https://github.com/odoo/odoo'"
+                           t-on-input="(ev) => this.onInput('github_url', ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Organización'">
+                        <input class="o_pcm_input" type="text"
+                               t-att-value="state.organization"
+                               t-on-input="(ev) => this.onInput('organization', ev)"/>
+                    </PcmField>
+                    <PcmField label="'Rama configurada'" help="'Ej.: 19.0, main'">
+                        <input class="o_pcm_input" type="text"
+                               t-att-value="state.configured_branch"
+                               t-att-placeholder="'19.0'"
+                               t-on-input="(ev) => this.onInput('configured_branch', ev)"/>
+                    </PcmField>
+                </div>
+
+                <PcmField label="'Ruta local en la EC2'"
+                          help="'Dónde vive el repo en el servidor. Ej.: /opt/odoo/addons'">
+                    <input class="o_pcm_input" type="text" t-att-value="state.local_path"
+                           t-att-placeholder="'/opt/odoo/addons'"
+                           t-on-input="(ev) => this.onInput('local_path', ev)"/>
+                </PcmField>
+
+                <PcmField label="'Token de GitHub'" help="tokenHelp">
+                    <input class="o_pcm_input" type="password"
+                           t-att-value="state.github_token"
+                           t-att-placeholder="(isEdit and state.tokenAlreadySet) ? '•••••••• (guardado)' : 'ghp_...'"
+                           t-on-input="(ev) => this.onInput('github_token', ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Guardando…</t>
+                        <t t-else="">Guardar</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

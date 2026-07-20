@@ -29,6 +29,22 @@
                                 t-on-click="() => this.runMethod('action_detect_modules')">
                             <i class="fa fa-cubes"/> Detectar módulos
                         </button>
+                        <button class="o_pcm_btn" t-on-click="() => this.editRepo()">
+                            <i class="fa fa-pencil"/> Editar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Error de sync accionable (GitHub/SSM), sin traceback. -->
+                <div t-if="d.sync_state === 'error' and d.sync_error"
+                     class="o_pcm_form_banner o_pcm_form_banner_error o_pcm_panel_banner">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <div class="o_pcm_panel_banner_body">
+                        <div t-out="d.sync_error"/>
+                        <details t-if="d.sync_error_detail" class="o_pcm_banner_detail">
+                            <summary>Ver detalle técnico</summary>
+                            <pre class="o_pcm_mono o_pcm_banner_pre" t-out="d.sync_error_detail"/>
+                        </details>
                     </div>
                 </div>
 

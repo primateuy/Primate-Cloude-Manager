@@ -4,6 +4,7 @@ import { Component, onWillStart, onWillUpdateProps, useState } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
 import { runPcmModelAction } from "../pcm_actions";
+import { RepoForm } from "../forms/repo_form";
 
 /**
  * Detalle de un repositorio: datos generales, asociación, módulos detectados y
@@ -56,5 +57,13 @@ export class RepositorioDetalle extends Component {
         if (this.props.onOpenRecord && id) {
             this.props.onOpenRecord(model, id, name);
         }
+    }
+
+    // Editar el repositorio en el form OWL (drawer). Recarga al guardar.
+    editRepo() {
+        this.env.pcm.openForm(RepoForm, {
+            mode: "edit", recordId: this.props.recordId,
+            onSaved: () => this.load(this.props.recordId),
+        }, "Editar repositorio");
     }
 }

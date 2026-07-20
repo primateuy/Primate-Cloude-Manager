@@ -7,6 +7,7 @@ import { runPcmModelAction } from "../pcm_actions";
 import { DnsForm } from "../forms/dns_form";
 import { DnsDeleteForm } from "../forms/dns_delete_form";
 import { EnvForm } from "../forms/env_form";
+import { RepoForm } from "../forms/repo_form";
 
 /**
  * Hub del entorno: barra de acciones (aprovisionar/staging/sincronizar), sección
@@ -131,9 +132,11 @@ export class EntornoDetalle extends Component {
     }
 
     addRepo() {
-        this.env.pcm.newRecord("primate.cloud.repository", {
-            default_environment_id: this.props.envId,
-        });
+        this.env.pcm.openForm(RepoForm, {
+            mode: "create",
+            environmentId: this.props.envId,
+            onSaved: () => this.load(this.props.envId),
+        }, "Nuevo repositorio");
     }
 
     addDns() {

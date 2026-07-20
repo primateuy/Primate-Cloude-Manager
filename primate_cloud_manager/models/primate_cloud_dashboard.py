@@ -10,14 +10,17 @@ from odoo import _, api, fields, models
 
 
 def _friendly_sync_error(raw):
-    """Traduce un error crudo de AWS/Route 53 a copy ACCIONABLE en español.
+    """Traduce un error crudo de proveedor (AWS/Route 53, SSM, GitHub) a copy
+    ACCIONABLE en español.
 
-    La pantalla OWL no debe mostrar el traceback de boto3: este helper reconoce
-    las firmas de fallo más comunes y devuelve qué hacer al respecto. El crudo se
-    conserva aparte (detalle técnico plegable para el admin), nunca se pierde.
+    La pantalla OWL no debe mostrar el traceback de boto3/SSM/PyGithub: este
+    helper reconoce las firmas de fallo más comunes —permisos, credenciales,
+    recurso inexistente, conflicto, throttling, red— y devuelve qué hacer al
+    respecto, sin atarse a un proveedor puntual (lo reusan DNS, repos y cuentas).
+    El crudo se conserva aparte (detalle técnico plegable), nunca se pierde.
 
     Args:
-        raw (str): mensaje de error tal cual lo devolvió AWS/boto3.
+        raw (str): mensaje de error tal cual lo devolvió el proveedor.
 
     Returns:
         str: mensaje orientado a la acción, en español.
@@ -25,37 +28,40 @@ def _friendly_sync_error(raw):
     text = (raw or "").strip()
     low = text.lower()
     if not text:
-        return _("La sincronización con Route 53 falló. Revisá la bitácora para "
-                 "el detalle.")
+        return _("La sincronización falló. Revisá la bitácora para el detalle.")
     if any(k in low for k in ("accessdenied", "not authorized",
                               "unauthorizedoperation", "is not authorized")):
-        return _("La cuenta AWS no tiene permisos para cambiar registros en esta "
-                 "zona de Route 53. Revisá la política IAM (hace falta "
-                 "route53:ChangeResourceRecordSets sobre la zona) y reintentá.")
-    if "nosuchhostedzone" in low or "hosted zone" in low and "not" in low:
+        return _("No hay permisos para esta operación. Revisá los permisos de la "
+                 "cuenta (política IAM en AWS, o el token/acceso del repositorio "
+                 "en GitHub) y reintentá.")
+    if any(k in low for k in ("bad credentials", "401", "invalidclienttokenid",
+                              "signaturedoesnotmatch", "authfailure",
+                              "expiredtoken", "expired", "invalid credentials",
+                              "authentication failed")):
+        return _("Las credenciales o el token son inválidos o expiraron. "
+                 "Actualizalos en la cuenta o el repositorio y reintentá.")
+    if "nosuchhostedzone" in low or ("hosted zone" in low and "not" in low):
         return _("La zona alojada ya no existe en Route 53. Verificá el Hosted "
                  "Zone ID o volvé a sincronizar las zonas desde AWS.")
+    if any(k in low for k in ("not found", "404", "could not resolve host",
+                              "repository not found", "no such")):
+        return _("El recurso no existe o no es accesible (repositorio, rama o "
+                 "zona). Verificá el nombre/URL y el acceso, y reintentá.")
     if any(k in low for k in ("invalidchangebatch", "already exists",
                               "it already exists", "conflict")):
-        return _("Route 53 rechazó el cambio: el registro ya existe o entra en "
-                 "conflicto con otro. Verificá el nombre y el tipo antes de "
-                 "reintentar.")
+        return _("El proveedor rechazó el cambio: ya existe o entra en conflicto "
+                 "con otro. Verificá los datos antes de reintentar.")
     if any(k in low for k in ("throttl", "rate exceeded", "toomanyrequests",
-                              "slow down")):
-        return _("AWS está limitando las solicitudes (throttling). Esperá unos "
-                 "segundos y reintentá.")
-    if any(k in low for k in ("signaturedoesnotmatch", "invalidclienttokenid",
-                              "authfailure", "expiredtoken", "expired",
-                              "invalid credentials")):
-        return _("Las credenciales de la cuenta AWS son inválidas o expiraron. "
-                 "Actualizá las claves de la cuenta y reintentá.")
+                              "slow down", "rate limit")):
+        return _("El proveedor está limitando las solicitudes (throttling / rate "
+                 "limit). Esperá unos segundos y reintentá.")
     if any(k in low for k in ("timed out", "timeout", "could not connect",
                               "connection", "endpointconnectionerror",
                               "network")):
-        return _("No se pudo conectar con AWS (red o timeout). Reintentá; si "
-                 "persiste, revisá la conectividad de red.")
+        return _("No se pudo conectar (red o timeout). Reintentá; si persiste, "
+                 "revisá la conectividad de red.")
     # Genérico: primer renglón, sin volcar el traceback entero en la UI.
-    return _("La sincronización con Route 53 falló: %s") % text.splitlines()[0]
+    return _("La sincronización falló: %s") % text.splitlines()[0]
 
 
 class PrimateCloudDashboard(models.AbstractModel):
@@ -963,6 +969,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "last_sync_date": fields.Datetime.to_string(repo.last_sync_date) or "",
             "environment_id": repo.environment_id.id or False,
             "environment_name": repo.environment_id.display_name or "",
+            # Error de sync accionable (GitHub/SSM) sin traceback + crudo plegable.
+            **self._last_sync_error(repo),
             "module_count": len(repo.module_ids),
             "commit_count": len(repo.commit_ids),
             "modules": [{
