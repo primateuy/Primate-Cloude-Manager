@@ -70,20 +70,25 @@ class PrimateCloudDashboard(models.AbstractModel):
     _name = "primate.cloud.dashboard"
     _description = "Panel Cloud"
 
-    def _last_sync_error(self, record):
-        """Último error de sync de un registro: copy accionable + crudo.
+    def _last_sync_error(self, record, failed=None):
+        """Último error de un registro: copy accionable + crudo.
 
         Busca la última entrada FALLIDA de la bitácora para el recurso y traduce
-        su ``error_message`` a un mensaje accionable (sin traceback). Sólo aplica
-        cuando el ``sync_state`` es ``error``; en otro caso devuelve vacío.
+        su ``error_message`` a un mensaje accionable (sin traceback).
 
         Args:
-            record (recordset): el registro (DNS, repo, ...) a inspeccionar.
+            record (recordset): el registro (DNS, repo, deploy, ...) a inspeccionar.
+            failed (bool, optional): si se pasa, decide si el registro está en
+                error (para modelos con ``state='failed'`` en vez de
+                ``sync_state='error'``, como deployment). Si es None, se usa
+                ``sync_state == 'error'``.
 
         Returns:
             dict: ``{"sync_error": str, "sync_error_detail": str}``.
         """
-        if getattr(record, "sync_state", False) != "error":
+        is_error = (failed if failed is not None
+                    else getattr(record, "sync_state", False) == "error")
+        if not is_error:
             return {"sync_error": "", "sync_error_detail": ""}
         log = self.env["primate.cloud.operation.log"].sudo().search([
             ("resource_model", "=", record._name),
@@ -999,6 +1004,10 @@ class PrimateCloudDashboard(models.AbstractModel):
         Dep = self.env["primate.cloud.deployment"]
         state_labels = dict(Dep._fields["state"].selection)
         type_labels = dict(Dep._fields["deployment_type"].selection)
+        # Instancia DESTINO resuelta (mismo criterio que action_run): explícita,
+        # o la del repo, o la primaria del entorno. Que el destino sea inequívoco.
+        target = (dep.instance_id or dep.repository_id.instance_id
+                  or dep.environment_id.primary_instance_id)
         return {
             "id": dep.id,
             "name": dep.display_name,
@@ -1018,6 +1027,10 @@ class PrimateCloudDashboard(models.AbstractModel):
             "environment_name": dep.environment_id.display_name or "",
             "repository_id": dep.repository_id.id or False,
             "repository_name": dep.repository_id.display_name or "",
+            "instance_id": target.id or False,
+            "instance_name": target.display_name or "",
+            # Error accionable si el deploy falló (SSM/git), con crudo plegable.
+            **self._last_sync_error(dep, failed=(dep.state == "failed")),
         }
 
     @api.model
@@ -1180,6 +1193,31 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "ec2_instance_id": False, "state": False, "state_label": "",
             })
         return data
+
+    @api.model
+    def get_deployment_form_data(self, env_id):
+        """Datos para el formulario OWL de nuevo despliegue.
+
+        Devuelve las instancias del entorno (destino inequívoco), sus
+        repositorios, los tipos de deploy y la instancia primaria por defecto.
+        """
+        Dep = self.env["primate.cloud.deployment"]
+        environment = self.env["primate.cloud.environment"].browse(env_id).exists()
+        if not environment:
+            return {}
+        instances = [{"value": i.id, "label": i.display_name}
+                     for i in environment.instance_ids]
+        repositories = [{"value": r.id, "label": r.display_name}
+                        for r in environment.repository_ids]
+        return {
+            "environment_id": environment.id,
+            "environment_name": environment.display_name,
+            "instances": instances,
+            "repositories": repositories,
+            "deployment_types": [{"value": v, "label": l}
+                                 for v, l in Dep._fields["deployment_type"].selection],
+            "primary_instance_id": environment.primary_instance_id.id or False,
+        }
 
     @api.model
     def get_account_detail(self, account_id):

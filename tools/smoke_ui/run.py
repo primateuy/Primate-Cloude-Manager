@@ -601,6 +601,57 @@ def s13_db_form(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s14_deploy_form(pg):
+    """B4: el form OWL de "nuevo despliegue" sobre el tema EDITORIAL (no-default).
+    Verifica (1) que el DESTINO (instancia) es explícito en el form —un deploy al
+    servidor equivocado es un problema—, (2) el condicional por tipo (git→repo,
+    checkout de rama/commit→su campo, module_update→módulos) y (3) la validación
+    inline accionable."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    pg.wait_for_timeout(300)
+    open_env(pg, INFRA_ENV)
+
+    pg.click("button:has-text('Nuevo despliegue')")
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    pg.wait_for_timeout(400)
+    # Los chequeos se SCOPEAN al drawer (el hub detrás tiene su propia sección
+    # "Repositorios" que un get_by_text global matchearía por error).
+    def lbl(text):
+        return pg.locator(f"{dr} .o_pcm_field_label").filter(has_text=text).count()
+    # (1) El destino es explícito en el form.
+    assert lbl("Instancia destino") >= 1, \
+        "el form debe dejar explícita la instancia destino"
+
+    # (2) Condicional por tipo. El 2º select es el tipo (0=instancia, 1=tipo).
+    def set_type(v):
+        pg.select_option(f"{dr} select.o_pcm_select >> nth=1", v)
+        pg.wait_for_timeout(250)
+    set_type("checkout_branch")
+    assert lbl("Rama destino") >= 1, "checkout_branch debe pedir rama"
+    set_type("checkout_commit")
+    assert lbl("Commit destino") >= 1, "checkout_commit debe pedir commit"
+    set_type("module_update")
+    assert lbl("Módulos") >= 1, "module_update debe pedir módulos"
+    assert lbl("Repositorio") == 0, \
+        "module_update no debe mostrar el select de repositorio"
+    pg.screenshot(path=f"{SHOT}/s14_deploy.png")
+
+    # (3) Validación accionable: pull sin repositorio deja el drawer abierto.
+    set_type("pull")
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
+    assert pg.locator(dr).count() == 1, "el form se cerró pese al error (no debía)"
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    open_app(pg)
+    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -619,7 +670,8 @@ def main():
                    s04_drawer_error_correccion_exito,
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
-                   s11_temas, s12_repo_form, s13_db_form, s05_salir_y_volver):
+                   s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
+                   s05_salir_y_volver):
             fn(pg)
         br.close()
 

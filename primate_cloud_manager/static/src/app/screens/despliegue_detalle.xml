@@ -16,6 +16,17 @@
                                         field="'state'" label="d.state_label"/>
                         <span class="o_pcm_spacer"/>
                     </div>
+                    <!-- Destino inequívoco: sobre qué instancia se ejecuta (un
+                         deploy al servidor equivocado es un problema). -->
+                    <div class="o_pcm_deploy_target">
+                        <i class="fa fa-crosshairs o_pcm_muted"/>
+                        <span class="o_pcm_muted">Se ejecuta sobre:</span>
+                        <span class="o_pcm_deploy_target_name"
+                              t-out="d.instance_name or 'instancia primaria del entorno'"/>
+                        <span t-if="d.environment_name" class="o_pcm_muted">
+                            · <t t-out="d.environment_name"/></span>
+                        <span t-if="d.is_revert" class="o_pcm o_pcm_chip">reversión</span>
+                    </div>
                     <div class="o_pcm_actions">
                         <button t-if="d.state === 'draft'" class="o_pcm_btn o_pcm_btn_accent"
                                 t-on-click="() => this.runMethod('action_run')">
@@ -25,6 +36,19 @@
                                 t-on-click="() => this.runMethod('action_revert', { confirm: '¿Revertir este despliegue?' })">
                             <i class="fa fa-undo"/> Revertir
                         </button>
+                    </div>
+                </div>
+
+                <!-- Error accionable si el deploy falló (SSM/git), sin traceback. -->
+                <div t-if="d.state === 'failed' and d.sync_error"
+                     class="o_pcm_form_banner o_pcm_form_banner_error o_pcm_panel_banner">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <div class="o_pcm_panel_banner_body">
+                        <div t-out="d.sync_error"/>
+                        <details t-if="d.sync_error_detail" class="o_pcm_banner_detail">
+                            <summary>Ver detalle técnico</summary>
+                            <pre class="o_pcm_mono o_pcm_banner_pre" t-out="d.sync_error_detail"/>
+                        </details>
                     </div>
                 </div>
 

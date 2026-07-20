@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.DeployForm">
+        <div class="o_pcm_form">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-elif="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-else="">
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <!-- Destino inequívoco: entorno + instancia sobre la que corre. -->
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Entorno'">
+                        <input class="o_pcm_input" type="text" readonly="readonly"
+                               t-att-value="state.environmentName"/>
+                    </PcmField>
+                    <PcmField label="'Instancia destino'"
+                              help="'El deploy se ejecuta sobre esta instancia.'">
+                        <PcmSelect value="state.instance_id" options="instanceOptions"
+                                   onChange="(v) => this.setInstance(v)"/>
+                    </PcmField>
+                </div>
+
+                <PcmField label="'Tipo de despliegue'">
+                    <PcmSelect value="state.deployment_type" options="state.deploymentTypes"
+                               onChange="(v) => this.setType(v)"/>
+                </PcmField>
+
+                <PcmField t-if="isGit" label="'Repositorio'" required="true"
+                          error="state.errors.repository_id">
+                    <PcmSelect value="state.repository_id" options="repoOptions"
+                               onChange="(v) => this.setRepo(v)"/>
+                </PcmField>
+
+                <PcmField t-if="isCheckoutBranch" label="'Rama destino'" required="true"
+                          error="state.errors.target_branch">
+                    <input class="o_pcm_input" type="text"
+                           t-att-value="state.target_branch"
+                           t-att-placeholder="'19.0'"
+                           t-on-input="(ev) => this.onInput('target_branch', ev)"/>
+                </PcmField>
+
+                <PcmField t-if="isCheckoutCommit" label="'Commit destino'" required="true"
+                          error="state.errors.target_commit"
+                          help="'Hash del commit al que hacer checkout.'">
+                    <input class="o_pcm_input o_pcm_mono" type="text"
+                           t-att-value="state.target_commit"
+                           t-att-placeholder="'a1b2c3d…'"
+                           t-on-input="(ev) => this.onInput('target_commit', ev)"/>
+                </PcmField>
+
+                <PcmField t-if="isModuleUpdate" label="'Módulos'"
+                          help="'Lista separada por comas, o all.'">
+                    <input class="o_pcm_input" type="text"
+                           t-att-value="state.module_names"
+                           t-att-placeholder="'all'"
+                           t-on-input="(ev) => this.onInput('module_names', ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Creando…</t>
+                        <t t-else="">Crear despliegue</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

@@ -9,6 +9,7 @@ import { DnsDeleteForm } from "../forms/dns_delete_form";
 import { EnvForm } from "../forms/env_form";
 import { RepoForm } from "../forms/repo_form";
 import { DbForm } from "../forms/db_form";
+import { DeployForm } from "../forms/deploy_form";
 
 /**
  * Hub del entorno: barra de acciones (aprovisionar/staging/sincronizar), sección
@@ -184,9 +185,10 @@ export class EntornoDetalle extends Component {
     }
 
     newDeployment() {
-        this.env.pcm.newRecord("primate.cloud.deployment", {
-            default_environment_id: this.props.envId,
-        });
+        this.env.pcm.openForm(DeployForm, {
+            environmentId: this.props.envId,
+            onSaved: () => this.load(this.props.envId),
+        }, "Nuevo despliegue");
     }
 
     // --- Navegación ---
