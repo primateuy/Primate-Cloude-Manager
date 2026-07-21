@@ -125,14 +125,16 @@ def s02_hub_y_drill(pg):
 
 @scenario
 def s03_drawer_cancelar(pg):
+    """El drawer abre y cancela. "Nueva instancia" ahora abre el form OWL de
+    Crear instancia EC2 (migrado); se cierra con Cancelar del kit, no el nativo."""
     open_app(pg)
     open_env(pg, INFRA_ENV)
     pg.click("button:has-text('Nueva instancia')")
-    pg.wait_for_selector(".o_pcm_drawer", timeout=10000)
-    assert pg.locator(".o_pcm_drawer .modal-footer button").count() >= 1, \
-        "el drawer no portaleó los botones del wizard"
+    pg.wait_for_selector(".o_pcm_drawer .o_pcm_form", timeout=10000)
+    assert pg.locator(".o_pcm_drawer .o_pcm_form_foot .o_pcm_btn").count() >= 1, \
+        "el form OWL no montó su footer"
     pg.screenshot(path=f"{SHOT}/s03_drawer.png")
-    pg.click(".o_pcm_drawer .modal-footer button:has-text('Cancelar')")
+    pg.click(".o_pcm_drawer .o_pcm_form_foot .o_pcm_btn:has-text('Cancelar')")
     pg.wait_for_selector(".o_pcm_drawer", state="detached", timeout=8000)
 
 
@@ -198,14 +200,15 @@ def s04_drawer_error_correccion_exito(pg):
     # siguiente: margen de asentamiento + reintento (fricción de harness, no
     # bug de la app: el drawer aislado abre/cancela limpio N veces).
     pg.wait_for_timeout(2000)
-    # Segundo uso del drawer funciona normal (sin estado colgado).
+    # Segundo uso del drawer funciona normal (sin estado colgado). "Nueva
+    # instancia" ahora abre el form OWL de Crear instancia EC2 (migrado).
     open_env(pg, INFRA_ENV)
     for attempt in range(3):
         try:
             pg.click("button:has-text('Nueva instancia')")
-            pg.wait_for_selector(dr, timeout=10000)
+            pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
             pg.wait_for_timeout(400)
-            pg.click(f"{dr} .modal-footer button:has-text('Cancelar')", timeout=8000)
+            pg.click(f"{dr} .o_pcm_form_foot .o_pcm_btn:has-text('Cancelar')", timeout=8000)
             pg.wait_for_selector(dr, state="detached", timeout=8000)
             break
         except Exception:
@@ -386,8 +389,8 @@ def s05_salir_y_volver(pg):
     # Usar el drawer una vez.
     open_env(pg, INFRA_ENV)
     pg.click("button:has-text('Nueva instancia')")
-    pg.wait_for_selector(".o_pcm_drawer", timeout=10000)
-    pg.click(".o_pcm_drawer .modal-footer button:has-text('Cancelar')")
+    pg.wait_for_selector(".o_pcm_drawer .o_pcm_form", timeout=10000)
+    pg.click(".o_pcm_drawer .o_pcm_form_foot .o_pcm_btn:has-text('Cancelar')")
     pg.wait_for_selector(".o_pcm_drawer", state="detached", timeout=8000)
     for i in range(2):
         pg.goto(SETTINGS, wait_until="load")
@@ -803,6 +806,42 @@ def s17_dark_mode(pg):
         "no volvió a claro tras el toggle"
 
 
+@scenario
+def s18_ec2_form(pg):
+    """B4 (residual migrado): "Crear instancia EC2" (lanza una máquina) ahora es
+    un form OWL, no el wizard nativo. Se prueba en DARK —la razón de migrarlo: un
+    form nativo no conoce los tokens del modo oscuro y se veía roto—. Verifica que
+    NO hay form nativo, que están la cuenta/semáforo/red-admin, y la validación."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+    pg.click(".o_pcm_appearance_toggle button[title='Oscuro']")
+    pg.wait_for_timeout(400)
+
+    pg.click(".o_pcm_nav_item:has-text('Crear instancia EC2')")
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    pg.wait_for_timeout(400)
+    # NO es el form nativo (sin header morado / footer portaleado).
+    assert pg.locator(f"{dr} .o_form_view").count() == 0 \
+        and pg.locator(f"{dr} .modal-footer").count() == 0, \
+        "quedó el form nativo (debía ser el form OWL)"
+    # Están los campos clave (reuso de Crear entorno): cuenta + semáforo + AMI.
+    assert pg.locator(f"{dr} .o_pcm_field_label").filter(
+        has_text="Cuenta AWS").count() >= 1, "falta el select de cuenta"
+    assert pg.locator(f"{dr} .o_pcm_semaphore").count() >= 1, "falta el semáforo de región"
+    pg.screenshot(path=f"{SHOT}/s18_ec2_dark.png")
+
+    # Validación accionable: confirmar sin nombre/cuenta deja el drawer abierto.
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
+    assert pg.locator(dr).count() == 1, "el form se cerró pese al error (no debía)"
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    # Volver a claro.
+    pg.click(".o_pcm_appearance_toggle button[title='Claro']")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -823,7 +862,7 @@ def main():
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
                    s15_instance_form, s16_account_form, s17_dark_mode,
-                   s05_salir_y_volver):
+                   s18_ec2_form, s05_salir_y_volver):
             fn(pg)
         br.close()
 

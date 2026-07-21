@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.Ec2Form">
+        <div class="o_pcm_form">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-else="">
+                <div class="o_pcm_form_alert">
+                    <i class="fa fa-info-circle"/>
+                    <span>
+                        Se lanzará una máquina EC2 nueva en AWS y se registrará en
+                        el inventario. El flujo corre en segundo plano.
+                    </span>
+                </div>
+
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <PcmField label="'Nombre'" required="true" error="state.errors.name"
+                          help="'Tag Name de la instancia.'">
+                    <input class="o_pcm_input" type="text" t-att-value="state.name"
+                           t-on-input="(ev) => this.onInput('name', ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Cuenta AWS'" required="true"
+                              error="state.errors.account_id">
+                        <PcmSelect value="state.account_id" options="accountOptions"
+                                   onChange="(v) => this.setAccount(v)"/>
+                    </PcmField>
+                    <PcmField label="'Entorno'"
+                              help="'Opcional: a qué entorno se asocia la máquina.'">
+                        <input class="o_pcm_input" type="text" readonly="readonly"
+                               t-att-value="state.environmentName or '(sin entorno)'"/>
+                    </PcmField>
+                </div>
+
+                <PcmField label="'Región'" required="true" error="state.errors.region">
+                    <PcmSelect value="state.region" options="state.regions"
+                               onChange="(v) => this.setSelect('region', v)"/>
+                </PcmField>
+
+                <!-- Semáforo de región (advisory: pre-flight, no bloquea). -->
+                <div>
+                    <div t-attf-class="o_pcm_semaphore {{ semaphoreClass }}">
+                        <span class="o_pcm_semaphore_dot"/>
+                        <span class="o_pcm_semaphore_label"
+                              t-out="state.regionStatusLabel or 'Región sin verificar'"/>
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-att-disabled="state.busyRegion ? 'disabled' : undefined"
+                                t-on-click="() => this.verifyRegion()">
+                            <t t-if="state.busyRegion">Verificando…</t>
+                            <t t-else="">Verificar región</t>
+                        </button>
+                    </div>
+                    <div t-if="state.regionDetail and state.regionStatus !== 'ok'"
+                         class="o_pcm_semaphore_detail" t-out="state.regionDetail"/>
+                </div>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Tipo de instancia'">
+                        <input class="o_pcm_input" type="text"
+                               t-att-value="state.instance_type"
+                               t-att-placeholder="'t3.medium'"
+                               t-on-input="(ev) => this.onInput('instance_type', ev)"/>
+                    </PcmField>
+                    <PcmField label="'Sistema operativo'">
+                        <PcmSelect value="state.os_type" options="state.osTypes"
+                                   onChange="(v) => this.setSelect('os_type', v)"/>
+                    </PcmField>
+                </div>
+
+                <PcmField label="'Disco raíz (GB)'">
+                    <input class="o_pcm_input o_pcm_input_narrow" type="number" min="0"
+                           t-att-value="state.disk_size_gb"
+                           t-on-input="(ev) => this.onIntInput('disk_size_gb', ev)"/>
+                </PcmField>
+
+                <!-- Avanzado (solo admin): AMI + red. Vacío = defaults de AWS. -->
+                <t t-if="state.isCloudAdmin">
+                    <PcmField label="'AMI (imagen)'"
+                              help="'Vacío = se resuelve Ubuntu 24.04 de la región.'">
+                        <div class="o_pcm_row_action">
+                            <input class="o_pcm_input o_pcm_mono" type="text"
+                                   t-att-value="state.image_id"
+                                   t-att-placeholder="'ami-...'"
+                                   t-on-input="(ev) => this.onInput('image_id', ev)"/>
+                            <button class="o_pcm_btn"
+                                    t-att-disabled="state.busyAmi ? 'disabled' : undefined"
+                                    t-on-click="() => this.resolveAmi()">
+                                <t t-if="state.busyAmi">Resolviendo…</t>
+                                <t t-else="">Resolver AMI</t>
+                            </button>
+                        </div>
+                    </PcmField>
+                    <div class="o_pcm_form_row">
+                        <PcmField label="'Par de claves (SSH)'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.key_name"
+                                   t-on-input="(ev) => this.onInput('key_name', ev)"/>
+                        </PcmField>
+                        <PcmField label="'Grupos de seguridad'"
+                                  help="'IDs separados por coma (sg-...). Vacío = default de AWS.'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.security_group_ids"
+                                   t-on-input="(ev) => this.onInput('security_group_ids', ev)"/>
+                        </PcmField>
+                    </div>
+                    <div class="o_pcm_form_row">
+                        <PcmField label="'Subred'" help="'Vacío = subnet default de AWS.'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.subnet_id"
+                                   t-on-input="(ev) => this.onInput('subnet_id', ev)"/>
+                        </PcmField>
+                        <PcmField label="'Instance profile (IAM)'"
+                                  help="'Perfil para el agente SSM.'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.instance_profile"
+                                   t-on-input="(ev) => this.onInput('instance_profile', ev)"/>
+                        </PcmField>
+                    </div>
+                </t>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Creando…</t>
+                        <t t-else="">Crear instancia EC2</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>

@@ -11,6 +11,7 @@ import { RepoForm } from "../forms/repo_form";
 import { DbForm } from "../forms/db_form";
 import { DeployForm } from "../forms/deploy_form";
 import { InstanceForm } from "../forms/instance_form";
+import { Ec2Form } from "../forms/ec2_form";
 
 /**
  * Hub del entorno: barra de acciones (aprovisionar/staging/sincronizar), sección
@@ -126,12 +127,13 @@ export class EntornoDetalle extends Component {
         }
     }
 
-    // --- Agregar infraestructura (wizard en drawer o form nativo inline) ---
+    // --- Agregar infraestructura (form OWL en drawer) ---
     newInstance() {
-        this.env.pcm.openWizard("primate.cloud.ec2.create.wizard", {
-            default_environment_id: this.props.envId,
-            default_account_id: this.d.account_id || false,
-        }, "Nueva instancia");
+        this.env.pcm.openForm(Ec2Form, {
+            envId: this.props.envId,
+            accountId: this.d.account_id || false,
+            onSaved: () => this.load(this.props.envId),
+        }, "Crear instancia EC2");
     }
 
     // Agregar OTRO Odoo a este servidor (form OWL; nunca lanza EC2). Las guardas

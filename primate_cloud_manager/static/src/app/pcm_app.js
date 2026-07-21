@@ -10,6 +10,7 @@ import { View } from "@web/views/view";
 import { PcmWizardDrawer } from "./components/wizard_drawer";
 import { PcmFormDrawer } from "./components/pcm_form_drawer";
 import { AccountForm } from "./forms/account_form";
+import { Ec2Form } from "./forms/ec2_form";
 import { Inicio } from "./screens/inicio";
 import { Costos } from "./screens/costos";
 import { Entornos } from "./screens/entornos";
@@ -400,7 +401,13 @@ export class PcmApp extends Component {
 
     onNav(item) {
         if (item.route.type === "wizard") {
-            this.openWizardDrawer(item.route.model, {}, item.label);
+            // "Crear instancia EC2" ahora va por el form OWL (migrado: se ve bien
+            // en los 3 temas y en dark). El resto, wizard nativo en drawer.
+            if (item.route.model === "primate.cloud.ec2.create.wizard") {
+                this.openFormDrawer(Ec2Form, {}, "Crear instancia EC2");
+            } else {
+                this.openWizardDrawer(item.route.model, {}, item.label);
+            }
             return;
         }
         this.setRoot({ ...item.route });

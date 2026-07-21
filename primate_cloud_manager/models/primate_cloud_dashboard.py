@@ -1258,6 +1258,51 @@ class PrimateCloudDashboard(models.AbstractModel):
         }
 
     @api.model
+    def get_ec2_form_data(self, account_id=False, env_id=False):
+        """Datos para el formulario OWL de "Crear instancia EC2" (lanza una
+        máquina nueva). Devuelve cuentas, regiones, SO y —como en Crear entorno—
+        el estado cacheado de la región y el flag de admin (para AMI + red). El
+        semáforo acá es ADVISORY (job_create_ec2 no hace discovery; la red vacía
+        cae en los defaults de AWS).
+        """
+        Wizard = self.env["primate.cloud.ec2.create.wizard"]
+        env = self.env["primate.cloud.environment"].browse(env_id).exists() \
+            if env_id else None
+        account = (env.account_id if env else
+                   self.env["primate.cloud.account"].browse(account_id).exists())
+        region = (account.default_region if account else "") or ""
+
+        def options(field):
+            return [{"value": v, "label": l}
+                    for v, l in Wizard._fields[field].selection]
+
+        # Estado cacheado de la región (sin golpear AWS).
+        region_status, region_status_label = "draft", ""
+        if account and region:
+            setup = self.env["primate.cloud.region.setup"].search(
+                [("account_id", "=", account.id), ("region", "=", region)], limit=1)
+            if setup:
+                region_status = setup.status
+                labels = dict(self.env["primate.cloud.region.setup"]
+                              ._fields["status"].selection)
+                region_status_label = labels.get(setup.status, setup.status or "")
+
+        return {
+            "accounts": [{"value": a.id, "label": a.display_name}
+                         for a in self.env["primate.cloud.account"].search([])],
+            "regions": options("region"),
+            "os_types": options("os_type"),
+            "is_cloud_admin": self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"),
+            "account_id": account.id if account else False,
+            "region": region,
+            "environment_id": env.id if env else False,
+            "environment_name": env.display_name if env else "",
+            "region_status": region_status,
+            "region_status_label": region_status_label,
+        }
+
+    @api.model
     def get_account_form_data(self, account_id=False):
         """Datos para el formulario OWL de cuenta AWS (crear/editar).
 
