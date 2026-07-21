@@ -695,6 +695,46 @@ def s15_instance_form(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s16_account_form(pg):
+    """B4: el form OWL de cuenta AWS (la pantalla más sensible) sobre el tema
+    EDITORIAL (no-default). Verifica el manejo del SECRETO: en edición el input
+    del Secret arranca VACÍO con placeholder "guardado" (nunca precarga el secreto
+    ni la máscara). Más el Access Key ID en claro y la validación inline."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    pg.wait_for_timeout(300)
+    pg.click(".o_pcm_nav_item:has-text('Cuentas AWS')")
+    pg.wait_for_timeout(1500)
+    pg.locator("td:has-text('Primate Producción')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000)
+    pg.click("button:has-text('Editar')")
+    pg.wait_for_selector(f"{dr} .o_pcm_form", timeout=10000)
+    pg.wait_for_timeout(500)
+
+    # SECRETO: input vacío + placeholder "guardado" (nunca se precarga).
+    sec = pg.locator(f"{dr} input[type='password']")
+    assert sec.count() == 1, "falta el campo Secret (password)"
+    assert sec.input_value() == "", \
+        f"el Secret NO debe precargarse (llegó: {sec.input_value()!r})"
+    ph = sec.get_attribute("placeholder") or ""
+    assert "guardado" in ph, f"falta el placeholder 'guardado' del Secret: {ph!r}"
+
+    # Validación accionable: borrar el nombre y confirmar deja el drawer abierto.
+    pg.fill(f"{dr} input.o_pcm_input >> nth=0", "")
+    pg.click(f"{dr} .o_pcm_btn_accent")
+    pg.wait_for_selector(f"{dr} .o_pcm_field_err", timeout=5000)
+    assert pg.locator(dr).count() == 1, "el form se cerró pese al error (no debía)"
+    pg.screenshot(path=f"{SHOT}/s16_account.png")
+    pg.click(f"{dr} .o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    open_app(pg)
+    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -714,7 +754,7 @@ def main():
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
-                   s15_instance_form, s05_salir_y_volver):
+                   s15_instance_form, s16_account_form, s05_salir_y_volver):
             fn(pg)
         br.close()
 

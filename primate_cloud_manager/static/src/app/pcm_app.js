@@ -9,6 +9,7 @@ import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_d
 import { View } from "@web/views/view";
 import { PcmWizardDrawer } from "./components/wizard_drawer";
 import { PcmFormDrawer } from "./components/pcm_form_drawer";
+import { AccountForm } from "./forms/account_form";
 import { Inicio } from "./screens/inicio";
 import { Costos } from "./screens/costos";
 import { Entornos } from "./screens/entornos";
@@ -457,6 +458,20 @@ export class PcmApp extends Component {
 
     get nativeListProps() {
         const model = this.current.model;
+        // La cuenta AWS es la pantalla sensible (credenciales): su crear/editar
+        // van por el form OWL (secreto seguro), no por el form nativo. El click
+        // abre el detalle OWL (con sus acciones + Editar).
+        if (model === "primate.cloud.account") {
+            return {
+                type: "list",
+                resModel: model,
+                selectRecord: (resId) => this.openRecord(model, resId, ""),
+                createRecord: () => this.openFormDrawer(AccountForm, {
+                    mode: "create",
+                    onSaved: (id) => id && this.openRecord(model, id, ""),
+                }, "Nueva cuenta AWS"),
+            };
+        }
         return {
             type: "list",
             resModel: model,

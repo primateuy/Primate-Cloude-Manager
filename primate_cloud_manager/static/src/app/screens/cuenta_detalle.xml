@@ -21,10 +21,39 @@
                                 t-on-click="() => this.runMethod('action_validate_connection')">
                             <i class="fa fa-plug"/> Validar conexión
                         </button>
-                        <button class="o_pcm_btn"
+                        <button t-if="d.connection_state === 'connected'" class="o_pcm_btn"
                                 t-on-click="() => this.runMethod('action_sync_resources')">
                             <i class="fa fa-cloud-download"/> Sincronizar recursos
                         </button>
+                        <button t-if="d.connection_state === 'connected'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_pull_costs')">
+                            <i class="fa fa-dollar"/> Actualizar costos
+                        </button>
+                        <button t-if="d.connection_state === 'connected'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_retag_preview')"
+                                title="Previsualiza el plan de re-etiquetado (no aplica nada)">
+                            <i class="fa fa-eye"/> Re-etiquetar (previsualizar)
+                        </button>
+                        <button t-if="d.connection_state === 'connected'" class="o_pcm_btn"
+                                t-on-click="() => this.runMethod('action_retag_resources', { confirm: 'Esto escribirá o sobrescribirá tags en los recursos reales de AWS de esta cuenta. Previsualizá primero si tenés dudas. ¿Continuar?' })">
+                            <i class="fa fa-tags"/> Re-etiquetar (aplicar)
+                        </button>
+                        <button class="o_pcm_btn" t-on-click="() => this.editAccount()">
+                            <i class="fa fa-pencil"/> Editar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Error de conexión accionable (AccessDenied → guía a IAM). -->
+                <div t-if="d.connection_state === 'error' and d.sync_error"
+                     class="o_pcm_form_banner o_pcm_form_banner_error o_pcm_panel_banner">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <div class="o_pcm_panel_banner_body">
+                        <div t-out="d.sync_error"/>
+                        <details t-if="d.sync_error_detail" class="o_pcm_banner_detail">
+                            <summary>Ver detalle técnico</summary>
+                            <pre class="o_pcm_mono o_pcm_banner_pre" t-out="d.sync_error_detail"/>
+                        </details>
                     </div>
                 </div>
 

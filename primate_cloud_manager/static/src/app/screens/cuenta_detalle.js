@@ -4,6 +4,7 @@ import { Component, onWillStart, onWillUpdateProps, useState } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 import { PcmStatusBadge } from "../components/status_badge";
 import { runPcmModelAction } from "../pcm_actions";
+import { AccountForm } from "../forms/account_form";
 
 /**
  * Detalle de una cuenta AWS: datos generales, notas y recursos asociados
@@ -56,5 +57,13 @@ export class CuentaDetalle extends Component {
         if (this.props.onOpenRecord && id) {
             this.props.onOpenRecord(model, id, name);
         }
+    }
+
+    // Editar la cuenta (credenciales) en el form OWL. Recarga al guardar.
+    editAccount() {
+        this.env.pcm.openForm(AccountForm, {
+            mode: "edit", recordId: this.props.recordId,
+            onSaved: () => this.load(this.props.recordId),
+        }, "Editar cuenta AWS");
     }
 }

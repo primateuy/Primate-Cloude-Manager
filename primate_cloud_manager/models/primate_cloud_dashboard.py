@@ -1258,6 +1258,48 @@ class PrimateCloudDashboard(models.AbstractModel):
         }
 
     @api.model
+    def get_account_form_data(self, account_id=False):
+        """Datos para el formulario OWL de cuenta AWS (crear/editar).
+
+        Las credenciales son solo-admin (mismo gate que el modelo): el Access Key
+        ID va en CLARO (identificador, inútil sin el secreto); del Secret solo se
+        informa si HAY uno guardado (``secret_set``), NUNCA el valor ni la máscara.
+        """
+        Account = self.env["primate.cloud.account"]
+        acc = Account.browse(account_id).exists() if account_id else None
+        is_admin = self.env.user.has_group(
+            "primate_cloud_manager.group_cloud_admin")
+
+        def options(field):
+            return [{"value": v, "label": l}
+                    for v, l in Account._fields[field].selection]
+
+        data = {
+            "id": acc.id if acc else False,
+            "name": acc.name if acc else "",
+            "aws_account_id": (acc.aws_account_id or "") if acc else "",
+            "default_region": (acc.default_region or "") if acc else "",
+            "auth_method": (acc.auth_method if acc else "access_key") or "access_key",
+            "notes": (acc.notes or "") if acc else "",
+            "regions": options("default_region"),
+            "auth_methods": options("auth_method"),
+            "is_cloud_admin": is_admin,
+            # placeholders (se completan solo si admin)
+            "iam_access_key_id": "", "secret_set": False,
+            "role_arn": "", "external_id": "",
+        }
+        if is_admin and acc:
+            data.update({
+                # Access Key ID EN CLARO (identificador, solo-admin).
+                "iam_access_key_id": acc.iam_access_key_id or "",
+                # Solo si HAY secreto; nunca el valor ni la máscara.
+                "secret_set": bool(acc.iam_secret_access_key),
+                "role_arn": acc.role_arn or "",
+                "external_id": acc.external_id or "",
+            })
+        return data
+
+    @api.model
     def get_account_detail(self, account_id):
         """Serializa el detalle de una cuenta AWS para la app (read-only).
 
@@ -1290,6 +1332,8 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "id": inst.id, "name": inst.display_name,
                 "public_ip": inst.public_ip or "",
             } for inst in Ec2.search([("account_id", "=", acc.id)])],
+            # Error accionable de conexión (AccessDenied → guía a IAM) + crudo.
+            **self._last_sync_error(acc, failed=(acc.connection_state == "error")),
         }
 
     def _unassigned_partner_id(self):

@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="primate_cloud_manager.AccountForm">
+        <div class="o_pcm_form">
+            <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
+
+            <t t-elif="state.blocked">
+                <div class="o_pcm_form_banner o_pcm_form_banner_warn">
+                    <i class="fa fa-info-circle"/>
+                    <span t-out="state.blocked"/>
+                </div>
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cerrar
+                    </button>
+                </div>
+            </t>
+
+            <t t-else="">
+                <div t-if="state.error" class="o_pcm_form_banner o_pcm_form_banner_error">
+                    <i class="fa fa-exclamation-triangle"/>
+                    <span t-out="state.error"/>
+                </div>
+
+                <PcmField label="'Nombre'" required="true" error="state.errors.name">
+                    <input class="o_pcm_input" type="text" t-att-value="state.name"
+                           t-att-placeholder="'Ej.: Primate Producción'"
+                           t-on-input="(ev) => this.onInput('name', ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_row">
+                    <PcmField label="'AWS Account ID'"
+                              help="'Los 12 dígitos de la cuenta (identificador).'">
+                        <input class="o_pcm_input o_pcm_mono" type="text"
+                               t-att-value="state.aws_account_id"
+                               t-att-placeholder="'123456789012'"
+                               t-on-input="(ev) => this.onInput('aws_account_id', ev)"/>
+                    </PcmField>
+                    <PcmField label="'Región por defecto'" required="true"
+                              error="state.errors.default_region">
+                        <PcmSelect value="state.default_region" options="state.regions"
+                                   onChange="(v) => this.setSelect('default_region', v)"/>
+                    </PcmField>
+                </div>
+
+                <!-- Credenciales: solo-admin (mismo gate que el modelo). -->
+                <div t-if="state.isCloudAdmin" class="o_pcm_form_section">
+                    <div class="o_pcm_form_section_head">Autenticación</div>
+                    <PcmField label="'Método'">
+                        <PcmSelect value="state.auth_method" options="state.authMethods"
+                                   onChange="(v) => this.setSelect('auth_method', v)"/>
+                    </PcmField>
+
+                    <t t-if="isAccessKey">
+                        <PcmField label="'Access Key ID'"
+                                  help="'Identificador (AKIA…). No es secreto por sí solo.'">
+                            <input class="o_pcm_input o_pcm_mono" type="text"
+                                   t-att-value="state.iam_access_key_id"
+                                   t-att-placeholder="'AKIA…'"
+                                   t-on-input="(ev) => this.onInput('iam_access_key_id', ev)"/>
+                        </PcmField>
+                        <PcmField label="'Secret Access Key'" help="secretHelp">
+                            <input class="o_pcm_input" type="password"
+                                   t-att-value="state.iam_secret_access_key"
+                                   t-att-placeholder="(isEdit and state.secretSet) ? '•••••••• (guardado)' : ''"
+                                   t-on-input="(ev) => this.onInput('iam_secret_access_key', ev)"/>
+                        </PcmField>
+                    </t>
+
+                    <t t-if="isAssumeRole">
+                        <PcmField label="'Role ARN'" required="true"
+                                  error="state.errors.role_arn">
+                            <input class="o_pcm_input o_pcm_mono" type="text"
+                                   t-att-value="state.role_arn"
+                                   t-att-placeholder="'arn:aws:iam::123456789012:role/…'"
+                                   t-on-input="(ev) => this.onInput('role_arn', ev)"/>
+                        </PcmField>
+                        <PcmField label="'External ID'"
+                                  help="'Opcional, para el trust de assume-role.'">
+                            <input class="o_pcm_input o_pcm_mono" type="text"
+                                   t-att-value="state.external_id"
+                                   t-on-input="(ev) => this.onInput('external_id', ev)"/>
+                        </PcmField>
+                    </t>
+                </div>
+                <div t-else="" class="o_pcm_muted">
+                    Las credenciales de la cuenta solo las edita un administrador.
+                </div>
+
+                <PcmField label="'Notas'">
+                    <textarea class="o_pcm_textarea" rows="2"
+                              t-att-value="state.notes"
+                              t-on-input="(ev) => this.onInput('notes', ev)"/>
+                </PcmField>
+
+                <div class="o_pcm_form_foot">
+                    <button class="o_pcm_btn o_pcm_btn_accent"
+                            t-att-disabled="state.submitting ? 'disabled' : undefined"
+                            t-on-click="() => this.submit()">
+                        <t t-if="state.submitting">Guardando…</t>
+                        <t t-else="">Guardar</t>
+                    </button>
+                    <button class="o_pcm_btn" t-on-click="() => this.props.onClose()">
+                        Cancelar
+                    </button>
+                </div>
+            </t>
+        </div>
+    </t>
+
+</templates>
