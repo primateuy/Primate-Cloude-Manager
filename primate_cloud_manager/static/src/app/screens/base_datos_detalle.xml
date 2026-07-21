@@ -23,7 +23,7 @@
                     </div>
                 </div>
 
-                <div class="o_pcm_cols2">
+                <div class="pcm-grid pcm-grid--pair">
                     <!-- General + uso/estado en vivo (métricas de runtime): equilibra
                          el par contra la config de RDS para que ninguna quede vacía. -->
                     <div class="o_pcm_card">

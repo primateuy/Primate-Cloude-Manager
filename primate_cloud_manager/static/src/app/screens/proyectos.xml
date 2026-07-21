@@ -4,8 +4,11 @@
     <t t-name="primate_cloud_manager.Proyectos">
         <div class="o_pcm_screen_body">
             <div class="o_pcm_toolbar">
-                <input type="text" class="o_pcm_search" placeholder="Buscar proyecto o cliente…"
-                       t-on-input="onSearch"/>
+                <div class="o_pcm_search">
+                    <i class="fa fa-search"/>
+                    <input type="text" placeholder="Buscar proyecto o cliente…"
+                           t-on-input="onSearch"/>
+                </div>
             </div>
 
             <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
@@ -14,7 +17,7 @@
                 <div class="o_pcm_muted o_pcm_note">
                     Costo del mes en curso · el método y la fecha de los datos están en cada proyecto.
                 </div>
-                <div class="o_pcm_grid">
+                <div class="pcm-grid pcm-grid--auto">
                     <div t-foreach="filtered" t-as="p" t-key="p.id"
                          t-attf-class="o_pcm_card o_pcm_card_click {{ p.is_unassigned ? 'o_pcm_unassigned_card' : '' }}"
                          t-on-click="() => this.open(p.id, p.name)">

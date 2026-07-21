@@ -113,7 +113,7 @@
                 </div>
 
                 <!-- Máquina AWS -->
-                <div class="o_pcm_cols2">
+                <div class="pcm-grid pcm-grid--pair">
                     <div class="o_pcm_card">
                         <h2>AWS</h2>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Instance ID</span><span class="o_pcm_mono" t-out="d.aws_instance_id"/></div>
@@ -151,7 +151,7 @@
                     </div>
                 </div>
                 <div class="o_pcm_card" t-if="d.metrics">
-                    <div class="o_pcm_cols2">
+                    <div class="o_pcm_kv_grid">
                         <div class="o_pcm_kv"><span class="o_pcm_muted">CPU</span>
                             <span t-if="d.metrics.has_data"><t t-out="d.metrics.cpu"/> %</span>
                             <span t-else="" class="o_pcm_muted">sin datos aún</span></div>

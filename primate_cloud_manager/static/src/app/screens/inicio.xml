@@ -12,7 +12,7 @@
 
             <t t-else="">
                 <!-- KPIs -->
-                <div class="o_pcm_kpis">
+                <div class="pcm-grid pcm-grid--kpi4">
                     <div t-foreach="state.kpis" t-as="kpi" t-key="kpi.key" class="o_pcm_kpi">
                         <div class="o_pcm_kpi_icon"><i t-attf-class="fa {{ kpi.icon }}"/></div>
                         <div>

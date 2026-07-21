@@ -975,6 +975,78 @@ def s19_dark_exhaustivo(pg):
     pg.wait_for_timeout(300)
 
 
+# Grillas de tarjetas alineadas: dos tarjetas de la MISMA fila (se solapan en
+# vertical, no en horizontal) deben tener el mismo top Y el mismo bottom (1px).
+# Caza el defasaje del cotejo (un margin de stacking empujaba la 2a tarjeta 16px).
+_GRID_SCAN = r"""() => {
+    const bad = [];
+    for (const grid of document.querySelectorAll('.pcm-grid')) {
+        const cards = [...grid.children]
+            .map(c => c.getBoundingClientRect()).filter(r => r.height > 10);
+        // (a) Alineación: dos tarjetas de la MISMA fila deben tener igual top/bottom.
+        for (let i = 0; i < cards.length; i++)
+            for (let j = i + 1; j < cards.length; j++) {
+                const a = cards[i], b = cards[j];
+                const vOverlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+                const hOverlap = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+                if (vOverlap > 8 && hOverlap < 4) {   // misma fila, columnas distintas
+                    if (Math.abs(a.top - b.top) > 1 || Math.abs(a.bottom - b.bottom) > 1) {
+                        bad.push(grid.className.slice(0, 24)
+                            + ' dTop=' + Math.round(a.top - b.top)
+                            + ' dBot=' + Math.round(a.bottom - b.bottom));
+                    }
+                }
+            }
+        // (b) Colapso: con >=2 tarjetas, al menos una fila debe tener >=2 (si no,
+        // la grilla se cayó a 1 columna a ancho desktop -> se apilaron full-width).
+        if (cards.length >= 2) {
+            const byTop = {};
+            for (const r of cards) {
+                const key = Math.round(r.top / 4) * 4;
+                byTop[key] = (byTop[key] || 0) + 1;
+            }
+            const maxRow = Math.max(...Object.values(byTop));
+            if (maxRow < 2) {
+                bad.push('COLAPSADA ' + grid.className.slice(0, 30)
+                    + ' (' + cards.length + ' tarjetas, 1/fila)');
+            }
+        }
+    }
+    return [...new Set(bad)];
+}"""
+
+
+@scenario
+def s21_grid_alineada(pg):
+    """Las filas de tarjetas del primitivo .pcm-grid quedan alineadas: mismo top y
+    mismo bottom por fila (1px), independiente de cuántos datos tenga cada tarjeta.
+    Recorre Inicio, Costos, detalles y Entornos en claro Y oscuro."""
+    open_app(pg)
+
+    def check(name):
+        bad = pg.evaluate(_GRID_SCAN)
+        assert not bad, f"tarjetas defasadas en '{name}': {bad}"
+
+    for appearance in ("Claro", "Oscuro"):
+        pg.click(f".o_pcm_appearance_toggle button[title='{appearance}']")
+        pg.wait_for_timeout(400)
+        pg.click(".o_pcm_nav_item:has-text('Inicio')"); pg.wait_for_timeout(500)
+        check(f"inicio ({appearance})")
+        pg.click(".o_pcm_nav_item:has-text('Costos')"); pg.wait_for_timeout(700)
+        check(f"costos ({appearance})")
+        pg.click(".o_pcm_nav_item:has-text('Entornos')")
+        pg.wait_for_selector(".o_pcm_env_card", timeout=8000); pg.wait_for_timeout(300)
+        check(f"entornos ({appearance})")
+        pg.click(".o_pcm_nav_item:has-text('Proyectos')")
+        pg.wait_for_selector(".pcm-grid .o_pcm_card", timeout=8000); pg.wait_for_timeout(300)
+        check(f"proyectos ({appearance})")
+        open_env(pg, INFRA_ENV); check(f"entorno hub ({appearance})")
+        pg.locator(".o_pcm_instance_head").first.click(); pg.wait_for_timeout(700)
+        check(f"servidor ({appearance})")
+    pg.click(".o_pcm_appearance_toggle button[title='Claro']")
+    pg.wait_for_timeout(300)
+
+
 @scenario
 def s20_headings_dark(pg):
     """§6.4 de TÍTULOS: ningún h1/h2/h3 puede quedar oscuro sobre fondo oscuro.
@@ -1032,7 +1104,7 @@ def main():
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
                    s15_instance_form, s16_account_form, s17_dark_mode,
                    s18_ec2_form, s19_dark_exhaustivo, s20_headings_dark,
-                   s05_salir_y_volver):
+                   s21_grid_alineada, s05_salir_y_volver):
             fn(pg)
         br.close()
 

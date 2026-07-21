@@ -52,7 +52,7 @@
                     </div>
                 </div>
 
-                <div class="o_pcm_cols2">
+                <div class="pcm-grid pcm-grid--pair">
                     <div class="o_pcm_card">
                         <h2>General</h2>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span><span t-out="d.deployment_type_label or '—'"/></div>

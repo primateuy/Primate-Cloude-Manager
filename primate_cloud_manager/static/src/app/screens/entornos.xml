@@ -35,7 +35,7 @@
                 <div t-if="!filtered.length" class="o_pcm_card o_pcm_muted">
                     No hay entornos que coincidan con el filtro.
                 </div>
-                <div t-else="" class="o_pcm_env_grid">
+                <div t-else="" class="pcm-grid pcm-grid--auto">
                     <div t-foreach="filtered" t-as="env" t-key="env.id"
                          class="o_pcm_env_card" t-on-click="() => this.openEnv(env.id, env.name)">
                         <div class="o_pcm_env_head">

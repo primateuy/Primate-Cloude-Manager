@@ -512,6 +512,57 @@
         padding: 12px 20px;
         i { color: var(--pcm-soft); }
     }
+
+    // ===================== Primitivo de grilla del kit =====================
+    // ÚNICO layout para filas de tarjetas (KPIs, pares de detalle, grid de
+    // entornos). Garantiza que el borde SUPERIOR y el INFERIOR de todas las
+    // tarjetas de una misma fila COINCIDAN, sin importar cuántas filas de datos
+    // tenga cada una. El `gap` espacia; las tarjetas NUNCA llevan margin (un
+    // margin-top de stacking las defasaba — bug del cotejo). Cualquier pantalla
+    // nueva con filas de tarjetas usa esto, no reglas de layout por-pantalla.
+    .pcm-grid {
+        display: grid;
+        gap: var(--pcm-space-gap);
+        align-items: stretch;
+        margin-top: var(--pcm-space-gap);
+
+        // Toda tarjeta hija llena la celda; su contenido queda ARRIBA (flujo de
+        // bloque), no centrado: la corta se estira pero el contenido no baja.
+        > .o_pcm_card, > .o_pcm_kpi, > .o_pcm_env_card {
+            height: 100%;
+            margin: 0 !important;   // el gap espacia; sin margin que defase la fila
+        }
+        // Estados vacíos: compactos (no reservan el alto de una tarjeta llena).
+        > .o_pcm_card.o_pcm_muted { height: auto; align-self: start; }
+
+        // Título de tarjeta (mismo tratamiento que las grillas viejas).
+        h2 {
+            font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title);
+            font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking);
+            margin: 0 0 10px;
+        }
+    }
+    .pcm-grid--pair { grid-template-columns: 1fr 1fr; }
+    .pcm-grid--kpi3 { grid-template-columns: repeat(3, 1fr); }
+    .pcm-grid--kpi4 { grid-template-columns: repeat(4, 1fr); }
+    .pcm-grid--auto { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+    @media (max-width: 900px) {
+        .pcm-grid--pair, .pcm-grid--kpi3, .pcm-grid--kpi4 { grid-template-columns: 1fr; }
+    }
+    // Espacio entre una grilla y lo que le sigue (card apilada / encabezado).
+    .pcm-grid + .o_pcm_card,
+    .pcm-grid + .o_pcm_section_head,
+    .pcm-grid + .o_pcm_section_bar { margin-top: var(--pcm-space-gap); }
+
+    // Grilla de 2 columnas para CONTENIDO interno de una tarjeta (pares clave/
+    // valor: Paths, Métricas). No es una fila de tarjetas: sin las reglas de
+    // igualar-altura del primitivo.
+    .o_pcm_kv_grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--pcm-space-gap);
+        @media (max-width: 900px) { grid-template-columns: 1fr; }
+    }
     // Detalle de cumplimiento de respaldo: una línea por base (texto plano).
     .o_pcm_backup_detail {
         white-space: pre-line;
@@ -665,13 +716,8 @@
             p { margin: 4px 0 0; }
         }
 
-        .o_pcm_kpis {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 14px;
-            margin-bottom: 26px;
-
-            .o_pcm_kpi {
+        // KPIs: fila de tarjetas (layout por .pcm-grid--kpi4). Acá solo su interior.
+        .o_pcm_kpi {
                 display: flex;
                 align-items: center;
                 gap: 14px;
@@ -696,7 +742,6 @@
                 .o_pcm_kpi_label { color: var(--pcm-soft); font-size: 0.9rem; margin-top: 2px; }
                 .o_pcm_kpi_hint { color: var(--pcm-soft); font-size: 0.75rem; font-style: italic; }
             }
-        }
 
         .o_pcm_section_head h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0 0 10px; }
 
@@ -728,36 +773,50 @@
         }
     }
 
-    // -------------------------------------------------------------- Entornos
-    .o_pcm_entornos {
-        .o_pcm_toolbar {
+    // Toolbar + buscador del kit (Entornos, Proyectos): promovido del scope de
+    // Entornos para que cualquier pantalla con búsqueda lo reuse. Radio de control
+    // (8px) e input embebido sin chrome del navegador (fondo/borde del tema).
+    .o_pcm_toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+
+        .o_pcm_search {
             display: flex;
             align-items: center;
-            gap: 12px;
-            margin-bottom: 12px;
+            gap: 8px;
+            background: var(--pcm-input-bg);
+            border: 1px solid var(--pcm-line);
+            border-radius: var(--pcm-radius-control);
+            padding: 8px 12px;
+            max-width: 420px;
+            flex: 1 1 420px;
 
-            .o_pcm_search {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                background: var(--pcm-card);
-                border: 1px solid var(--pcm-line);
-                border-radius: var(--pcm-radius-card);
-                padding: 8px 12px;
-                max-width: 420px;
-
-                i { color: var(--pcm-soft); }
-                input {
-                    border: 0;
-                    outline: 0;
-                    flex: 1 1 auto;
-                    background: transparent;
-                    color: var(--pcm-ink-text);
-                    font-size: 0.92rem;
-                }
+            i { color: var(--pcm-soft); }
+            input {
+                border: 0;
+                outline: 0;
+                flex: 1 1 auto;
+                background: transparent;
+                color: var(--pcm-ink-text);
+                font-size: 0.92rem;
             }
         }
+    }
 
+    // Tarjeta clickable (Proyectos y otras grillas navegables).
+    .o_pcm_card_click {
+        cursor: pointer;
+        transition: border-color 0.08s ease, box-shadow 0.08s ease;
+        &:hover {
+            border-color: var(--pcm-accent);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+        }
+    }
+
+    // -------------------------------------------------------------- Entornos
+    .o_pcm_entornos {
         .o_pcm_filters {
             display: flex;
             align-items: center;
@@ -792,12 +851,7 @@
             }
         }
 
-        .o_pcm_env_grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 14px;
-        }
-
+        // (La grilla de entornos migró al primitivo .pcm-grid--auto.)
         .o_pcm_env_card {
             background: var(--pcm-card);
             border: 1px solid var(--pcm-line);
@@ -867,8 +921,11 @@
             &:hover { color: var(--pcm-accent-ink); }
         }
 
+        // Stacking de tarjetas de ancho completo apiladas (NO dentro de grillas:
+        // ahí el layout lo maneja .pcm-grid con `gap`, y las tarjetas del grid
+        // resetean su margin). El espacio grilla→siguiente lo da la regla
+        // `.pcm-grid + ...` de arriba.
         .o_pcm_card + .o_pcm_card,
-        .o_pcm_cols2 + .o_pcm_section_head,
         .o_pcm_card + .o_pcm_section_head { margin-top: var(--pcm-space-gap); }
 
         .o_pcm_hero {
@@ -890,37 +947,7 @@
             }
         }
 
-        .o_pcm_cols2 {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: var(--pcm-space-gap);
-            margin-top: var(--pcm-space-gap);
-            align-items: stretch;   // igualar alturas de los cards de la fila
-
-            @media (max-width: 900px) { grid-template-columns: 1fr; }
-
-            // El card llena la celda del grid (equal-height robusto: 'normal' no
-            // estira de forma consistente en este layout). Excepción: los cards
-            // de estado VACÍO (.o_pcm_muted) NO se estiran — quedan compactos,
-            // sin reservar el alto de un card lleno.
-            > .o_pcm_card { height: 100%; }
-            > .o_pcm_card.o_pcm_muted { height: auto; align-self: start; }
-
-            h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0 0 10px; }
-        }
-
-        .o_pcm_cols3 {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: var(--pcm-space-gap);
-            margin-top: var(--pcm-space-gap);
-            align-items: stretch;
-
-            @media (max-width: 900px) { grid-template-columns: 1fr; }
-
-            > .o_pcm_card { height: 100%; }
-            > .o_pcm_card.o_pcm_muted { height: auto; align-self: start; }
-        }
+        // (Las filas de tarjetas 2/3-col migraron al primitivo .pcm-grid.)
 
         // Selectores/inputs del visor de logs (mismo lenguaje que los botones).
         .o_pcm_select, .o_pcm_input {

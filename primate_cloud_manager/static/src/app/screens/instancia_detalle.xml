@@ -68,7 +68,7 @@
 
                 <!-- ================= TAB: INSTANCIA ================= -->
                 <t t-if="state.tab === 'dashboard'">
-                    <div class="o_pcm_cols2">
+                    <div class="pcm-grid pcm-grid--pair">
                         <div class="o_pcm_card">
                             <h2>Odoo</h2>
                             <div class="o_pcm_kv"><span class="o_pcm_muted">Versión</span><span t-out="d.odoo_version ? ('Odoo ' + d.odoo_version) : '—'"/></div>
@@ -119,7 +119,7 @@
                     <div class="o_pcm_card">
                         <h2>Paths y comandos</h2>
                         <t t-if="paths">
-                            <div class="o_pcm_cols2">
+                            <div class="o_pcm_kv_grid">
                                 <div class="o_pcm_kv"><span class="o_pcm_muted">Config</span><span class="o_pcm_mono" t-out="paths.conf"/></div>
                                 <div class="o_pcm_kv"><span class="o_pcm_muted">Intérprete Python</span><span class="o_pcm_mono" t-out="paths.python"/></div>
                                 <div class="o_pcm_kv"><span class="o_pcm_muted">Log</span><span class="o_pcm_mono" t-out="paths.logfile"/></div>

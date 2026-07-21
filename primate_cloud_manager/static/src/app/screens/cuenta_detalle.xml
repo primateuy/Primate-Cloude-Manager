@@ -57,7 +57,7 @@
                     </div>
                 </div>
 
-                <div class="o_pcm_cols2">
+                <div class="pcm-grid pcm-grid--pair">
                     <div class="o_pcm_card">
                         <h2>General</h2>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Account ID</span><span class="o_pcm_mono" t-out="d.aws_account_id or '—'"/></div>
