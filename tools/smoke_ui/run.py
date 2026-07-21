@@ -57,6 +57,21 @@ def open_env(pg, name):
     pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000)
 
 
+def set_theme(pg, label):
+    """Cambia el Estilo (tema a/b/c) desde el menú del avatar.
+
+    En el shell el picker de Estilo dejó el header (que ahora coincide con el
+    handoff) y vive en el dropdown del avatar. Abre el menú, elige el tema y
+    cierra por el scrim (el menú no se autocierra al elegir tema, para permitir
+    comparar A/B/C en vivo).
+    """
+    pg.click(".o_pcm_avatar")
+    pg.wait_for_selector(".o_pcm_user_menu", timeout=4000)
+    pg.locator(".o_pcm_user_menu .o_pcm_menu_item").filter(has_text=label).first.click()
+    pg.click(".o_pcm_menu_scrim")
+    pg.wait_for_timeout(150)
+
+
 def set_select_menu(pg, scope, field, search):
     """Setea un campo Selection (widget o_select_menu de Odoo 19) por texto."""
     pg.click(f"{scope} [name='{field}'] .o_select_menu")
@@ -73,6 +88,31 @@ def h1(pg):
 
 def crumbs(pg):
     return [c.strip() for c in pg.locator(".o_pcm_crumb").all_inner_texts()]
+
+
+def ensure_region_cache_fresh(pg):
+    """Asegura el caché de región 'ok' y FRESCO (dentro del TTL) para el fixture.
+
+    s04 aprovisiona con creds AWS FALSAS: el job async falla a propósito, pero el
+    submit primero pasa por la verificación de región. Esa verificación reusa el
+    caché de ``primate.cloud.region.setup`` solo si es 'ok' Y reciente (TTL); si
+    venció (p. ej. tras una sesión larga), re-verifica EN VIVO y falla con las
+    creds falsas (InvalidClientTokenId), bloqueando el cierre del drawer. Como el
+    test no puede verificar en vivo, su precondición es un caché fresco: se
+    restaura acá (es una DB de test)."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    pg.evaluate("""async (now) => {
+        const call = (m, me, a) => fetch('/web/dataset/call_kw', {method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({jsonrpc:'2.0',method:'call',
+                params:{model:m,method:me,args:a,kwargs:{}}})}).then(r=>r.json());
+        const ids = (await call('primate.cloud.region.setup','search',[[]])).result;
+        if (ids.length) {
+            await call('primate.cloud.region.setup','write',
+                [ids, {status:'ok', last_discovered_at: now}]);
+        }
+    }""", now)
 
 
 # ---------------------------------------------------------------- Escenarios
@@ -165,6 +205,11 @@ def s04_drawer_error_correccion_exito(pg):
     dr = ".o_pcm_drawer"
     pg.wait_for_timeout(400)
     dom = f"{dr} input[placeholder='forum.primate.cloud']"
+    # Garantizar la precondición del ciclo: dominio VACÍO, independiente de que el
+    # entorno arrastre un main_url de un intento de aprovisionamiento previo (el
+    # form lo precarga vía _onchange_environment_id). El test controla su propio
+    # estado en vez de asumir un fixture prístino → idempotente entre corridas.
+    pg.fill(dom, "")
     # Confirmar con dominio vacío (y create_dns on por defecto => hosted_zone_id
     # requerido) => errores INLINE, sin diálogo de confirmación, drawer abierto.
     pg.click(f"{dr} .o_pcm_btn_accent")
@@ -451,10 +496,10 @@ def s11_temas(pg):
             return s ? getComputedStyle(s).paddingLeft : '';
         }""")
 
-    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    set_theme(pg, "Consola")
     pg.wait_for_timeout(400)
     pad_a = screen_pad()
-    pg.click(".o_pcm_theme_opt:has-text('Panel')")
+    set_theme(pg, "Panel")
     pg.wait_for_timeout(400)
     pad_b = screen_pad()
     assert pad_a and pad_b and pad_a != pad_b, \
@@ -462,7 +507,7 @@ def s11_temas(pg):
         f"A={pad_a} B={pad_b}"
 
     # Recorrer las pantallas core en Tema C (el más distinto) sin romper.
-    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    set_theme(pg, "Editorial")
     pg.wait_for_timeout(300)
     for nav in ("Entornos", "Proyectos", "Costos"):
         pg.click(f".o_pcm_nav_item:has-text('{nav}')")
@@ -495,7 +540,7 @@ def s11_temas(pg):
             return { bgAlpha, opacity: parseFloat(cs.opacity) };
         }""")
     for theme in ("Consola", "Panel", "Editorial"):
-        pg.click(f".o_pcm_theme_opt:has-text('{theme}')")
+        set_theme(pg, theme)
         pg.wait_for_timeout(250)
         pg.click(".o_pcm_nav_item:has-text('Crear instancia EC2')")
         pg.wait_for_selector(".o_pcm_drawer", timeout=8000)
@@ -509,7 +554,7 @@ def s11_temas(pg):
 
     # Dejar al usuario en Tema A (default) para no contaminar corridas siguientes.
     open_app(pg)
-    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    set_theme(pg, "Consola")
     pg.wait_for_timeout(300)
 
 
@@ -522,7 +567,7 @@ def s12_repo_form(pg):
     open_app(pg)
     dr = ".o_pcm_drawer"
     # Tema no-default para estresar el tokenizado.
-    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    set_theme(pg, "Editorial")
     pg.wait_for_timeout(300)
     open_env(pg, INFRA_ENV)
 
@@ -554,7 +599,7 @@ def s12_repo_form(pg):
 
     # Reset a Consola para no contaminar corridas siguientes.
     open_app(pg)
-    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    set_theme(pg, "Consola")
     pg.wait_for_timeout(300)
 
 
@@ -566,7 +611,7 @@ def s13_db_form(pg):
     muestra el select de instancia y oculta RDS. Más validación inline."""
     open_app(pg)
     dr = ".o_pcm_drawer"
-    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    set_theme(pg, "Editorial")
     pg.wait_for_timeout(300)
     open_env(pg, INFRA_ENV)
 
@@ -600,7 +645,7 @@ def s13_db_form(pg):
     pg.wait_for_selector(dr, state="detached", timeout=6000)
 
     open_app(pg)
-    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    set_theme(pg, "Consola")
     pg.wait_for_timeout(300)
 
 
@@ -613,7 +658,7 @@ def s14_deploy_form(pg):
     inline accionable."""
     open_app(pg)
     dr = ".o_pcm_drawer"
-    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    set_theme(pg, "Editorial")
     pg.wait_for_timeout(300)
     open_env(pg, INFRA_ENV)
 
@@ -651,7 +696,7 @@ def s14_deploy_form(pg):
     pg.wait_for_selector(dr, state="detached", timeout=6000)
 
     open_app(pg)
-    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    set_theme(pg, "Consola")
     pg.wait_for_timeout(300)
 
 
@@ -664,7 +709,7 @@ def s15_instance_form(pg):
     condicional de DNS, el password de admin y la validación inline."""
     open_app(pg)
     dr = ".o_pcm_drawer"
-    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    set_theme(pg, "Editorial")
     pg.wait_for_timeout(300)
     open_env(pg, MULTI_ENV)
 
@@ -694,7 +739,7 @@ def s15_instance_form(pg):
     pg.wait_for_selector(dr, state="detached", timeout=6000)
 
     open_app(pg)
-    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    set_theme(pg, "Consola")
     pg.wait_for_timeout(300)
 
 
@@ -706,7 +751,7 @@ def s16_account_form(pg):
     ni la máscara). Más el Access Key ID en claro y la validación inline."""
     open_app(pg)
     dr = ".o_pcm_drawer"
-    pg.click(".o_pcm_theme_opt:has-text('Editorial')")
+    set_theme(pg, "Editorial")
     pg.wait_for_timeout(300)
     pg.click(".o_pcm_nav_item:has-text('Cuentas AWS')")
     pg.wait_for_timeout(1500)
@@ -734,7 +779,7 @@ def s16_account_form(pg):
     pg.wait_for_selector(dr, state="detached", timeout=6000)
 
     open_app(pg)
-    pg.click(".o_pcm_theme_opt:has-text('Consola')")
+    set_theme(pg, "Consola")
     pg.wait_for_timeout(300)
 
 
@@ -863,6 +908,29 @@ _LIGHT_SCAN = r"""() => {
 }"""
 
 
+# §6.4 de TÍTULOS: a diferencia de _LIGHT_SCAN (que mira SUPERFICIES claras en
+# dark), este mira el TEXTO de los headings. Odoo fija un color oscuro explícito
+# en h1..h6 del backend que ganaba a la herencia → títulos negros sobre fondo
+# oscuro. Falla si CUALQUIER h1/h2/h3 visible computa a luminancia baja (texto
+# oscuro sobre superficie oscura = ilegible).
+_HEADING_SCAN = r"""() => {
+    const out = [];
+    for (const el of document.querySelectorAll('.o_pcm_app h1, .o_pcm_app h2, .o_pcm_app h3')) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 10 || r.height < 8) continue;
+        const txt = (el.innerText || '').trim();
+        if (!txt) continue;
+        const m = getComputedStyle(el).color.match(/rgba?\((\d+), (\d+), (\d+)/);
+        if (!m) continue;
+        const lum = 0.2126*+m[1] + 0.7152*+m[2] + 0.0722*+m[3];
+        if (lum < 110) {
+            out.push(el.tagName + ' "' + txt.slice(0, 24) + '" lum=' + Math.round(lum));
+        }
+    }
+    return [...new Set(out)];
+}"""
+
+
 @scenario
 def s19_dark_exhaustivo(pg):
     """El dark en TODAS las pantallas de detalle (no una muestra). Recorre inicio,
@@ -907,6 +975,40 @@ def s19_dark_exhaustivo(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s20_headings_dark(pg):
+    """§6.4 de TÍTULOS: ningún h1/h2/h3 puede quedar oscuro sobre fondo oscuro.
+    Recorre las pantallas donde el bug se veía (inicio, costos, detalles con
+    secciones y tabs) en dark y FALLA si algún heading computa a luminancia baja
+    (el bug: color de heading del backend de Odoo ganándole al token de texto)."""
+    open_app(pg)
+    pg.click(".o_pcm_appearance_toggle button[title='Oscuro']")
+    pg.wait_for_timeout(400)
+
+    def check(name):
+        bad = pg.evaluate(_HEADING_SCAN)
+        assert not bad, f"título oscuro sobre fondo oscuro en '{name}': {bad}"
+
+    pg.click(".o_pcm_nav_item:has-text('Inicio')"); pg.wait_for_timeout(500); check("inicio")
+    pg.click(".o_pcm_nav_item:has-text('Costos')"); pg.wait_for_timeout(600); check("costos")
+    pg.click(".o_pcm_nav_item:has-text('Bases de datos')"); pg.wait_for_timeout(1500)
+    pg.locator("td:has-text('forum-db')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000); pg.wait_for_timeout(400)
+    check("base de datos (detalle)")
+    # Hub → servidor → instancia (con tabs): los títulos de sección que el
+    # reporte marcó ilegibles (AWS, Red y cuenta, Métricas, Instancias hospedadas).
+    open_env(pg, MULTI_ENV); check("entorno hub")
+    pg.locator(".o_pcm_instance_head").first.click()
+    pg.wait_for_selector(".o_pcm_line_click:has-text('Odoo Beta')", timeout=10000)
+    pg.wait_for_timeout(300); check("servidor")
+    pg.locator(".o_pcm_line_click:has-text('Odoo Beta')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_tabs", timeout=10000)
+    pg.wait_for_timeout(400); check("instancia")
+
+    pg.click(".o_pcm_appearance_toggle button[title='Claro']")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -921,13 +1023,16 @@ def main():
         pg.fill("input[name='password']", PWD)
         pg.click("button[type='submit']")
         pg.wait_for_timeout(1500)
+        # Precondición de s04: caché de región fresco (el test usa creds falsas).
+        ensure_region_cache_fresh(pg)
         for fn in (s01_app_y_sidebar, s02_hub_y_drill, s03_drawer_cancelar,
                    s04_drawer_error_correccion_exito,
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
                    s15_instance_form, s16_account_form, s17_dark_mode,
-                   s18_ec2_form, s19_dark_exhaustivo, s05_salir_y_volver):
+                   s18_ec2_form, s19_dark_exhaustivo, s20_headings_dark,
+                   s05_salir_y_volver):
             fn(pg)
         br.close()
 
