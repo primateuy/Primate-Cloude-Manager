@@ -24,12 +24,19 @@
                 </div>
 
                 <div class="o_pcm_cols2">
+                    <!-- General + uso/estado en vivo (métricas de runtime): equilibra
+                         el par contra la config de RDS para que ninguna quede vacía. -->
                     <div class="o_pcm_card">
-                        <h2>General</h2>
+                        <h2>General y uso</h2>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Tipo</span><span t-out="d.db_type_label or '—'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Versión PostgreSQL</span><span t-out="d.pg_version or '—'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Estado</span><span t-out="d.state_label or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Almacenamiento usado</span><span t-out="d.storage_used_gb ? d.storage_used_gb + ' GB' : '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Conexiones activas</span><span t-out="d.active_connections or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último backup</span><span t-out="d.last_backup_date or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
                     </div>
+                    <!-- Configuración de RDS (parámetros del recurso). -->
                     <div class="o_pcm_card">
                         <h2>Almacenamiento / RDS</h2>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Identificador RDS</span><span class="o_pcm_mono" t-out="d.rds_identifier or '—'"/></div>
@@ -38,10 +45,6 @@
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Almacenamiento</span><span t-out="d.rds_storage_gb ? d.rds_storage_gb + ' GB' : '—'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Multi-AZ</span><span t-out="d.rds_multi_az ? 'Sí' : 'No'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Retención de backups</span><span t-out="d.backup_retention_days or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Almacenamiento usado</span><span t-out="d.storage_used_gb ? d.storage_used_gb + ' GB' : '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Conexiones activas</span><span t-out="d.active_connections or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último backup</span><span t-out="d.last_backup_date or '—'"/></div>
-                        <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
                     </div>
                 </div>
 

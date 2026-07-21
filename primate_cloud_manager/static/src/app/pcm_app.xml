@@ -7,7 +7,8 @@
             <!-- Sidebar navy -->
             <div class="o_pcm_sidebar">
                 <div class="o_pcm_brand">
-                    <span class="o_pcm_brand_dot"/>Primate Cloud
+                    <span class="o_pcm_brand_mark">P</span>
+                    <span class="o_pcm_brand_word">Primate Cloud</span>
                 </div>
                 <div class="o_pcm_nav">
                     <div t-foreach="navGroups" t-as="group" t-key="group.key" class="o_pcm_nav_group">
@@ -31,8 +32,8 @@
 
             <!-- Contenido -->
             <div class="o_pcm_content">
-                <div class="o_pcm_topbar">
-                    <!-- Breadcrumb: refleja la pila; cada nivel vuelve a ese punto. -->
+                <div class="o_pcm_header">
+                    <!-- Izquierda: breadcrumb (refleja la pila; cada nivel vuelve). -->
                     <div class="o_pcm_breadcrumb">
                         <t t-foreach="breadcrumb" t-as="crumb" t-key="crumb_index">
                             <span t-if="crumb_index > 0" class="o_pcm_crumb_sep">/</span>
@@ -41,28 +42,84 @@
                                   t-out="crumb.title"/>
                         </t>
                     </div>
-                    <div class="o_pcm_accent_picker">
-                        <span class="o_pcm_muted">Acento</span>
-                        <span t-foreach="accentList" t-as="a" t-key="a.name"
-                              t-attf-class="o_pcm_swatch {{ isAccentActive(a.name) ? 'o_pcm_swatch_active' : '' }}"
-                              t-attf-style="background: {{ a.color }};"
-                              t-att-title="a.name"
-                              t-on-click="() => this.setAccent(a.name)"/>
-                    </div>
-                    <div class="o_pcm_theme_picker">
-                        <span class="o_pcm_muted">Estilo</span>
-                        <button t-foreach="themeList" t-as="t" t-key="t.name"
-                                t-attf-class="o_pcm_theme_opt {{ isThemeActive(t.name) ? 'o_pcm_theme_opt_active' : '' }}"
-                                t-on-click="() => this.setTheme(t.name)"
-                                t-out="t.label"/>
-                    </div>
-                    <div class="o_pcm_appearance_toggle">
-                        <button t-foreach="appearanceList" t-as="ap" t-key="ap.name"
-                                t-attf-class="o_pcm_appearance_opt {{ isAppearanceActive(ap.name) ? 'o_pcm_appearance_opt_active' : '' }}"
-                                t-att-title="ap.label"
-                                t-on-click="() => this.setAppearance(ap.name)">
-                            <i t-attf-class="fa {{ ap.icon }}"/>
+
+                    <!-- Derecha: controles alineados con borde inferior del header. -->
+                    <div class="o_pcm_header_actions">
+                        <!-- Idioma (ES activo; EN es placeholder hasta la fase i18n). -->
+                        <div class="o_pcm_lang" role="group" aria-label="Idioma">
+                            <button type="button" class="o_pcm_lang_opt o_pcm_lang_active">ES</button>
+                            <button type="button" class="o_pcm_lang_opt" disabled="disabled"
+                                    title="Próximamente">EN</button>
+                        </div>
+
+                        <span class="o_pcm_hdr_div"/>
+
+                        <!-- Acento -->
+                        <div class="o_pcm_accent_picker">
+                            <span t-foreach="accentList" t-as="a" t-key="a.name"
+                                  t-attf-class="o_pcm_swatch {{ isAccentActive(a.name) ? 'o_pcm_swatch_active' : '' }}"
+                                  t-attf-style="background: {{ a.color }};"
+                                  t-att-title="a.name"
+                                  t-on-click="() => this.setAccent(a.name)"/>
+                        </div>
+
+                        <span class="o_pcm_hdr_div"/>
+
+                        <!-- Claro / oscuro -->
+                        <div class="o_pcm_appearance_toggle">
+                            <button t-foreach="appearanceList" t-as="ap" t-key="ap.name"
+                                    type="button"
+                                    t-attf-class="o_pcm_appearance_opt {{ isAppearanceActive(ap.name) ? 'o_pcm_appearance_opt_active' : '' }}"
+                                    t-att-title="ap.label"
+                                    t-on-click="() => this.setAppearance(ap.name)">
+                                <i t-attf-class="fa {{ ap.icon }}"/>
+                            </button>
+                        </div>
+
+                        <!-- Alertas (placeholder; la campana ya vive en el shell). -->
+                        <button type="button" class="o_pcm_hdr_icon" title="Alertas">
+                            <i class="fa fa-bell-o"/>
                         </button>
+
+                        <!-- Avatar + menú de usuario. Contiene la SALIDA de la app
+                             (Volver a Odoo / Cerrar sesión) y el picker de Estilo. -->
+                        <div class="o_pcm_user">
+                            <button type="button" class="o_pcm_avatar"
+                                    t-att-title="userName"
+                                    t-on-click="() => this.toggleUserMenu()">
+                                <span t-out="userInitials"/>
+                            </button>
+                            <t t-if="state.userMenuOpen">
+                                <div class="o_pcm_menu_scrim"
+                                     t-on-click="() => this.closeUserMenu()"/>
+                                <div class="o_pcm_user_menu">
+                                    <div class="o_pcm_user_menu_head">
+                                        <span class="o_pcm_user_menu_name" t-out="userName"/>
+                                        <span class="o_pcm_user_menu_sub">Primate Cloud</span>
+                                    </div>
+                                    <div class="o_pcm_menu_group">
+                                        <div class="o_pcm_menu_label">Estilo</div>
+                                        <button t-foreach="themeList" t-as="t" t-key="t.name"
+                                                type="button"
+                                                t-attf-class="o_pcm_menu_item {{ isThemeActive(t.name) ? 'o_pcm_menu_item_on' : '' }}"
+                                                t-on-click="() => this.setTheme(t.name)">
+                                            <i t-attf-class="fa {{ isThemeActive(t.name) ? 'fa-check' : 'fa-circle-o' }}"/>
+                                            <span t-out="t.label"/>
+                                        </button>
+                                    </div>
+                                    <div class="o_pcm_menu_sep"/>
+                                    <button type="button" class="o_pcm_menu_item"
+                                            t-on-click="() => this.exitToOdoo()">
+                                        <i class="fa fa-sign-out"/><span>Volver a Odoo</span>
+                                    </button>
+                                    <button type="button"
+                                            class="o_pcm_menu_item o_pcm_menu_item_danger"
+                                            t-on-click="() => this.logout()">
+                                        <i class="fa fa-power-off"/><span>Cerrar sesión</span>
+                                    </button>
+                                </div>
+                            </t>
+                        </div>
                     </div>
                 </div>
 

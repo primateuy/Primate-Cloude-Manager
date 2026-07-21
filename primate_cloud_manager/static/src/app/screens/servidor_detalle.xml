@@ -79,35 +79,37 @@
 
                 <!-- Costo del servidor: el CRUDO de la máquina (lo que factura
                      AWS, indivisible) + cómo se reparte entre los clientes. -->
-                <div t-if="d.cost" class="o_pcm_card">
+                <div t-if="d.cost and d.cost.has_data" class="o_pcm_card">
                     <h2>Costo del mes</h2>
-                    <t t-if="d.cost.has_data">
-                        <div class="o_pcm_kv">
-                            <span class="o_pcm_muted">AWS factura por esta máquina</span>
-                            <span class="o_pcm_mono" t-out="this.money(d.cost.crudo) + ' ' + d.cost.currency"/>
+                    <div class="o_pcm_kv">
+                        <span class="o_pcm_muted">AWS factura por esta máquina</span>
+                        <span class="o_pcm_mono" t-out="this.money(d.cost.crudo) + ' ' + d.cost.currency"/>
+                    </div>
+                    <div class="o_pcm_muted o_pcm_note">
+                        Crudo indivisible de la EC2 — se reparte así entre los clientes que hospeda:
+                    </div>
+                    <div t-foreach="d.cost.shares" t-as="s" t-key="s_index" class="o_pcm_line">
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="s.instance_name"/>
+                            <span t-if="s.unattributed" class="o_pcm o_pcm_chip o_pcm_unassigned">sin atribuir</span>
+                            <span t-elif="s.client_name" class="o_pcm_muted" t-out="s.client_name"/>
                         </div>
-                        <div class="o_pcm_muted o_pcm_note">
-                            Crudo indivisible de la EC2 — se reparte así entre los clientes que hospeda:
-                        </div>
-                        <div t-foreach="d.cost.shares" t-as="s" t-key="s_index" class="o_pcm_line">
-                            <div class="o_pcm_line_main">
-                                <span class="o_pcm_line_name" t-out="s.instance_name"/>
-                                <span t-if="s.unattributed" class="o_pcm o_pcm_chip o_pcm_unassigned">sin atribuir</span>
-                                <span t-elif="s.client_name" class="o_pcm_muted" t-out="s.client_name"/>
-                            </div>
-                            <span class="o_pcm_mono" t-out="this.money(s.amount) + ' ' + d.cost.currency"/>
-                        </div>
-                        <div class="o_pcm_line o_pcm_line_total">
-                            <span class="o_pcm_line_name">Repartido</span>
-                            <span class="o_pcm_spacer"/>
-                            <span class="o_pcm_mono" t-out="this.money(d.cost.shares_total) + ' ' + d.cost.currency"/>
-                        </div>
-                        <div class="o_pcm_muted o_pcm_note">
-                            <span t-if="d.cost.pulled_at">datos al <t t-out="d.cost.pulled_at"/> (UTC)</span>
-                            <span t-else="">datos al: —</span>
-                        </div>
-                    </t>
-                    <div t-else="" class="o_pcm_muted">Sin datos de costo del mes todavía.</div>
+                        <span class="o_pcm_mono" t-out="this.money(s.amount) + ' ' + d.cost.currency"/>
+                    </div>
+                    <div class="o_pcm_line o_pcm_line_total">
+                        <span class="o_pcm_line_name">Repartido</span>
+                        <span class="o_pcm_spacer"/>
+                        <span class="o_pcm_mono" t-out="this.money(d.cost.shares_total) + ' ' + d.cost.currency"/>
+                    </div>
+                    <div class="o_pcm_muted o_pcm_note">
+                        <span t-if="d.cost.pulled_at">datos al <t t-out="d.cost.pulled_at"/> (UTC)</span>
+                        <span t-else="">datos al: —</span>
+                    </div>
+                </div>
+                <!-- Sin datos: nota compacta, no una caja grande con un título y
+                     una sola línea (card de estado vacío ajustada al contenido). -->
+                <div t-elif="d.cost" class="o_pcm_card o_pcm_card_slim">
+                    <span class="o_pcm_muted"><i class="fa fa-dollar"/> Costo del mes — sin datos todavía.</span>
                 </div>
 
                 <!-- Máquina AWS -->

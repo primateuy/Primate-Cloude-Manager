@@ -91,6 +91,13 @@
     font-size: var(--pcm-fs-base);
     font-family: var(--pcm-font-ui);
 
+    // TODOS los headings toman el color de texto SENSIBLE A LA APARIENCIA. Odoo
+    // fija un color oscuro explícito en h1..h6 del backend (gana a la herencia
+    // de .o_pcm_app), por eso los títulos quedaban negros sobre fondo oscuro en
+    // dark mientras el cuerpo/KPIs (divs) sí heredaban. Esta regla lo corrige de
+    // raíz para toda la app (§6.4: título = token, nunca hex fijo ni herencia).
+    h1, h2, h3, h4, h5, h6 { color: var(--pcm-ink-text); }
+
     // ---------------------------------------------------------------- Sidebar
     // Constante en ambos modos (handoff): sb-bg con gradiente sutil, sb-text
     // #C3C9D5, sb-muted #6B7280, sb-hover rgba(255,255,255,.06).
@@ -105,19 +112,29 @@
         .o_pcm_brand {
             display: flex;
             align-items: center;
-            gap: 9px;
-            padding: 6px 10px 18px;
+            gap: 10px;
+            padding: 4px 8px 20px;
             font-size: 1.05rem;
             font-weight: 600;
             color: #fff;
 
-            .o_pcm_brand_dot {
-                width: 10px;
-                height: 10px;
-                border-radius: 50%;
+            // Marca "P" — cuadrado con el acento (índigo por defecto), esquina
+            // redondeada; reemplaza al punto. Sustituye el logo en el shell propio.
+            .o_pcm_brand_mark {
+                width: 30px;
+                height: 30px;
+                border-radius: 8px;
                 background: var(--pcm-accent);
+                color: #fff;
+                font-weight: 700;
+                font-size: 1.02rem;
+                line-height: 1;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
                 flex: 0 0 auto;
             }
+            .o_pcm_brand_word { letter-spacing: -0.01em; }
         }
 
         .o_pcm_nav {
@@ -171,7 +188,9 @@
 
         .o_pcm_foot {
             padding: 12px 11px 2px;
-            font-size: 0.75rem;
+            font-size: 0.72rem;
+            font-family: var(--pcm-font-mono);
+            letter-spacing: 0.01em;
             color: #6B7280;
             border-top: 1px solid rgba(255, 255, 255, 0.08);
             margin-top: 8px;
@@ -186,19 +205,18 @@
         flex-direction: column;
         overflow: hidden;
 
-        .o_pcm_topbar {
+        // Header del shell: 60px fijos, breadcrumb izq + cluster de controles
+        // derecho, borde inferior. Reemplaza al chrome de Odoo (target:fullscreen).
+        .o_pcm_header {
+            flex: 0 0 60px;
+            height: 60px;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 12px;
-            padding: 12px 20px;
+            gap: 16px;
+            padding: 0 24px;
             border-bottom: 1px solid var(--pcm-line);
             background: var(--pcm-card);
-
-            .o_pcm_topbar_title {
-                font-size: 1.1rem;
-                font-weight: 600;
-            }
 
             // Breadcrumb (pila de navegación).
             .o_pcm_breadcrumb {
@@ -224,15 +242,56 @@
                 .o_pcm_crumb_sep { color: var(--pcm-line); }
             }
 
-            // Selector de acento.
+            // Cluster derecho: idioma · acento · claro/oscuro · campana · avatar.
+            .o_pcm_header_actions {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                flex: 0 0 auto;
+            }
+
+            // Divisor vertical entre grupos del cluster.
+            .o_pcm_hdr_div {
+                width: 1px;
+                height: 22px;
+                background: var(--pcm-line);
+                flex: 0 0 auto;
+            }
+
+            // Idioma ES/EN (segmented; EN deshabilitado hasta la fase i18n).
+            .o_pcm_lang {
+                display: inline-flex;
+                border: 1px solid var(--pcm-line);
+                border-radius: var(--pcm-radius-control);
+                overflow: hidden;
+
+                .o_pcm_lang_opt {
+                    padding: 4px 9px;
+                    border: 0;
+                    background: var(--pcm-card);
+                    color: var(--pcm-soft);
+                    font-size: 0.76rem;
+                    font-weight: 600;
+                    cursor: pointer;
+
+                    & + .o_pcm_lang_opt { border-left: 1px solid var(--pcm-line); }
+                    &:disabled { cursor: default; opacity: 0.5; }
+                    &.o_pcm_lang_active {
+                        background: var(--pcm-accent-tint);
+                        color: var(--pcm-accent-ink);
+                    }
+                }
+            }
+
+            // Selector de acento (swatches).
             .o_pcm_accent_picker {
                 display: flex;
                 align-items: center;
                 gap: 7px;
 
                 .o_pcm_swatch {
-                    width: 20px;
-                    height: 20px;
+                    width: 18px;
+                    height: 18px;
                     border-radius: 50%;
                     cursor: pointer;
                     border: 2px solid transparent;
@@ -243,47 +302,22 @@
                 }
             }
 
-            // Selector de ESTILO (tema) — segmented control, al lado del acento.
-            .o_pcm_theme_picker {
-                display: flex;
-                align-items: center;
-                gap: 4px;
-
-                .o_pcm_theme_opt {
-                    padding: 4px 10px;
-                    border: 1px solid var(--pcm-line);
-                    background: var(--pcm-card);
-                    color: var(--pcm-soft);
-                    border-radius: 999px;
-                    font-size: 0.78rem;
-                    cursor: pointer;
-
-                    &:hover { color: var(--pcm-accent-ink); border-color: var(--pcm-accent); }
-                    &.o_pcm_theme_opt_active {
-                        background: var(--pcm-accent-tint);
-                        color: var(--pcm-accent-ink);
-                        border-color: var(--pcm-accent);
-                        font-weight: 600;
-                    }
-                }
-            }
-
-            // Toggle claro/oscuro (sol/luna) — 3ª capa, junto a acento y estilo.
+            // Toggle claro/oscuro (sol/luna).
             .o_pcm_appearance_toggle {
                 display: flex;
                 align-items: center;
                 gap: 2px;
 
                 .o_pcm_appearance_opt {
-                    width: 28px;
-                    height: 26px;
+                    width: 30px;
+                    height: 30px;
                     display: inline-flex;
                     align-items: center;
                     justify-content: center;
                     border: 1px solid var(--pcm-line);
                     background: var(--pcm-card);
                     color: var(--pcm-soft);
-                    border-radius: 8px;
+                    border-radius: var(--pcm-radius-control);
                     cursor: pointer;
                     font-size: 0.85rem;
 
@@ -295,12 +329,140 @@
                     }
                 }
             }
+
+            // Botón-ícono del header (campana de alertas).
+            .o_pcm_hdr_icon {
+                width: 34px;
+                height: 34px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border: 0;
+                background: transparent;
+                color: var(--pcm-soft);
+                border-radius: var(--pcm-radius-control);
+                cursor: pointer;
+                font-size: 1rem;
+
+                &:hover { background: var(--pcm-surface); color: var(--pcm-ink-text); }
+            }
+
+            // Avatar + menú de usuario (la SALIDA de la app vive acá).
+            .o_pcm_user {
+                position: relative;
+                flex: 0 0 auto;
+
+                .o_pcm_avatar {
+                    width: 34px;
+                    height: 34px;
+                    border-radius: 50%;
+                    border: 0;
+                    cursor: pointer;
+                    background: var(--pcm-accent);
+                    color: #fff;
+                    font-size: 0.78rem;
+                    font-weight: 600;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+
+                    &:hover { filter: brightness(1.06); }
+                }
+
+                // Scrim invisible: cerrar al click-afuera (cubre el viewport).
+                .o_pcm_menu_scrim {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 1000;
+                }
+
+                // Dropdown del avatar.
+                .o_pcm_user_menu {
+                    position: absolute;
+                    top: calc(100% + 10px);
+                    right: 0;
+                    z-index: 1001;
+                    width: 224px;
+                    background: var(--pcm-card);
+                    border: 1px solid var(--pcm-line);
+                    border-radius: var(--pcm-radius-card);
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+                    padding: 8px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 2px;
+                    animation: o_pcm_fade_in 0.1s ease;
+
+                    .o_pcm_user_menu_head {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 1px;
+                        padding: 6px 8px 8px;
+
+                        .o_pcm_user_menu_name { font-weight: 600; color: var(--pcm-ink-text); }
+                        .o_pcm_user_menu_sub { font-size: 0.74rem; color: var(--pcm-soft-2); }
+                    }
+
+                    .o_pcm_menu_group { display: flex; flex-direction: column; gap: 2px; }
+
+                    .o_pcm_menu_label {
+                        padding: 4px 8px 2px;
+                        font-size: 0.66rem;
+                        font-weight: 600;
+                        letter-spacing: 0.06em;
+                        text-transform: uppercase;
+                        color: var(--pcm-soft-2);
+                    }
+
+                    .o_pcm_menu_sep {
+                        height: 1px;
+                        background: var(--pcm-line);
+                        margin: 6px 4px;
+                    }
+
+                    .o_pcm_menu_item {
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                        width: 100%;
+                        padding: 8px;
+                        border: 0;
+                        background: transparent;
+                        border-radius: var(--pcm-radius-control);
+                        color: var(--pcm-ink-text);
+                        font-size: 0.86rem;
+                        cursor: pointer;
+                        text-align: left;
+
+                        i { width: 15px; text-align: center; color: var(--pcm-soft); }
+                        &:hover { background: var(--pcm-surface); }
+
+                        &.o_pcm_menu_item_on {
+                            color: var(--pcm-accent-ink);
+                            i { color: var(--pcm-accent); }
+                        }
+                        &.o_pcm_menu_item_danger {
+                            color: var(--pcm-error-ink);
+                            i { color: var(--pcm-error-ink); }
+                            &:hover { background: var(--pcm-error-bg); }
+                        }
+                    }
+                }
+            }
         }
 
         .o_pcm_screen {
             flex: 1 1 auto;
             overflow: auto;
             padding: var(--pcm-space-screen);
+
+            // Columna de contenido centrada al ancho del handoff (1180px). No
+            // aplica a las vistas nativas embebidas, que ocupan todo el ancho.
+            &:not(.o_pcm_native) > * {
+                max-width: 1180px;
+                margin-left: auto;
+                margin-right: auto;
+            }
 
             // El área donde se montan las vistas nativas embebidas (componente View).
             &.o_pcm_native {
@@ -341,6 +503,15 @@
     }
     .o_pcm_muted { color: var(--pcm-soft); }
     .o_pcm_spacer { flex: 1 1 auto; }
+    // Card compacto de una línea (estados vacíos: "sin datos todavía"). Ajusta
+    // el alto al contenido en vez de reservar el de una card llena.
+    .o_pcm_card_slim {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 20px;
+        i { color: var(--pcm-soft); }
+    }
     // Detalle de cumplimiento de respaldo: una línea por base (texto plano).
     .o_pcm_backup_detail {
         white-space: pre-line;
@@ -485,8 +656,8 @@
     }
 
     // ---------------------------------------------------------------- Inicio
+    // (El ancho de la columna lo fija .o_pcm_screen a 1180px, centrado.)
     .o_pcm_inicio {
-        max-width: 1100px;
 
         .o_pcm_greeting {
             margin-bottom: 20px;
@@ -724,8 +895,16 @@
             grid-template-columns: 1fr 1fr;
             gap: var(--pcm-space-gap);
             margin-top: var(--pcm-space-gap);
+            align-items: stretch;   // igualar alturas de los cards de la fila
 
             @media (max-width: 900px) { grid-template-columns: 1fr; }
+
+            // El card llena la celda del grid (equal-height robusto: 'normal' no
+            // estira de forma consistente en este layout). Excepción: los cards
+            // de estado VACÍO (.o_pcm_muted) NO se estiran — quedan compactos,
+            // sin reservar el alto de un card lleno.
+            > .o_pcm_card { height: 100%; }
+            > .o_pcm_card.o_pcm_muted { height: auto; align-self: start; }
 
             h2 { font-size: var(--pcm-fs-title); font-weight: var(--pcm-fw-title); font-family: var(--pcm-font-display); letter-spacing: var(--pcm-title-tracking); margin: 0 0 10px; }
         }
@@ -735,8 +914,12 @@
             grid-template-columns: 1fr 1fr 1fr;
             gap: var(--pcm-space-gap);
             margin-top: var(--pcm-space-gap);
+            align-items: stretch;
 
             @media (max-width: 900px) { grid-template-columns: 1fr; }
+
+            > .o_pcm_card { height: 100%; }
+            > .o_pcm_card.o_pcm_muted { height: auto; align-self: start; }
         }
 
         // Selectores/inputs del visor de logs (mismo lenguaje que los botones).
@@ -1241,4 +1424,48 @@
 // delimita con claridad para que se lean como bloque, no fundidos con el fondo.
 .o_pcm_app[data-pcm-appearance="dark"] .o_pcm_cmd_body {
     border: 1px solid var(--pcm-line);
+}
+
+// ============================================================================
+// Listas NATIVAS embebidas (Bitácora, Cuentas, etc.) en DARK. El widget de
+// lista de Odoo trae colores de tema CLARO (th en negro, texto/zebra/borde
+// claros) que sobre nuestro fondo oscuro quedan ilegibles. No ponemos a Odoo en
+// su dark mode (rompería su chrome); solo re-teñimos lo que se ve dentro del
+// área embebida a los tokens de apariencia. Semántica intacta: el rojo de
+// "Fallido" (decoration-danger) se conserva; el gris de "Exitoso" (muted) se
+// aclara a --pcm-soft para que se lea.
+.o_pcm_app[data-pcm-appearance="dark"] .o_pcm_native {
+    // Color de texto POR DEFECTO (contenedor): las celdas SIN decoración heredan
+    // claro. NO se pinta la celda directamente, para que las filas decoradas
+    // (danger/muted) conserven su color semántico por herencia — solo se ajustan
+    // abajo las que lo necesitan.
+    .o_list_table,
+    .o_list_footer,
+    .o_pager, .o_cp_pager,
+    .o_searchview, .o_searchview input {
+        color: var(--pcm-ink-text);
+    }
+    // Cabeceras de columna (venían en negro): soft, un punto bajo el cuerpo.
+    .o_list_table > thead > tr > th { color: var(--pcm-soft); }
+
+    // Bordes de la tabla a la línea del tema.
+    .o_list_table td, .o_list_table th,
+    .o_list_table thead, .o_list_table tbody tr {
+        border-color: var(--pcm-line);
+    }
+
+    // Zebra: banda par apenas perceptible sobre el fondo oscuro (no un gris
+    // claro fijo de Odoo, que quedaba "apagado").
+    .o_data_row:nth-child(even) { background-color: rgba(255, 255, 255, 0.025); }
+    .o_data_row:hover { background-color: var(--pcm-surface); }
+
+    // Decoración "muted" (registros Exitoso): gris legible, no el muted oscuro.
+    .o_data_row.text-muted,
+    .o_data_row .text-muted,
+    .text-muted { color: var(--pcm-soft) !important; }
+    // Decoración "danger" (Fallido): se CONSERVA el rojo, apenas más claro para
+    // que respire sobre el fondo oscuro (el hex nativo era algo apagado en dark).
+    .o_data_row.text-danger,
+    .o_data_row .text-danger,
+    .text-danger { color: #F16C67 !important; }
 }

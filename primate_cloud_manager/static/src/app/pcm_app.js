@@ -68,7 +68,8 @@ export const THEME_TOKENS = {
         // La sombra sale de la capa APARIENCIA (se oscurece en dark).
         "card-shadow": "var(--pcm-shadow)",
         "fs-base": "14px",
-        "space-screen": "24px", "space-card": "18px 20px", "space-gap": "16px",
+        // Padding del área de contenido del handoff: 30 arriba · 34 laterales · 60 abajo.
+        "space-screen": "30px 34px 60px", "space-card": "18px 20px", "space-gap": "16px",
         "space-row": "10px 14px", "space-kpi-row": "16px",
         "font-display": "var(--pcm-font-ui)",
         "fs-hero": "1.6rem", "fs-cardtitle": "1.05rem", "fs-title": "1.375rem", "fw-title": "600",
@@ -256,6 +257,8 @@ export class PcmApp extends Component {
             form: null,
             // Grupos del sidebar colapsados (por clave). Por defecto expandidos.
             collapsed: {},
+            // Menú del avatar abierto (contiene la SALIDA de la app fullscreen).
+            userMenuOpen: false,
         });
         // Deep link: restaurar la pila desde el hash de la URL (refresco sin perder lugar).
         this.restoreFromHash();
@@ -342,6 +345,39 @@ export class PcmApp extends Component {
     async setAppearance(name) {
         this.state.appearance = name;
         await this.orm.write("res.users", [user.userId], { pcm_appearance: name });
+    }
+
+    // ------------------------------------------------- Usuario / salida de la app
+    // Iniciales para el avatar (1ª + última del nombre; fallback "U").
+    get userInitials() {
+        const parts = (this.userName || "").trim().split(/\s+/).filter(Boolean);
+        if (!parts.length) {
+            return "U";
+        }
+        const a = parts[0][0] || "";
+        const b = parts.length > 1 ? parts[parts.length - 1][0] : "";
+        return (a + b).toUpperCase();
+    }
+
+    toggleUserMenu() {
+        this.state.userMenuOpen = !this.state.userMenuOpen;
+    }
+
+    closeUserMenu() {
+        this.state.userMenuOpen = false;
+    }
+
+    // La app corre en target:'fullscreen' (sin navbar de Odoo). Esta es la ÚNICA
+    // salida visible: al dejar la client action, el webclient repone el navbar
+    // (state.fullscreen = false). /odoo = home del backend (verificado).
+    exitToOdoo() {
+        this.state.userMenuOpen = false;
+        browser.location.assign("/odoo");
+    }
+
+    logout() {
+        this.state.userMenuOpen = false;
+        browser.location.assign("/web/session/logout");
     }
 
     // ------------------------------------------------- Pila de navegación

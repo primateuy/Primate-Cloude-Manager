@@ -4,6 +4,10 @@
     <record id="action_pcm_app" model="ir.actions.client">
         <field name="name">Primate Cloud</field>
         <field name="tag">primate_cloud_manager.app</field>
+        <!-- fullscreen: Odoo 19 oculta el navbar (barra morada) para esta acción
+             (web/webclient.xml: NavBar solo si !state.fullscreen). El shell del
+             handoff reemplaza el chrome; la salida vive en el header (avatar). -->
+        <field name="target">fullscreen</field>
     </record>
 
 </odoo>
