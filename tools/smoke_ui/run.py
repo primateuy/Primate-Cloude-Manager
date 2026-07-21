@@ -735,6 +735,74 @@ def s16_account_form(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s17_dark_mode(pg):
+    """Modo oscuro (3ª capa, ortogonal a tema y acento). Verifica (1) que los
+    tokens de color REALMENTE cambian al modo oscuro (--pcm-bg pasa a oscuro),
+    (2) el bug §6.4: NINGÚN panel queda blanco en dark (superficie sin tokenizar),
+    y (3) que el drawer sigue OPACO en dark (el bug que arrastramos). Vuelve a
+    claro al final."""
+    open_app(pg)
+    dr = ".o_pcm_drawer"
+
+    def bg_token():
+        return pg.evaluate(
+            "() => getComputedStyle(document.querySelector('.o_pcm_app'))"
+            ".getPropertyValue('--pcm-bg').trim().toUpperCase()")
+
+    # Toggle a oscuro.
+    pg.click(".o_pcm_appearance_toggle button[title='Oscuro']")
+    pg.wait_for_timeout(400)
+    dark_bg = bg_token()
+    assert dark_bg and dark_bg not in ("#F4F5F8", "#FFFFFF"), \
+        f"el modo oscuro no cambió el fondo (--pcm-bg={dark_bg})"
+    assert pg.locator(".o_pcm_app[data-pcm-appearance='dark']").count() == 1, \
+        "no se marcó data-pcm-appearance=dark"
+
+    # (2) §6.4: ningún panel casi-BLANCO (R,G,B > 245) en dark. El accent-tint
+    # (236,234,254) queda excluido por el canal R; un panel sin tokenizar (blanco
+    # #fff = 255) saltaría.
+    whites = pg.evaluate(r"""() => {
+        const bad = [];
+        for (const el of document.querySelectorAll('.o_pcm_app *')) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 40 || r.height < 15) continue;
+            const m = getComputedStyle(el).backgroundColor
+                .match(/rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?/);
+            if (!m) continue;
+            const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+            if (a > 0.5 && +m[1] > 245 && +m[2] > 245 && +m[3] > 245) {
+                bad.push(el.className.toString().slice(0, 50));
+            }
+        }
+        return [...new Set(bad)];
+    }""")
+    assert not whites, f"paneles blancos sin tokenizar en dark (§6.4): {whites}"
+
+    # (3) Drawer OPACO en dark (bg-alpha Y opacity, post-slide-in).
+    pg.click(".o_pcm_nav_item:has-text('Crear instancia EC2')")
+    pg.wait_for_selector(dr, timeout=8000)
+    pg.wait_for_timeout(500)
+    op = pg.evaluate(r"""() => {
+        const d = document.querySelector('.o_pcm_drawer');
+        const cs = getComputedStyle(d);
+        let a = 1;
+        const m = cs.backgroundColor.match(/rgba?\(([^)]+)\)/);
+        if (m) { const p = m[1].split(',').map(s => s.trim()); a = p.length === 4 ? parseFloat(p[3]) : 1; }
+        return { a, opacity: parseFloat(cs.opacity) };
+    }""")
+    assert op["a"] >= 0.99 and op["opacity"] >= 0.99, \
+        f"el drawer NO es opaco en dark ({op})"
+    pg.click(".o_pcm_drawer_head .o_pcm_icon_btn")
+    pg.wait_for_selector(dr, state="detached", timeout=6000)
+
+    # Volver a claro (default).
+    pg.click(".o_pcm_appearance_toggle button[title='Claro']")
+    pg.wait_for_timeout(300)
+    assert bg_token() in ("#F4F5F8",), \
+        "no volvió a claro tras el toggle"
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -754,7 +822,8 @@ def main():
                    s06_respaldos_y_wizards_fase8, s07_dns_crud, s08_costos,
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
-                   s15_instance_form, s16_account_form, s05_salir_y_volver):
+                   s15_instance_form, s16_account_form, s17_dark_mode,
+                   s05_salir_y_volver):
             fn(pg)
         br.close()
 

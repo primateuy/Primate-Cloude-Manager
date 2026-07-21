@@ -5,13 +5,23 @@
 // ============================================================================
 
 .o_pcm_app {
-    // Base navy (fija).
+    // Base navy (fija) — el sidebar NO cambia entre claro y oscuro.
     --pcm-navy: #0F2B33;
     --pcm-navy-2: #173B45;
-    --pcm-surface: #F4F6F6;
+
+    // Superficies y texto — capa APARIENCIA (claro/oscuro). Estos son los
+    // DEFAULTS LIGHT; pcm_app.js los sobrescribe INLINE en dark (APPEARANCE_TOKENS),
+    // igual que el tema y el acento. Ortogonal a ambos.
+    --pcm-bg: #F4F5F8;        // fondo de la app (detrás de las tarjetas)
+    --pcm-card: #FFFFFF;      // tarjetas, paneles, drawer, topbar, botones
+    --pcm-input-bg: #FFFFFF;  // inputs editables del kit
+    --pcm-surface: #F4F6F6;   // superficie elevada / hover / muted-fill
+    --pcm-neutral-bg: #EEF0F1;
     --pcm-line: #E7ECEC;
     --pcm-ink-text: #16292F;
     --pcm-soft: #647579;
+    // Sombra (la usa el Tema Panel; su color se oscurece en dark).
+    --pcm-shadow: 0 1px 2px rgba(16, 20, 30, 0.04), 0 1px 3px rgba(16, 20, 30, 0.05);
 
     // Acento (default teal; pcm_app.js lo sobrescribe con la preferencia).
     --pcm-accent: #48B3A6;
@@ -76,7 +86,7 @@
     min-height: 0;
     overflow: hidden;
     position: relative; // ancla el drawer de wizard (overlay absoluto interno).
-    background: var(--pcm-surface);
+    background: var(--pcm-bg);
     color: var(--pcm-ink-text);
     font-size: var(--pcm-fs-base);
     font-family: var(--pcm-font-ui);
@@ -181,7 +191,7 @@
             gap: 12px;
             padding: 12px 20px;
             border-bottom: 1px solid var(--pcm-line);
-            background: #fff;
+            background: var(--pcm-card);
 
             .o_pcm_topbar_title {
                 font-size: 1.1rem;
@@ -240,7 +250,7 @@
                 .o_pcm_theme_opt {
                     padding: 4px 10px;
                     border: 1px solid var(--pcm-line);
-                    background: #fff;
+                    background: var(--pcm-card);
                     color: var(--pcm-soft);
                     border-radius: 999px;
                     font-size: 0.78rem;
@@ -252,6 +262,34 @@
                         color: var(--pcm-accent-ink);
                         border-color: var(--pcm-accent);
                         font-weight: 600;
+                    }
+                }
+            }
+
+            // Toggle claro/oscuro (sol/luna) — 3ª capa, junto a acento y estilo.
+            .o_pcm_appearance_toggle {
+                display: flex;
+                align-items: center;
+                gap: 2px;
+
+                .o_pcm_appearance_opt {
+                    width: 28px;
+                    height: 26px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    border: 1px solid var(--pcm-line);
+                    background: var(--pcm-card);
+                    color: var(--pcm-soft);
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-size: 0.85rem;
+
+                    &:hover { color: var(--pcm-accent-ink); border-color: var(--pcm-accent); }
+                    &.o_pcm_appearance_opt_active {
+                        background: var(--pcm-accent-tint);
+                        color: var(--pcm-accent-ink);
+                        border-color: var(--pcm-accent);
                     }
                 }
             }
@@ -273,7 +311,7 @@
                     flex: 0 0 auto;
                     padding: 8px 16px;
                     border-bottom: 1px solid var(--pcm-line);
-                    background: #fff;
+                    background: var(--pcm-card);
 
                     .o_pcm_back {
                         display: inline-flex;
@@ -293,7 +331,7 @@
 
     // ------------------------------------------------------------------ Cards
     .o_pcm_card {
-        background: #fff;
+        background: var(--pcm-card);
         border: 1px solid var(--pcm-line);
         border-radius: var(--pcm-radius-card);
         padding: var(--pcm-space-card);
@@ -321,7 +359,7 @@
         border-radius: var(--pcm-radius-control);
         font-size: 0.85rem;
         cursor: pointer;
-        background: #fff;
+        background: var(--pcm-card);
         border: 1px solid var(--pcm-line);
         color: var(--pcm-ink-text);
 
@@ -464,7 +502,7 @@
                 display: flex;
                 align-items: center;
                 gap: 14px;
-                background: #fff;
+                background: var(--pcm-card);
                 border: 1px solid var(--pcm-line);
                 border-radius: var(--pcm-radius-card);
                 padding: 16px 18px;
@@ -529,7 +567,7 @@
                 display: flex;
                 align-items: center;
                 gap: 8px;
-                background: #fff;
+                background: var(--pcm-card);
                 border: 1px solid var(--pcm-line);
                 border-radius: var(--pcm-radius-card);
                 padding: 8px 12px;
@@ -566,7 +604,7 @@
                 border-radius: 999px;
                 font-size: 0.82rem;
                 cursor: pointer;
-                background: #fff;
+                background: var(--pcm-card);
                 border: 1px solid var(--pcm-line);
                 color: var(--pcm-soft);
                 user-select: none;
@@ -588,7 +626,7 @@
         }
 
         .o_pcm_env_card {
-            background: #fff;
+            background: var(--pcm-card);
             border: 1px solid var(--pcm-line);
             border-radius: var(--pcm-radius-card);
             padding: 16px 18px;
@@ -845,7 +883,7 @@
         }
         .o_pcm_instance_dbs {
             border-top: 1px solid var(--pcm-line);
-            background: #FBFCFC;
+            background: var(--pcm-surface);
             padding: 6px 12px 6px 44px;
 
             .o_pcm_instance_nodb { padding: 8px 6px; font-size: 0.86rem; }
@@ -911,7 +949,7 @@
         max-width: 92%;
         height: 100%;
         overflow: hidden;
-        background: #fff;
+        background: var(--pcm-card);
         display: flex;
         flex-direction: column;
         box-shadow: -8px 0 28px rgba(0, 0, 0, 0.14);
@@ -995,7 +1033,7 @@
         font-size: var(--pcm-fs-base);
         font-family: var(--pcm-font-ui);
         color: var(--pcm-ink-text);
-        background: #fff;
+        background: var(--pcm-input-bg);
         border: 1px solid var(--pcm-line);
         border-radius: var(--pcm-radius-control);
         padding: 8px 10px;
@@ -1180,4 +1218,25 @@
         from { transform: translateX(24px); opacity: 0.4; }
         to { transform: translateX(0); opacity: 1; }
     }
+}
+
+// ============================================================================
+// Modo oscuro — override de los buckets de ESTADO en los badges. Los badges
+// llevan class="o_pcm" y pcm_theme.scss les auto-define los buckets en LIGHT;
+// acá se les gana con más especificidad en dark. Solo cambia el FONDO (-bg);
+// el tinte del texto (-ink) y el punto (-dot) quedan igual (el verde de "activo"
+// sigue verde). El resto de la paleta dark va inline (APPEARANCE_TOKENS).
+// ============================================================================
+.o_pcm_app[data-pcm-appearance="dark"] .o_pcm {
+    --pcm-ok-bg: #12331F;
+    --pcm-warn-bg: #3A2A10;
+    --pcm-neutral-bg: #232935;
+    --pcm-error-bg: #3A1A1A;
+}
+
+// En dark, los bloques de comando (terminal navy #0F2B33) tienen contraste
+// SUTIL (por tono) contra la tarjeta oscura: un borde de 1px en --line los
+// delimita con claridad para que se lean como bloque, no fundidos con el fondo.
+.o_pcm_app[data-pcm-appearance="dark"] .o_pcm_cmd_body {
+    border: 1px solid var(--pcm-line);
 }

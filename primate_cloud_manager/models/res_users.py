@@ -44,13 +44,19 @@ class ResUsers(models.Model):
              "colores; el acento y los estados son independientes. Por defecto "
              "'Panel de operaciones' (el look de marca).",
     )
+    pcm_appearance = fields.Selection(
+        [("light", "Claro"), ("dark", "Oscuro")],
+        string="Apariencia PCM", default="light",
+        help="Modo claro u oscuro. 3ª capa ortogonal: cambia solo la paleta base "
+             "de color, no el tema ni el acento. Por defecto claro.",
+    )
 
     @property
     def SELF_READABLE_FIELDS(self):
         return super().SELF_READABLE_FIELDS + [
-            "pcm_accent", "pcm_accent_custom", "pcm_theme"]
+            "pcm_accent", "pcm_accent_custom", "pcm_theme", "pcm_appearance"]
 
     @property
     def SELF_WRITEABLE_FIELDS(self):
         return super().SELF_WRITEABLE_FIELDS + [
-            "pcm_accent", "pcm_accent_custom", "pcm_theme"]
+            "pcm_accent", "pcm_accent_custom", "pcm_theme", "pcm_appearance"]

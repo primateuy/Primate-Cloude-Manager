@@ -2,7 +2,8 @@
 <templates xml:space="preserve">
 
     <t t-name="primate_cloud_manager.App">
-        <div class="o_pcm_app" t-att-style="rootStyle">
+        <div class="o_pcm_app" t-att-style="rootStyle"
+             t-att-data-pcm-appearance="state.appearance">
             <!-- Sidebar navy -->
             <div class="o_pcm_sidebar">
                 <div class="o_pcm_brand">
@@ -54,6 +55,14 @@
                                 t-attf-class="o_pcm_theme_opt {{ isThemeActive(t.name) ? 'o_pcm_theme_opt_active' : '' }}"
                                 t-on-click="() => this.setTheme(t.name)"
                                 t-out="t.label"/>
+                    </div>
+                    <div class="o_pcm_appearance_toggle">
+                        <button t-foreach="appearanceList" t-as="ap" t-key="ap.name"
+                                t-attf-class="o_pcm_appearance_opt {{ isAppearanceActive(ap.name) ? 'o_pcm_appearance_opt_active' : '' }}"
+                                t-att-title="ap.label"
+                                t-on-click="() => this.setAppearance(ap.name)">
+                            <i t-attf-class="fa {{ ap.icon }}"/>
+                        </button>
                     </div>
                 </div>
 

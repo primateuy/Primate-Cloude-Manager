@@ -64,7 +64,8 @@ export const THEME_TOKENS = {
     // semibold con tracking negativo (apretado tipográfico del diseño).
     b: {
         "radius-card": "8px", "radius-control": "8px", "radius-pill": "20px",
-        "card-shadow": "0 1px 2px rgba(16,20,30,.04), 0 1px 3px rgba(16,20,30,.05)",
+        // La sombra sale de la capa APARIENCIA (se oscurece en dark).
+        "card-shadow": "var(--pcm-shadow)",
         "fs-base": "14px",
         "space-screen": "24px", "space-card": "18px 20px", "space-gap": "16px",
         "space-row": "10px 14px", "space-kpi-row": "16px",
@@ -94,6 +95,28 @@ export const THEME_TOKENS = {
         "cmd-bg": "var(--pcm-navy)", "cmd-ink": "var(--pcm-teal-tint)",
         "cmd-border": "none", "cmd-rule": "2px",
         "btn-pad": "8px 14px", "chip-pad": "4px 10px",
+    },
+};
+
+// Capa APARIENCIA (claro/oscuro) — 3ª capa ORTOGONAL al tema y al acento. Solo
+// sobreescribe la paleta base de color (superficies/borde/texto/estados-fondo +
+// la sombra). El ACENTO y el SIDEBAR navy NO cambian entre modos; el TINTE del
+// texto de los chips de estado (verde ok, ámbar warn, rojo danger) tampoco —solo
+// cambia su fondo. Light = valores del SCSS; dark = paleta EXACTA del diseño.
+export const APPEARANCE_TOKENS = {
+    light: {
+        "bg": "#F4F5F8", "card": "#FFFFFF", "input-bg": "#FFFFFF",
+        "surface": "#F4F6F6", "neutral-bg": "#EEF0F1",
+        "line": "#E7ECEC", "ink-text": "#16292F", "soft": "#647579",
+        "shadow": "0 1px 2px rgba(16,20,30,.04), 0 1px 3px rgba(16,20,30,.05)",
+        "ok-bg": "#E7F4EC", "warn-bg": "#FAEEDA", "error-bg": "#FCEBEB",
+    },
+    dark: {
+        "bg": "#0E1116", "card": "#171B22", "input-bg": "#1D222B",
+        "surface": "#1D222B", "neutral-bg": "#232935",
+        "line": "#282E39", "ink-text": "#E7EAF0", "soft": "#9AA2B1",
+        "shadow": "0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.3)",
+        "ok-bg": "#12331F", "warn-bg": "#3A2A10", "error-bg": "#3A1A1A",
     },
 };
 
@@ -212,8 +235,12 @@ export class PcmApp extends Component {
             { name: "b", label: "Panel" },
             { name: "c", label: "Editorial" },
         ];
+        this.appearanceList = [
+            { name: "light", label: "Claro", icon: "fa-sun-o" },
+            { name: "dark", label: "Oscuro", icon: "fa-moon-o" },
+        ];
         this.state = useState({
-            accent: "indigo", accentCustom: "", theme: "b",
+            accent: "indigo", accentCustom: "", theme: "b", appearance: "light",
             // Pila de navegación. Cada entrada: { type, model?, resId?, title }.
             stack: [{ type: "inicio", title: "Inicio" }],
             // Wizard activo en el drawer lateral (o null). { model, context, title }.
@@ -229,12 +256,13 @@ export class PcmApp extends Component {
         onWillStart(async () => {
             const recs = await this.orm.read(
                 "res.users", [user.userId],
-                ["pcm_accent", "pcm_accent_custom", "pcm_theme"]
+                ["pcm_accent", "pcm_accent_custom", "pcm_theme", "pcm_appearance"]
             );
             if (recs.length) {
                 this.state.accent = recs[0].pcm_accent || "indigo";
                 this.state.accentCustom = recs[0].pcm_accent_custom || "";
                 this.state.theme = recs[0].pcm_theme || "b";
+                this.state.appearance = recs[0].pcm_appearance || "light";
             }
         });
     }
@@ -257,10 +285,19 @@ export class PcmApp extends Component {
             .join("");
     }
 
+    // Capa apariencia (claro/oscuro): mismas vars emitidas inline.
+    get appearanceStyle() {
+        const tokens = APPEARANCE_TOKENS[this.state.appearance]
+            || APPEARANCE_TOKENS.light;
+        return Object.entries(tokens)
+            .map(([k, v]) => `--pcm-${k}:${v};`)
+            .join("");
+    }
+
     get rootStyle() {
         const t = this.accentTokens;
         return `--pcm-accent:${t.accent};--pcm-accent-ink:${t.ink};`
-            + `--pcm-accent-tint:${t.tint};${this.themeStyle}`;
+            + `--pcm-accent-tint:${t.tint};${this.themeStyle}${this.appearanceStyle}`;
     }
 
     isAccentActive(name) {
@@ -283,6 +320,16 @@ export class PcmApp extends Component {
     async setTheme(name) {
         this.state.theme = name;
         await this.orm.write("res.users", [user.userId], { pcm_theme: name });
+    }
+
+    // ------------------------------------------------- Apariencia (claro/oscuro)
+    isAppearanceActive(name) {
+        return this.state.appearance === name;
+    }
+
+    async setAppearance(name) {
+        this.state.appearance = name;
+        await this.orm.write("res.users", [user.userId], { pcm_appearance: name });
     }
 
     // ------------------------------------------------- Pila de navegación
