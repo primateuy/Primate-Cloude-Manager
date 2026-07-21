@@ -11,6 +11,7 @@ import { PcmWizardDrawer } from "./components/wizard_drawer";
 import { PcmFormDrawer } from "./components/pcm_form_drawer";
 import { AccountForm } from "./forms/account_form";
 import { Ec2Form } from "./forms/ec2_form";
+import { RepoForm } from "./forms/repo_form";
 import { Inicio } from "./screens/inicio";
 import { Costos } from "./screens/costos";
 import { Entornos } from "./screens/entornos";
@@ -25,16 +26,14 @@ import { CuentaDetalle } from "./screens/cuenta_detalle";
 import { ProyectoDetalle } from "./screens/proyecto_detalle";
 import { Proyectos } from "./screens/proyectos";
 
-// Presets de acento (name -> accent / ink-sobre-claro / tint-de-fondo).
+// Presets de acento — el set EXACTO del handoff de diseño (5, violet = default).
+// name -> accent / ink (accent-600, hover/texto-sobre-tint) / tint (accent-050).
 export const ACCENT_PRESETS = {
-    teal:    { accent: "#48B3A6", ink: "#0F5E4E", tint: "#E3F3EF" },
-    naranja: { accent: "#FF8A00", ink: "#9A5400", tint: "#FDECD9" },
-    azul:    { accent: "#2A78D6", ink: "#0C447C", tint: "#E6F1FB" },
-    violeta: { accent: "#7F77DD", ink: "#3C3489", tint: "#EEEDFE" },
-    verde:   { accent: "#639922", ink: "#27500A", tint: "#EAF3DE" },
-    // Preset de marca (diseño de Daryl): violeta-índigo. Se AGREGA; el default
-    // de acento sigue siendo el que ya estaba (no se cambia acá).
-    indigo:  { accent: "#6459F5", ink: "#2E259E", tint: "#ECEAFE" },
+    violet:  { accent: "#6459F5", ink: "#5147D6", tint: "#EEECFE" },
+    blue:    { accent: "#2F6BFF", ink: "#2357DB", tint: "#E8F0FF" },
+    teal:    { accent: "#0D9488", ink: "#0B7C72", tint: "#E2F5F2" },
+    emerald: { accent: "#16A34A", ink: "#12833C", tint: "#E6F6EC" },
+    amber:   { accent: "#EA8F12", ink: "#C8770B", tint: "#FDF0DD" },
 };
 
 // Temas visuales: capa ORTOGONAL al acento. Solo forma/densidad/tipografía —
@@ -64,7 +63,8 @@ export const THEME_TOKENS = {
     // Radios 8px, sombras muy sutiles, badges pill (20px), KPIs y títulos grandes
     // semibold con tracking negativo (apretado tipográfico del diseño).
     b: {
-        "radius-card": "8px", "radius-control": "8px", "radius-pill": "20px",
+        // Radios del handoff: tarjetas 12px, controles 8px, pills 20px.
+        "radius-card": "12px", "radius-control": "8px", "radius-pill": "20px",
         // La sombra sale de la capa APARIENCIA (se oscurece en dark).
         "card-shadow": "var(--pcm-shadow)",
         "fs-base": "14px",
@@ -104,19 +104,25 @@ export const THEME_TOKENS = {
 // la sombra). El ACENTO y el SIDEBAR navy NO cambian entre modos; el TINTE del
 // texto de los chips de estado (verde ok, ámbar warn, rojo danger) tampoco —solo
 // cambia su fondo. Light = valores del SCSS; dark = paleta EXACTA del diseño.
+// Valores EXACTOS de la tabla del handoff (fuente de verdad). soft = text-2
+// (secundario), soft-2 = text-3 (terciario/hints). El fondo de los chips de
+// estado (ok/warn/neutral/error) también es apariencia; su TINTE de texto es fijo
+// (SCSS root). El input en light es superficie blanca; en dark, surface-2.
 export const APPEARANCE_TOKENS = {
     light: {
         "bg": "#F4F5F8", "card": "#FFFFFF", "input-bg": "#FFFFFF",
-        "surface": "#F4F6F6", "neutral-bg": "#EEF0F1",
-        "line": "#E7ECEC", "ink-text": "#16292F", "soft": "#647579",
+        "surface": "#F7F8FA", "neutral-bg": "#EEF1F5",
+        "line": "#E6E8EE", "ink-text": "#171A21", "soft": "#5C6472",
+        "soft-2": "#8B93A1",
         "shadow": "0 1px 2px rgba(16,20,30,.04), 0 1px 3px rgba(16,20,30,.05)",
-        "ok-bg": "#E7F4EC", "warn-bg": "#FAEEDA", "error-bg": "#FCEBEB",
+        "ok-bg": "#E6F6EC", "warn-bg": "#FBEFD8", "error-bg": "#FDECEC",
     },
     dark: {
         "bg": "#0E1116", "card": "#171B22", "input-bg": "#1D222B",
         "surface": "#1D222B", "neutral-bg": "#232935",
         "line": "#282E39", "ink-text": "#E7EAF0", "soft": "#9AA2B1",
-        "shadow": "0 1px 2px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.3)",
+        "soft-2": "#6B7482",
+        "shadow": "0 1px 2px rgba(0,0,0,.3)",
         "ok-bg": "#12331F", "warn-bg": "#3A2A10", "error-bg": "#3A1A1A",
     },
 };
@@ -241,7 +247,7 @@ export class PcmApp extends Component {
             { name: "dark", label: "Oscuro", icon: "fa-moon-o" },
         ];
         this.state = useState({
-            accent: "indigo", accentCustom: "", theme: "b", appearance: "light",
+            accent: "violet", accentCustom: "", theme: "b", appearance: "light",
             // Pila de navegación. Cada entrada: { type, model?, resId?, title }.
             stack: [{ type: "inicio", title: "Inicio" }],
             // Wizard activo en el drawer lateral (o null). { model, context, title }.
@@ -260,7 +266,7 @@ export class PcmApp extends Component {
                 ["pcm_accent", "pcm_accent_custom", "pcm_theme", "pcm_appearance"]
             );
             if (recs.length) {
-                this.state.accent = recs[0].pcm_accent || "indigo";
+                this.state.accent = recs[0].pcm_accent || "violet";
                 this.state.accentCustom = recs[0].pcm_accent_custom || "";
                 this.state.theme = recs[0].pcm_theme || "b";
                 this.state.appearance = recs[0].pcm_appearance || "light";
@@ -274,7 +280,7 @@ export class PcmApp extends Component {
             const c = this.state.accentCustom;
             return { accent: c, ink: c, tint: c + "22" };
         }
-        return ACCENT_PRESETS[this.state.accent] || ACCENT_PRESETS.teal;
+        return ACCENT_PRESETS[this.state.accent] || ACCENT_PRESETS.violet;
     }
 
     // Estilo del root: acento + tema en la MISMA cadena inline. Cambiar
@@ -297,8 +303,13 @@ export class PcmApp extends Component {
 
     get rootStyle() {
         const t = this.accentTokens;
+        // En dark el tint del acento se deriva (handoff): un mix del acento sobre
+        // superficie oscura, en vez del tint claro (que en dark se veía brillante).
+        const tint = this.state.appearance === "dark" && !this.state.accentCustom
+            ? `color-mix(in srgb, ${t.accent} 20%, #171a21)`
+            : t.tint;
         return `--pcm-accent:${t.accent};--pcm-accent-ink:${t.ink};`
-            + `--pcm-accent-tint:${t.tint};${this.themeStyle}${this.appearanceStyle}`;
+            + `--pcm-accent-tint:${tint};${this.themeStyle}${this.appearanceStyle}`;
     }
 
     isAccentActive(name) {
@@ -512,26 +523,51 @@ export class PcmApp extends Component {
 
     get nativeListProps() {
         const model = this.current.model;
-        // La cuenta AWS es la pantalla sensible (credenciales): su crear/editar
-        // van por el form OWL (secreto seguro), no por el form nativo. El click
-        // abre el detalle OWL (con sus acciones + Editar).
-        if (model === "primate.cloud.account") {
-            return {
-                type: "list",
-                resModel: model,
-                selectRecord: (resId) => this.openRecord(model, resId, ""),
-                createRecord: () => this.openFormDrawer(AccountForm, {
-                    mode: "create",
-                    onSaved: (id) => id && this.openRecord(model, id, ""),
-                }, "Nueva cuenta AWS"),
-            };
-        }
+        // La lista es solo browsing (nativa); el CLICK abre el detalle OWL (no el
+        // form nativo, que en dark se ve roto). Cero chrome de Odoo en la
+        // operación normal: todo modelo con detalle OWL enruta ahí.
+        const hasDetail = model in DETAIL_TYPES;
         return {
             type: "list",
             resModel: model,
-            selectRecord: (resId) => this.openNativeForm(resId),
-            createRecord: () => this.openNativeForm(false),
+            selectRecord: (resId) => hasDetail
+                ? this.openRecord(model, resId, "")
+                : this.openNativeForm(resId),
+            createRecord: this._navCreate(model),
         };
+    }
+
+    // Crear desde la lista → form OWL donde tiene sentido sin contexto; los que se
+    // crean DENTRO de un entorno (base/DNS/deploy) avisan que se hace desde el hub
+    // (sin abrir el form nativo).
+    _navCreate(model) {
+        if (model === "primate.cloud.account") {
+            return () => this.openFormDrawer(AccountForm, {
+                mode: "create",
+                onSaved: (id) => id && this.openRecord(model, id, ""),
+            }, "Nueva cuenta AWS");
+        }
+        if (model === "primate.cloud.ec2.instance") {
+            return () => this.openFormDrawer(Ec2Form, { onSaved: () => {} },
+                "Crear instancia EC2");
+        }
+        if (model === "primate.cloud.repository") {
+            return () => this.openFormDrawer(RepoForm, {
+                mode: "create", onSaved: () => {},
+            }, "Nuevo repositorio");
+        }
+        const hint = {
+            "primate.cloud.database":
+                "Las bases se crean al aprovisionar o sincronizar un entorno.",
+            "primate.cloud.dns.record":
+                "Agregá el registro DNS desde el hub del entorno.",
+            "primate.cloud.deployment":
+                "Creá el despliegue desde el hub del entorno.",
+        }[model];
+        if (hint) {
+            return () => this.notification.add(hint, { type: "info" });
+        }
+        return () => this.openNativeForm(false);
     }
 
     get nativeFormProps() {

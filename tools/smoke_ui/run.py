@@ -842,6 +842,71 @@ def s18_ec2_form(pg):
     pg.wait_for_timeout(300)
 
 
+# JS que devuelve las superficies con fondo CLARO (R,G,B>200) visibles: en dark,
+# CUALQUIERA es el bug (una card/superficie que no se tokenizó al modo oscuro).
+_LIGHT_SCAN = r"""() => {
+    const out = [];
+    const sel = '.o_pcm_card, .o_pcm_env_card, .o_pcm_kpi, .o_pcm_drawer,'
+        + ' .o_pcm_form_summary, .o_form_view, .o_list_view';
+    for (const el of document.querySelectorAll(sel)) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 40 || r.height < 15) continue;
+        const m = getComputedStyle(el).backgroundColor
+            .match(/rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?/);
+        if (!m) continue;
+        const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+        if (a > 0.5 && +m[1] > 200 && +m[2] > 200 && +m[3] > 200) {
+            out.push(el.className.toString().slice(0, 45));
+        }
+    }
+    return [...new Set(out)];
+}"""
+
+
+@scenario
+def s19_dark_exhaustivo(pg):
+    """El dark en TODAS las pantallas de detalle (no una muestra). Recorre inicio,
+    costos, y los detalles de base/repo/cuenta + hub/servidor/instancia en modo
+    oscuro; FALLA si CUALQUIER card/superficie computa a un color claro (una
+    superficie sin tokenizar al dark — el bug de la card blanca)."""
+    open_app(pg)
+    pg.click(".o_pcm_appearance_toggle button[title='Oscuro']")
+    pg.wait_for_timeout(400)
+
+    def check(name):
+        bad = pg.evaluate(_LIGHT_SCAN)
+        assert not bad, f"superficie clara en dark en '{name}': {bad}"
+
+    pg.click(".o_pcm_nav_item:has-text('Inicio')"); pg.wait_for_timeout(500); check("inicio")
+    pg.click(".o_pcm_nav_item:has-text('Costos')"); pg.wait_for_timeout(600); check("costos")
+    # Bases de datos → detalle OWL (el que tenía la card blanca en el reporte).
+    pg.click(".o_pcm_nav_item:has-text('Bases de datos')"); pg.wait_for_timeout(1500)
+    pg.locator("td:has-text('forum-db')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000); pg.wait_for_timeout(400)
+    check("base de datos (detalle)")
+    # Repositorios → detalle.
+    pg.click(".o_pcm_nav_item:has-text('Repositorios')"); pg.wait_for_timeout(1500)
+    pg.locator("td:has-text('WMS')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000); pg.wait_for_timeout(400)
+    check("repositorio (detalle)")
+    # Cuentas → detalle.
+    pg.click(".o_pcm_nav_item:has-text('Cuentas AWS')"); pg.wait_for_timeout(1500)
+    pg.locator("td:has-text('Primate Producción')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_hero", timeout=10000); pg.wait_for_timeout(400)
+    check("cuenta (detalle)")
+    # Entorno hub → servidor → instancia (con tabs).
+    open_env(pg, MULTI_ENV); check("entorno hub")
+    pg.locator(".o_pcm_instance_head").first.click()
+    pg.wait_for_selector(".o_pcm_line_click:has-text('Odoo Beta')", timeout=10000)
+    pg.wait_for_timeout(300); check("servidor")
+    pg.locator(".o_pcm_line_click:has-text('Odoo Beta')").first.click()
+    pg.wait_for_selector(".o_pcm_detalle .o_pcm_tabs", timeout=10000)
+    pg.wait_for_timeout(400); check("instancia")
+
+    pg.click(".o_pcm_appearance_toggle button[title='Claro']")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -862,7 +927,7 @@ def main():
                    s09_servidor_vs_instancia, s10_proyecto_eje_cliente,
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
                    s15_instance_form, s16_account_form, s17_dark_mode,
-                   s18_ec2_form, s05_salir_y_volver):
+                   s18_ec2_form, s19_dark_exhaustivo, s05_salir_y_volver):
             fn(pg)
         br.close()
 

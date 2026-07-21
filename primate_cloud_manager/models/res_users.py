@@ -7,14 +7,14 @@ tienen su propia paleta y NO dependen del acento.
 """
 from odoo import fields, models
 
-# Presets de acento (el JS de la app deriva accent/ink/tint de cada uno).
+# Presets de acento — el set EXACTO del handoff de diseño (5, violet = default).
+# El JS de la app (ACCENT_PRESETS) deriva accent/ink/tint de cada uno.
 PCM_ACCENTS = [
+    ("violet", "Violeta"),
+    ("blue", "Azul"),
     ("teal", "Teal"),
-    ("naranja", "Naranja"),
-    ("azul", "Azul"),
-    ("violeta", "Violeta"),
-    ("verde", "Verde"),
-    ("indigo", "Índigo"),
+    ("emerald", "Esmeralda"),
+    ("amber", "Ámbar"),
 ]
 
 # Temas visuales: capa ORTOGONAL al acento. Cambian densidad/tipografía/forma vía
@@ -30,9 +30,9 @@ class ResUsers(models.Model):
     _inherit = "res.users"
 
     pcm_accent = fields.Selection(
-        PCM_ACCENTS, string="Acento PCM", default="indigo",
+        PCM_ACCENTS, string="Acento PCM", default="violet",
         help="Color de acento de la interfaz de Primate Cloud Manager. Por "
-             "defecto índigo (el acento del diseño de marca).",
+             "defecto violeta (el acento del handoff de diseño).",
     )
     pcm_accent_custom = fields.Char(
         string="Acento personalizado (hex)",

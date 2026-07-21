@@ -19,10 +19,11 @@
 
     // Buckets de estado (punto / fondo / texto). Paleta FIJA, independiente del
     // acento de la app (para no confundir "color elegido" con "estado").
-    --pcm-ok-dot: #2E9E5B;      --pcm-ok-bg: #E7F4EC;      --pcm-ok-ink: #1E6B45;
-    --pcm-warn-dot: #EF9F27;    --pcm-warn-bg: #FAEEDA;    --pcm-warn-ink: #854F0B;
-    --pcm-neutral-dot: #8A97A0; --pcm-neutral-bg: #EEF0F1; --pcm-neutral-ink: #4A5560;
-    --pcm-error-dot: #E24B4A;   --pcm-error-bg: #FCEBEB;   --pcm-error-ink: #A32D2D;
+    // Estados semánticos — hex EXACTOS del handoff (texto = dot; fondo -bg).
+    --pcm-ok-dot: #16A34A;      --pcm-ok-bg: #E6F6EC;      --pcm-ok-ink: #16A34A;
+    --pcm-warn-dot: #C8770B;    --pcm-warn-bg: #FBEFD8;    --pcm-warn-ink: #C8770B;
+    --pcm-neutral-dot: #64748B; --pcm-neutral-bg: #EEF1F5; --pcm-neutral-ink: #64748B;
+    --pcm-error-dot: #DC2626;   --pcm-error-bg: #FDECEC;   --pcm-error-ink: #DC2626;
 }
 
 // ---------------------------------------------------------------------------

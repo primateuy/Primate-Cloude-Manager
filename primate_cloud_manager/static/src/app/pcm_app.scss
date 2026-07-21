@@ -5,35 +5,35 @@
 // ============================================================================
 
 .o_pcm_app {
-    // Base navy (fija) — el sidebar NO cambia entre claro y oscuro.
-    --pcm-navy: #0F2B33;
-    --pcm-navy-2: #173B45;
+    // Sidebar (constante en ambos modos) — valores del handoff.
+    --pcm-navy: #141821;       // sidebar bg (sb-bg)
+    --pcm-navy-2: #0F131A;     // fin del gradiente sutil
 
     // Superficies y texto — capa APARIENCIA (claro/oscuro). Estos son los
-    // DEFAULTS LIGHT; pcm_app.js los sobrescribe INLINE en dark (APPEARANCE_TOKENS),
-    // igual que el tema y el acento. Ortogonal a ambos.
+    // DEFAULTS LIGHT del handoff; pcm_app.js los sobrescribe INLINE en dark
+    // (APPEARANCE_TOKENS), igual que el tema y el acento. Ortogonal a ambos.
     --pcm-bg: #F4F5F8;        // fondo de la app (detrás de las tarjetas)
-    --pcm-card: #FFFFFF;      // tarjetas, paneles, drawer, topbar, botones
+    --pcm-card: #FFFFFF;      // tarjetas, paneles, drawer, topbar, botones (surface)
     --pcm-input-bg: #FFFFFF;  // inputs editables del kit
-    --pcm-surface: #F4F6F6;   // superficie elevada / hover / muted-fill
-    --pcm-neutral-bg: #EEF0F1;
-    --pcm-line: #E7ECEC;
-    --pcm-ink-text: #16292F;
-    --pcm-soft: #647579;
+    --pcm-surface: #F7F8FA;   // superficie elevada / hover / muted-fill (surface-2)
+    --pcm-neutral-bg: #EEF1F5;
+    --pcm-line: #E6E8EE;      // border
+    --pcm-ink-text: #171A21;  // text
+    --pcm-soft: #5C6472;      // text-2 (secundario)
+    --pcm-soft-2: #8B93A1;    // text-3 (terciario / hints)
     // Sombra (la usa el Tema Panel; su color se oscurece en dark).
     --pcm-shadow: 0 1px 2px rgba(16, 20, 30, 0.04), 0 1px 3px rgba(16, 20, 30, 0.05);
 
-    // Acento (default teal; pcm_app.js lo sobrescribe con la preferencia).
-    --pcm-accent: #48B3A6;
-    --pcm-accent-ink: #0F5E4E;
-    --pcm-accent-tint: #E3F3EF;
+    // Acento (default violet del handoff; pcm_app.js lo sobrescribe con la pref).
+    --pcm-accent: #6459F5;
+    --pcm-accent-ink: #5147D6;
+    --pcm-accent-tint: #EEECFE;
 
-    // Buckets de ESTADO (fijos, independientes del acento y del tema). Mismos
-    // hex que pcm_theme.scss (.o_pcm): se redeclaran acá para que resuelvan en
-    // la app sin depender de un ancestro .o_pcm (banners, botón danger, etc.).
-    --pcm-ok-dot: #2E9E5B;      --pcm-ok-bg: #E7F4EC;      --pcm-ok-ink: #1E6B45;
-    --pcm-warn-dot: #EF9F27;    --pcm-warn-bg: #FAEEDA;    --pcm-warn-ink: #854F0B;
-    --pcm-error-dot: #E24B4A;   --pcm-error-bg: #FCEBEB;   --pcm-error-ink: #A32D2D;
+    // Estados semánticos (texto/dot fijos; el FONDO -bg va por apariencia). Hex
+    // EXACTOS del handoff. Se redeclaran acá para resolver sin ancestro .o_pcm.
+    --pcm-ok-dot: #16A34A;      --pcm-ok-bg: #E6F6EC;      --pcm-ok-ink: #16A34A;
+    --pcm-warn-dot: #C8770B;    --pcm-warn-bg: #FBEFD8;    --pcm-warn-ink: #C8770B;
+    --pcm-error-dot: #DC2626;   --pcm-error-bg: #FDECEC;   --pcm-error-ink: #DC2626;
 
     // Tokens de TEMA — capa ortogonal al acento: densidad/forma/tipografía,
     // NUNCA color (solo referencian tokens de paleta FIJOS). Estos DEFAULTS son
@@ -92,10 +92,12 @@
     font-family: var(--pcm-font-ui);
 
     // ---------------------------------------------------------------- Sidebar
+    // Constante en ambos modos (handoff): sb-bg con gradiente sutil, sb-text
+    // #C3C9D5, sb-muted #6B7280, sb-hover rgba(255,255,255,.06).
     .o_pcm_sidebar {
-        flex: 0 0 232px;
-        background: var(--pcm-navy);
-        color: #DCE6E6;
+        flex: 0 0 250px;
+        background: linear-gradient(180deg, var(--pcm-navy), var(--pcm-navy-2));
+        color: #C3C9D5;
         display: flex;
         flex-direction: column;
         padding: 18px 12px;
@@ -136,12 +138,12 @@
                 font-weight: 600;
                 letter-spacing: 0.04em;
                 text-transform: uppercase;
-                color: #708888;
+                color: #6B7280;
                 cursor: pointer;
                 user-select: none;
 
                 i { font-size: 0.75rem; }
-                &:hover { color: #B9C7C7; }
+                &:hover { color: #C3C9D5; }
             }
 
             .o_pcm_nav_item {
@@ -149,15 +151,15 @@
                 align-items: center;
                 gap: 11px;
                 padding: 9px 11px;
-                border-radius: 9px;
-                color: #B9C7C7;
+                border-radius: 8px;
+                color: #C3C9D5;
                 cursor: pointer;
                 user-select: none;
                 white-space: nowrap;
 
                 i { width: 16px; text-align: center; font-size: 0.95rem; }
 
-                &:hover { background: var(--pcm-navy-2); color: #fff; }
+                &:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
 
                 &.o_pcm_active {
                     background: var(--pcm-accent);
@@ -170,7 +172,7 @@
         .o_pcm_foot {
             padding: 12px 11px 2px;
             font-size: 0.75rem;
-            color: #6E8484;
+            color: #6B7280;
             border-top: 1px solid rgba(255, 255, 255, 0.08);
             margin-top: 8px;
         }
@@ -1024,7 +1026,7 @@
         color: var(--pcm-soft);
     }
     .o_pcm_field_req { color: var(--pcm-error-dot); margin-left: 2px; }
-    .o_pcm_field_help { font-size: 0.8rem; color: var(--pcm-soft); }
+    .o_pcm_field_help { font-size: 0.8rem; color: var(--pcm-soft-2); }
     .o_pcm_field_err { font-size: 0.8rem; color: var(--pcm-error-ink); }
 
     // Controles: radio/tipografía por token; foco con el acento.
