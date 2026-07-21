@@ -1444,6 +1444,23 @@
     --pcm-warn-bg: #3A2A10;
     --pcm-neutral-bg: #232935;
     --pcm-error-bg: #3A1A1A;
+    // pcm_theme.scss fija estos tokens a valores CLAROS de la paleta Sagui en el
+    // scope .o_pcm — y la RAÍZ de las vistas nativas lleva class="o_pcm", así que
+    // esos valores claros se filtran a la lista (zebra/relleno/bordes) en dark.
+    // Se re-asertan a la apariencia oscura (mayor especificidad que .o_pcm).
+    --pcm-surface: #1D222B;
+    --pcm-line: #282E39;
+    --pcm-ink: #E7EAF0;
+}
+
+// Chip de categoría (env_type/db_type/repo_type): su tinte teal es FIJO
+// (#E3F3EF, claro) y quedaba luminoso en dark. Se re-tiñe a teal oscuro con
+// texto teal claro (misma semántica, legible sobre el fondo oscuro). Aplica en
+// OWL y en las listas nativas (el chip lleva class="o_pcm o_pcm_chip").
+.o_pcm_app[data-pcm-appearance="dark"] .o_pcm.o_pcm_chip {
+    background: rgba(72, 179, 166, 0.16);
+    color: #74D3C4;
+    border-color: rgba(72, 179, 166, 0.30);
 }
 
 // En dark, los bloques de comando (terminal navy #0F2B33) tienen contraste
@@ -1454,39 +1471,63 @@
 }
 
 // ============================================================================
-// Listas NATIVAS embebidas (Bitácora, Cuentas, etc.) en DARK. El widget de
-// lista de Odoo trae colores de tema CLARO (th en negro, texto/zebra/borde
-// claros) que sobre nuestro fondo oscuro quedan ilegibles. No ponemos a Odoo en
-// su dark mode (rompería su chrome); solo re-teñimos lo que se ve dentro del
-// área embebida a los tokens de apariencia. Semántica intacta: el rojo de
-// "Fallido" (decoration-danger) se conserva; el gris de "Exitoso" (muted) se
-// aclara a --pcm-soft para que se lea.
-.o_pcm_app[data-pcm-appearance="dark"] .o_pcm_native {
-    // Color de texto POR DEFECTO (contenedor): las celdas SIN decoración heredan
-    // claro. NO se pinta la celda directamente, para que las filas decoradas
-    // (danger/muted) conserven su color semántico por herencia — solo se ajustan
-    // abajo las que lo necesitan.
-    .o_list_table,
+// Vistas NATIVAS embebidas (Bitácora, Cuentas, Instancias EC2, Bases, Repos,
+// DNS, Despliegues) en DARK. El widget de lista de Odoo trae colores de tema
+// CLARO (th en negro, celdas/zebra/borde claros) que sobre nuestro fondo oscuro
+// quedan ilegibles. No ponemos a Odoo en su dark mode (rompería su chrome).
+//
+// SCOPE: `.o_view_controller` (raíz intrínseca de toda vista nativa list/form)
+// dentro del shell PCM en dark. Es la ÚNICA fuente de verdad: no hay opt-in por
+// pantalla — cualquier vista nativa renderizada dentro de PCM lo hereda (las de
+// hoy y cualquier menú futuro). No se filtra: `.o_view_controller` no existe en
+// las pantallas OWL propias ni fuera de `.o_pcm_app`. Semántica intacta: el rojo
+// de "Fallido" se conserva; el gris de "Exitoso" (muted) se aclara a text-2.
+.o_pcm_app[data-pcm-appearance="dark"] .o_view_controller {
+    // La list view de Odoo pinta el `background-color` de las celdas DIRECTAMENTE
+    // (blanco del tema claro; en listas EDITABLES las celdas .o_field_cell pesan
+    // más), ganándole a las variables --bs-table-*. Se re-pinta TODA celda del
+    // cuerpo al esquema oscuro: fila = card (#171B22), zebra = surface (#1D222B),
+    // hover = neutral. Se neutraliza el accent-bg de Bootstrap (box-shadow).
+    .o_list_table {
+        // Se fijan también las vars de Bootstrap: en listas EDITABLES la celda
+        // (.o_field_cell) toma su background-color de `var(--bs-table-bg)` por la
+        // regla propia de Bootstrap (que puede ganarle a un override directo). Al
+        // apuntar la var al token oscuro, ESA regla ya pinta oscuro — el
+        // background-color real coincide con el visible (sin falsos claros).
+        --bs-table-bg: var(--pcm-card);
+        --bs-table-striped-bg: var(--pcm-surface);
+        --bs-table-accent-bg: transparent;
+        --bs-table-border-color: var(--pcm-line);
+        color: var(--pcm-ink-text);
+        border-color: var(--pcm-line);
+    }
+    // TODA celda del cuerpo (incluye .o_data_cell y .o_field_cell de editables).
+    .o_list_table tbody td {
+        background-color: var(--pcm-card);
+        border-color: var(--pcm-line);
+    }
+    // Zebra: filas pares en surface-2 (diferencia de superficie visible).
+    .o_list_table tbody tr:nth-child(even) td {
+        background-color: var(--pcm-surface);
+    }
+    // Hover / selección.
+    .o_list_table tbody tr:hover td,
+    .o_data_row.o_data_row_selected td, .o_data_row.table-active td {
+        background-color: var(--pcm-neutral-bg);
+    }
+    // Cabeceras: mismo fondo que la card, texto soft, borde del tema.
+    .o_list_table > thead > tr > th {
+        background-color: var(--pcm-card);
+        color: var(--pcm-soft);
+        border-color: var(--pcm-line);
+    }
     .o_list_footer,
     .o_pager, .o_cp_pager,
     .o_searchview, .o_searchview input {
         color: var(--pcm-ink-text);
     }
-    // Cabeceras de columna (venían en negro): soft, un punto bajo el cuerpo.
-    .o_list_table > thead > tr > th { color: var(--pcm-soft); }
 
-    // Bordes de la tabla a la línea del tema.
-    .o_list_table td, .o_list_table th,
-    .o_list_table thead, .o_list_table tbody tr {
-        border-color: var(--pcm-line);
-    }
-
-    // Zebra: banda par apenas perceptible sobre el fondo oscuro (no un gris
-    // claro fijo de Odoo, que quedaba "apagado").
-    .o_data_row:nth-child(even) { background-color: rgba(255, 255, 255, 0.025); }
-    .o_data_row:hover { background-color: var(--pcm-surface); }
-
-    // Decoración "muted" (registros Exitoso): gris legible, no el muted oscuro.
+    // Decoración "muted" (registros Exitoso): text-2, legible sobre el fondo.
     .o_data_row.text-muted,
     .o_data_row .text-muted,
     .text-muted { color: var(--pcm-soft) !important; }
@@ -1495,4 +1536,68 @@
     .o_data_row.text-danger,
     .o_data_row .text-danger,
     .text-danger { color: #F16C67 !important; }
+
+    // --- Control panel (barra superior: breadcrumb nativo + buscador + pager) ---
+    // Venía con fondo BLANCO explícito -> se funde con el fondo de la app.
+    .o_control_panel,
+    .o_control_panel .o_cp_top, .o_control_panel .o_cp_bottom,
+    .o_control_panel_main, .o_control_panel_breadcrumbs,
+    .o_control_panel_actions, .o_cp_top_left, .o_cp_top_right {
+        background-color: transparent !important;
+        color: var(--pcm-ink-text);
+        border-color: var(--pcm-line);
+    }
+    // Texto del breadcrumb/título del control panel.
+    .o_control_panel .breadcrumb, .o_control_panel .breadcrumb-item,
+    .o_breadcrumb, .o_last_breadcrumb_item, .o_control_panel_breadcrumbs *,
+    .o_cp_switch_buttons { color: var(--pcm-ink-text); }
+
+    // Buscador: caja con superficie de input del tema.
+    .o_searchview, .o_cp_searchview {
+        background-color: var(--pcm-input-bg);
+        border-color: var(--pcm-line) !important;
+        color: var(--pcm-ink-text);
+    }
+    .o_searchview .o_searchview_input, .o_searchview input {
+        background-color: transparent;
+        color: var(--pcm-ink-text);
+    }
+    .o_searchview input::placeholder, .o_searchview .o_searchview_input::placeholder {
+        color: var(--pcm-soft-2);
+    }
+    .o_searchview .fa, .o_cp_searchview .fa { color: var(--pcm-soft); }
+
+    // Pager y botones utilitarios del control panel.
+    .o_pager, .o_pager_value, .o_pager_limit, .o_cp_pager,
+    .o_optional_columns_dropdown_toggle {
+        color: var(--pcm-ink-text);
+    }
+    .o_pager button, .btn-light, .btn-secondary {
+        color: var(--pcm-ink-text);
+        background-color: transparent;
+        border-color: var(--pcm-line);
+    }
+    .o_pager button:hover, .btn-light:hover { background-color: var(--pcm-surface); }
+
+    // Botones outline del buscador/control panel (toggler de filtros, etc.):
+    // venían con fondo claro de Bootstrap; transparentes con borde e ícono soft.
+    .o_searchview_dropdown_toggler,
+    .btn-outline-secondary, .btn-outline-primary, .btn-outline-dark {
+        background-color: transparent !important;
+        border-color: var(--pcm-line) !important;
+        color: var(--pcm-soft) !important;
+    }
+
+    // Checkboxes de selección (borde visible sobre fondo oscuro).
+    input[type="checkbox"] {
+        border-color: var(--pcm-soft-2);
+        background-color: var(--pcm-input-bg);
+    }
+
+    // Chip de "Resultado" (badge nativo Fallido/Exitoso/Parcial) con los fondos
+    // dark del handoff. El texto semántico (rojo/verde/ámbar) se mantiene legible.
+    .badge.text-bg-danger, .badge.bg-danger { background-color: #3A1A1A !important; color: #F16C67 !important; }
+    .badge.text-bg-success, .badge.bg-success { background-color: #12331F !important; color: #4ADE80 !important; }
+    .badge.text-bg-warning, .badge.bg-warning { background-color: #3A2A10 !important; color: #E8B45A !important; }
+    .badge.text-bg-secondary, .badge.bg-secondary { background-color: #232935 !important; color: var(--pcm-soft) !important; }
 }

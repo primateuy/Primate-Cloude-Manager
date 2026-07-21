@@ -908,6 +908,46 @@ _LIGHT_SCAN = r"""() => {
 }"""
 
 
+# Barrido de SUPERFICIES claras en dark a nivel CONTENEDOR (control panel, list
+# renderer/view, tabla, thead, form, + nuestros cards/chips/badges). No mira
+# celdas individuales: en listas EDITABLES Bootstrap deja el background-color de
+# la celda en blanco aunque el color VISIBLE sea oscuro (striping por box-shadow),
+# lo que daría falsos positivos. Las superficies contenedoras sí reflejan el
+# color real, así que una vista SIN tematizar (control panel/tabla/renderer
+# blancos, o una card/chip claro) se caza acá.
+_DARK_SURFACE_SCAN = r"""() => {
+  const bad = [];
+  const P = s => { const m=(s||'').match(/rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?/); return m?{r:+m[1],g:+m[2],b:+m[3],a:m[4]===undefined?1:+m[4]}:null; };
+  const light = c => c && c.a>0.5 && c.r>200 && c.g>200 && c.b>200;
+  const dark  = c => c && c.a>0.5 && (c.r+c.g+c.b)/3 < 120;
+  const root = document.querySelector('.o_pcm_screen'); if(!root) return ['sin screen'];
+  // (1) Superficies contenedoras: su background-color refleja el color real.
+  const sel = '.o_control_panel, .o_control_panel_main, .o_searchview, .o_list_renderer,'
+    + ' .o_list_view, .o_content, .o_list_table, thead, tfoot, .o_form_view,'
+    + ' .o_form_sheet_bg, .o_form_sheet, .o_pcm_card, .o_pcm_chip, .o_pcm_badge';
+  for (const el of root.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 40 || r.height < 15) continue;
+    if (light(P(getComputedStyle(el).backgroundColor)))
+      bad.push(el.tagName+'.'+(el.className||'').toString().trim().split(/\s+/).slice(0,2).join('.'));
+  }
+  // (2) Celdas de la tabla, incluidas las filas de RELLENO vacías: se marca la
+  // celda clara SALVO que un box-shadow inset oscuro la cubra (striping de
+  // Bootstrap deja el background-color en blanco aunque el color visible sea
+  // oscuro). Así el relleno blanco real falla, pero no da falso positivo.
+  for (const td of root.querySelectorAll('.o_list_table tbody td')) {
+    const r = td.getBoundingClientRect();
+    if (r.width < 24 || r.height < 12) continue;
+    const cs = getComputedStyle(td);
+    if (!light(P(cs.backgroundColor))) continue;
+    const sh = cs.boxShadow || '';
+    if (sh.includes('inset') && dark(P(sh))) continue;   // cubierta por overlay oscuro
+    bad.push('TD-relleno');
+  }
+  return [...new Set(bad)].slice(0, 8);
+}"""
+
+
 # §6.4 de TÍTULOS: a diferencia de _LIGHT_SCAN (que mira SUPERFICIES claras en
 # dark), este mira el TEXTO de los headings. Odoo fija un color oscuro explícito
 # en h1..h6 del backend que ganaba a la herencia → títulos negros sobre fondo
@@ -1081,6 +1121,30 @@ def s20_headings_dark(pg):
     pg.wait_for_timeout(300)
 
 
+@scenario
+def s22_dark_sidebar_sweep(pg):
+    """Barrido dark de TODAS las entradas del sidebar (no una lista fija de vistas
+    etiquetadas). Cada pantalla — OWL propia o vista NATIVA embebida — no debe
+    tener superficies claras en dark en el área de contenido. El remapeo nativo
+    vive en el contenedor del shell (scope .o_view_controller bajo
+    [data-pcm-appearance=dark]), así que TODA vista nativa lo hereda; este barrido
+    garantiza que una entrada nueva sin cubrir falle en rojo sola."""
+    open_app(pg)
+    pg.click(".o_pcm_appearance_toggle button[title='Oscuro']")
+    pg.wait_for_timeout(400)
+    labels = [t.strip() for t in pg.locator(".o_pcm_nav_item").all_inner_texts() if t.strip()]
+    assert len(labels) >= 8, f"sidebar con muy pocas entradas: {labels}"
+    for label in labels:
+        if label == "Crear instancia EC2":     # abre un wizard en drawer, no una pantalla
+            continue
+        pg.locator(f".o_pcm_nav_item:has-text('{label}')").first.click()
+        pg.wait_for_timeout(900)
+        bad = pg.evaluate(_DARK_SURFACE_SCAN)
+        assert not bad, f"superficie clara en dark en '{label}': {bad}"
+    pg.click(".o_pcm_appearance_toggle button[title='Claro']")
+    pg.wait_for_timeout(300)
+
+
 def main():
     with sync_playwright() as p:
         br = p.chromium.launch(headless=True)
@@ -1104,7 +1168,8 @@ def main():
                    s11_temas, s12_repo_form, s13_db_form, s14_deploy_form,
                    s15_instance_form, s16_account_form, s17_dark_mode,
                    s18_ec2_form, s19_dark_exhaustivo, s20_headings_dark,
-                   s21_grid_alineada, s05_salir_y_volver):
+                   s21_grid_alineada, s22_dark_sidebar_sweep,
+                   s05_salir_y_volver):
             fn(pg)
         br.close()
 
