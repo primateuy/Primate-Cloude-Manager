@@ -26,6 +26,3 @@ forum.conf
 
 # Evidencia de smoke-tests de UI
 tools/smoke_ui/screenshots/
-
-# Documentos markdown (no versionar)
-*.md
