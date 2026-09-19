@@ -11,6 +11,13 @@
                 <field name="aws_instance_id"/>
                 <field name="environment_id"/>
                 <field name="instance_state" widget="pcm_status_badge"/>
+                <!-- F2: a simple vista, qué se puede operar y qué no. -->
+                <field name="management_state" widget="badge"
+                       decoration-warning="management_state == 'adopted_readonly'"
+                       decoration-success="management_state == 'managed'"/>
+                <field name="ssm_state" widget="badge" optional="show"
+                       decoration-danger="ssm_state == 'unreachable'"
+                       decoration-success="ssm_state == 'online'"/>
                 <field name="instance_type"/>
                 <field name="public_ip"/>
                 <field name="private_ip"/>
@@ -62,6 +69,8 @@
                             <field name="aws_instance_id" readonly="1"/>
                             <field name="instance_state" widget="pcm_status_badge" readonly="1"/>
                             <field name="management_state" widget="badge" readonly="1"/>
+                            <field name="ssm_state" widget="badge" readonly="1"/>
+                            <field name="ssm_checked_at" readonly="1"/>
                             <field name="instance_type" readonly="1"/>
                             <field name="region" readonly="1"/>
                             <field name="os_type"/>
@@ -135,8 +144,15 @@
                 <filter name="no_env" string="Sin entorno" domain="[('environment_id', '=', False)]"/>
                 <filter name="adoptados" string="Adoptados (solo lectura)"
                         domain="[('management_state', '=', 'adopted_readonly')]"/>
+                <!-- Sin clasificar = sin entorno, o con alguna instancia
+                     Odoo todavía en el proyecto centinela (archivado), o sin
+                     instancias y sin dueño. NO se mira sólo
+                     environment.project_id: D6 lo deja vacío a propósito en
+                     los servidores compartidos. -->
                 <filter name="sin_clasificar" string="Sin clasificar"
-                        domain="[('environment_id.project_id', '=', False)]"/>
+                        domain="['|', '|', ('environment_id', '=', False), ('environment_id.instance_ids.project_id.active', '=', False), '&amp;', ('environment_id.project_id', '=', False), ('environment_id.instance_ids', '=', False)]"/>
+                <filter name="sin_ssm" string="Sin acceso SSM"
+                        domain="[('ssm_state', '=', 'unreachable')]"/>
                 <group>
                     <filter name="group_account" string="Cuenta" context="{'group_by': 'account_id'}"/>
                     <filter name="group_env" string="Entorno" context="{'group_by': 'environment_id'}"/>

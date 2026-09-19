@@ -44,6 +44,10 @@ ACTION_TYPES = [
     # servidor del modo de solo lectura, así que lleva su propio tipo:
     # hay que poder auditar QUIÉN liberó QUÉ servidor y cuándo.
     ("server_manage_enable", "Habilitar gestión de servidor"),
+    # F2: importación masiva de servidores de una cuenta y discovery de
+    # las instancias Odoo de cada uno (sólo lectura en el servidor).
+    ("server_import", "Importar servidores"),
+    ("instance_discover", "Descubrir instancias Odoo"),
     ("other", "Otra"),
 ]
 

@@ -72,6 +72,15 @@ export class PcmNotifier extends Component {
             if (p.reload) {
                 this.action.doAction("soft_reload");
             }
+        } else if (p.kind === "refresh_record") {
+            // F2: avance en vivo de un registro (la importación de servidores).
+            // Sólo si el usuario tiene abierto ESE registro: refrescar otra
+            // pantalla cada pocos segundos le rompería lo que está haciendo.
+            const ctrl = this.action.currentController;
+            const props = (ctrl && ctrl.props) || {};
+            if (props.resModel === p.model && props.resId === p.res_id) {
+                this.action.doAction("soft_reload");
+            }
         } else if (p.kind === "provision_start") {
             this.state.active = true;
             this.state.done = false;

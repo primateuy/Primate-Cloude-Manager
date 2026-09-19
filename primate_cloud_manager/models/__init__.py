@@ -20,3 +20,4 @@ from . import primate_cloud_deployment
 from . import primate_cloud_dashboard
 from . import res_partner
 from . import res_users
+from . import primate_cloud_server_import

@@ -92,6 +92,45 @@ class AwsSsmService:
         )
         return response["Command"]["CommandId"]
 
+    def describe_instance_information(self, instance_ids, region=None):
+        """Estado del agente SSM de un conjunto de instancias (sólo lectura).
+
+        Es la forma barata de saber si un servidor es alcanzable ANTES de
+        mandarle un comando: una instancia que no aparece acá no tiene el
+        agente registrado (no está instalado, o falta el instance profile con
+        ``AmazonSSMManagedInstanceCore``), y un ``send_command`` contra ella
+        sólo terminaría en timeout.
+
+        ``DescribeInstanceInformation`` acepta hasta 50 ids por filtro, así que
+        se consulta en tandas.
+
+        Args:
+            instance_ids (list[str]): ids de EC2.
+            region (str, optional): región.
+
+        Returns:
+            dict: ``{instance_id: ping_status}`` con ``"Online"``,
+                ``"ConnectionLost"`` o ``"Inactive"``. Las instancias que SSM no
+                conoce no aparecen en el dict.
+        """
+        client = self._base.get_client("ssm", region=region)
+        ids = [i for i in (instance_ids or []) if i]
+        estados = {}
+        for inicio in range(0, len(ids), 50):
+            tanda = ids[inicio:inicio + 50]
+            token = None
+            while True:
+                kwargs = {"Filters": [{"Key": "InstanceIds", "Values": tanda}]}
+                if token:
+                    kwargs["NextToken"] = token
+                respuesta = client.describe_instance_information(**kwargs)
+                for info in respuesta.get("InstanceInformationList", []):
+                    estados[info["InstanceId"]] = info.get("PingStatus")
+                token = respuesta.get("NextToken")
+                if not token:
+                    break
+        return estados
+
     def get_command_output(self, command_id, instance_id, region=None):
         """Recupera el resultado de un comando ya enviado.
 

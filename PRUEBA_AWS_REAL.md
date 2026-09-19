@@ -45,7 +45,7 @@ crear la cuenta por vos (AWS pide tarjeta + verificación).
     {
       "Sid": "SsmRun",
       "Effect": "Allow",
-      "Action": ["ssm:SendCommand", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+      "Action": ["ssm:SendCommand", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations", "ssm:DescribeInstanceInformation"],
       "Resource": "*"
     },
     {

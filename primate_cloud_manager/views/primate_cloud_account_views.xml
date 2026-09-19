@@ -33,6 +33,10 @@
                             string="Sincronizar recursos"
                             invisible="connection_state != 'connected'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_import_servers" type="object"
+                            string="Importar servidores"
+                            invisible="connection_state != 'connected'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
                     <button name="action_pull_costs" type="object"
                             string="Actualizar costos"
                             invisible="connection_state != 'connected'"

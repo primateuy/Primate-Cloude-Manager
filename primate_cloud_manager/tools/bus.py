@@ -57,3 +57,15 @@ def provision_done(env, environment, ok, message):
         "kind": "provision_done", "env_id": environment.id,
         "ok": ok, "message": message,
     })
+
+
+def refresh_record(env, record):
+    """Avisa que un registro cambió, para refrescarlo si está en pantalla (F2).
+
+    Lo usa la importación de servidores para mostrar el avance en vivo. El
+    front refresca SÓLO si el usuario tiene abierto ESE registro: refrescar
+    cualquier vista cada pocos segundos rompería lo que esté haciendo en otra
+    pantalla. Como todo mensaje del bus, se entrega recién al commitear.
+    """
+    _send(env, {"kind": "refresh_record", "model": record._name,
+                "res_id": record.id})

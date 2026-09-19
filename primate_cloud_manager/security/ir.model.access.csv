@@ -59,6 +59,11 @@ access_dns_record_wizard_admin,dns.record.wizard admin,model_primate_cloud_dns_r
 access_dns_delete_wizard_admin,dns.delete.wizard admin,model_primate_cloud_dns_delete_wizard,group_cloud_admin,1,1,1,1
 access_instance_create_wizard_admin,instance.create.wizard admin,model_primate_cloud_instance_create_wizard,group_cloud_admin,1,1,1,1
 access_server_manage_wizard_admin,server.manage.wizard admin,model_primate_cloud_server_manage_wizard,group_cloud_admin,1,1,1,1
+access_server_import_viewer,server.import viewer,model_primate_cloud_server_import,group_cloud_viewer,1,0,0,0
+access_server_import_admin,server.import admin,model_primate_cloud_server_import,group_cloud_admin,1,1,1,1
+access_server_import_line_viewer,server.import.line viewer,model_primate_cloud_server_import_line,group_cloud_viewer,1,0,0,0
+access_server_import_line_admin,server.import.line admin,model_primate_cloud_server_import_line,group_cloud_admin,1,1,1,1
+access_server_import_wizard_admin,server.import.wizard admin,model_primate_cloud_server_import_wizard,group_cloud_admin,1,1,1,1
 access_region_setup_viewer,primate.cloud.region.setup viewer,model_primate_cloud_region_setup,group_cloud_viewer,1,0,0,0
 access_region_setup_operator,primate.cloud.region.setup operator,model_primate_cloud_region_setup,group_cloud_operator,1,0,0,0
 access_region_setup_admin,primate.cloud.region.setup admin,model_primate_cloud_region_setup,group_cloud_admin,1,1,1,1

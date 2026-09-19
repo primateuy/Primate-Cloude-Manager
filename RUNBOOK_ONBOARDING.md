@@ -86,7 +86,7 @@ El user va a referenciarlo con `iam:PassRole`, así que conviene crearlo antes.
     {
       "Sid": "SsmRun",
       "Effect": "Allow",
-      "Action": ["ssm:SendCommand", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+      "Action": ["ssm:SendCommand", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations", "ssm:DescribeInstanceInformation"],
       "Resource": "*"
     },
     {
@@ -195,6 +195,8 @@ El user va a referenciarlo con `iam:PassRole`, así que conviene crearlo antes.
 > **objetos** (`arn:aws:s3:::pcm-*/*`). `GetLifecycleConfiguration` es necesario porque PCM
 > **lee** la config de lifecycle antes de escribirla (mergea su regla sin pisar reglas
 > ajenas). `DeleteObject` es para la limpieza (`delete_object`).
+>
+> **`ssm:DescribeInstanceInformation` (F2, importación de servidores, 2026-09-19)** — lectura pura: PCM la usa para saber si un servidor importado es alcanzable por SSM **antes** de mandarle el discovery, en vez de esperar el timeout de un `send_command`. No tiene resource-level (va con `Resource: *`, como el resto del bloque `SsmRun`). Sin este permiso la importación igual termina, pero marca todos los servidores como «Sin acceso SSM». **Pendiente de verificar en Policy Simulator** en la primera cuenta real.
 >
 > **Route 53 (Fase 8.5, CRUD de DNS)** — verificado contra el *Service Authorization
 > Reference* de AWS. Route 53 es **global**: los ARN no llevan región ni cuenta (`route53:::`)

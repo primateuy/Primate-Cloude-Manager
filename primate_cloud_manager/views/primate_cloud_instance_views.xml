@@ -97,10 +97,38 @@
         </field>
     </record>
 
+    <!-- F2: search view (no existía). "Sin clasificar" = proyecto centinela,
+         que se crea ARCHIVADO para no aparecer en las vistas de negocio: el
+         dominio lo encuentra por eso. Clasificar es un write simple del
+         proyecto, sin tocar AWS. -->
+    <record id="view_instance_search" model="ir.ui.view">
+        <field name="name">primate.cloud.instance.search</field>
+        <field name="model">primate.cloud.instance</field>
+        <field name="arch" type="xml">
+            <search string="Buscar instancias">
+                <field name="name"/>
+                <field name="project_id"/>
+                <field name="environment_id"/>
+                <field name="slug"/>
+                <filter name="sin_clasificar" string="Sin clasificar"
+                        domain="[('project_id.active', '=', False)]"/>
+                <filter name="produccion" string="Producción"
+                        domain="[('env_type', '=', 'production')]"/>
+                <group>
+                    <filter name="group_project" string="Proyecto"
+                            context="{'group_by': 'project_id'}"/>
+                    <filter name="group_env" string="Servidor"
+                            context="{'group_by': 'environment_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
     <record id="action_instance" model="ir.actions.act_window">
         <field name="name">Instancias</field>
         <field name="res_model">primate.cloud.instance</field>
         <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_instance_search"/>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">Sin instancias todavía</p>
             <p>Una instancia es un Odoo montado dentro de un servidor:

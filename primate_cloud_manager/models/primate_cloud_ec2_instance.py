@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import shlex
 import time
 import uuid
@@ -20,6 +21,9 @@ from .primate_cloud_instance import (
 
 # --- Config del odoo.conf (Bloque B3) ---
 CONFIG_READ_SCRIPT_PATH = "primate_cloud_manager/data/config_read.py"
+# F2: discovery de instancias Odoo en servidores importados. SÓLO LECTURA:
+# el contrato está en la cabecera del propio script.
+DISCOVERY_SCRIPT_PATH = "primate_cloud_manager/data/discovery_read.py"
 CONFIG_APPLY_SCRIPT_PATH = "primate_cloud_manager/data/config_apply.py"
 # Parámetros EDITABLES (los que fallan "suave": límites/comportamiento).
 # tipo -> ("bool"|"int"|"enum", spec). Duplicado como capa 2 en config_apply.py.
@@ -152,6 +156,18 @@ class PrimateCloudEc2Instance(models.Model):
              "Gestión habilitada: adoptado y liberado a mano por un admin.",
     )
 
+    # Alcanzabilidad por SSM, medida con DescribeInstanceInformation (lectura).
+    # "Sin acceso" no es un error del servidor: es que el agente no está o
+    # falta el instance profile, y el reporte de la importación dice qué hacer.
+    ssm_state = fields.Selection(
+        [("unknown", "Sin verificar"),
+         ("online", "Con acceso SSM"),
+         ("unreachable", "Sin acceso SSM")],
+        string="Acceso SSM", default="unknown", readonly=True, copy=False,
+    )
+    ssm_checked_at = fields.Datetime(
+        string="SSM verificado", readonly=True, copy=False)
+
     # Acciones de ESCRITURA que quedan bloqueadas en ``adopted_readonly``. El
     # discovery read-only no está acá a propósito: observar es el propósito del
     # modo.
@@ -283,6 +299,196 @@ class PrimateCloudEc2Instance(models.Model):
                   error_message=detalle)
         return True
 
+    # ------------------------------------------------------------------
+    # F2: discovery de instancias Odoo (SÓLO LECTURA en el servidor)
+    # ------------------------------------------------------------------
+    def _run_discovery(self):
+        """Corre el script de discovery por SSM y devuelve lo encontrado.
+
+        El script es de SÓLO LECTURA (el contrato está en su cabecera), por eso
+        se permite en ``adopted_readonly``: mirar es el propósito del modo. NO
+        pasa por :meth:`_exigir_gestion_habilitada`.
+
+        Returns:
+            dict: ``{"units": [...], "databases": [...], "units_error",
+                "databases_error"}``.
+
+        Raises:
+            UserError: si el comando no corre o no devuelve el marcador.
+        """
+        self.ensure_one()
+        script = self._python_heredoc(
+            self._render_config_script(DISCOVERY_SCRIPT_PATH, {}))
+        output = self._get_ssm_service().run_script(
+            self.aws_instance_id, script, region=self.region,
+            comment="pcm discovery (solo lectura): %s" % self.name,
+            timeout=90, agent_timeout=20, check=False)
+        stdout = output.get("stdout") or ""
+        for linea in stdout.splitlines():
+            if linea.startswith("PCM_DISCOVERY_JSON:"):
+                return json.loads(linea[len("PCM_DISCOVERY_JSON:"):])
+        raise UserError(_(
+            "El discovery no devolvió resultado (estado SSM: %(st)s). "
+            "%(err)s", st=output.get("status"),
+            err=(output.get("stderr") or stdout or "")[:400]))
+
+    @staticmethod
+    def _slug_de_unit(unit):
+        """Slug estable a partir del nombre de la unit (``odoo-bj.service``)."""
+        base = re.sub(r"\.service$", "", unit or "").lower()
+        slug = re.sub(r"[^a-z0-9-]+", "-", base).strip("-")
+        return slug or "odoo"
+
+    def _aplicar_discovery(self, datos, proyecto_centinela):
+        """Registra en PCM lo que encontró el discovery. Idempotente.
+
+        - Si el servidor no tiene entorno, se le crea uno SIN proyecto: D6
+          permite el servidor compartido, y el cliente sale de sus instancias.
+        - Cada unit con un odoo.conf legible es una instancia, upsert por
+          (entorno, slug), con el proyecto CENTINELA hasta que alguien la
+          clasifique.
+        - Cada base se asocia a la instancia cuyo ``db_user`` es su dueño,
+          cuando hay exactamente una; si no, queda suelta en el entorno.
+        - Lo que no encaja en el layout esperado NO aborta: se devuelve como
+          «no reconocido» con lo que se encontró, para el reporte.
+
+        Todo esto escribe en la BASE DE PCM, no en el servidor.
+
+        Returns:
+            dict: ``{"estado": "ok"|"no_reconocido", "instancias": int,
+                "bases": int, "detalle": str}``.
+        """
+        # Import local: environment importa de este módulo (circular).
+        from .primate_cloud_environment import DB_NAME_RE
+        self.ensure_one()
+        Instance = self.env["primate.cloud.instance"]
+        entorno = self.environment_id
+        if not entorno:
+            entorno = self.env["primate.cloud.environment"].create({
+                "name": self.name,
+                "account_id": self.account_id.id,
+                "state": "active",
+                "ec2_instance_id": self.id,
+            })
+            self.environment_id = entorno
+
+        notas, instancias = [], Instance
+        version_valida = dict(Instance._fields["odoo_version"].selection)
+        puertos_usados = set(entorno.instance_ids.mapped("http_port"))
+        for unit in datos.get("units") or []:
+            conf = unit.get("conf") or {}
+            if not unit.get("conf_path") or unit.get("conf_error") or not conf:
+                notas.append(_(
+                    "Unit «%(u)s» no reconocida: %(motivo)s. ExecStart: %(ex)s",
+                    u=unit.get("unit"),
+                    motivo=(unit.get("conf_error")
+                            or (_("sin -c/--config en el ExecStart")
+                                if not unit.get("conf_path")
+                                else _("conf sin claves reconocibles"))),
+                    ex=unit.get("exec") or "?"))
+                continue
+            slug = self._slug_de_unit(unit.get("unit"))
+            # Orden: argumento del ExecStart > http_port del conf >
+            # xmlrpc_port (nombre viejo) > 8069, que es el default REAL de Odoo
+            # cuando nada lo fija (no es un número inventado).
+            try:
+                puerto = int(unit.get("port_arg") or conf.get("http_port")
+                             or conf.get("xmlrpc_port") or 8069)
+            except ValueError:
+                puerto = 8069
+            vals = {
+                "name": unit.get("unit") or slug,
+                "service_name": re.sub(r"\.service$", "", unit.get("unit") or ""),
+                "conf_path": unit["conf_path"],
+                "data_dir": conf.get("data_dir") or False,
+                "pg_user": conf.get("db_user") or False,
+                "state": "active" if unit.get("active") == "active" else "draft",
+            }
+            if unit.get("version") in version_valida:
+                vals["odoo_version"] = unit["version"]
+            existente = Instance.search([("environment_id", "=", entorno.id),
+                                         ("slug", "=", slug)], limit=1)
+            # Dos Odoo en el mismo puerto no pueden estar corriendo a la vez:
+            # uno de los dos datos está mal. No se le inventa otro número (un
+            # Integer vacío se guarda como 0 y choca igual con
+            # UNIQUE(environment_id, http_port)); se anota para revisarlo a mano.
+            ocupado = puertos_usados - ({existente.http_port} if existente else set())
+            if puerto in ocupado:
+                notas.append(_(
+                    "Unit «%(u)s» no registrada: su puerto %(p)s ya lo usa otra "
+                    "instancia del servidor. Revisar a mano cuál de los dos "
+                    "conf está desactualizado.", u=unit.get("unit"), p=puerto))
+                continue
+            vals["http_port"] = puerto
+            puertos_usados.add(puerto)
+            if existente:
+                existente.write(vals)
+                instancias |= existente
+            else:
+                # Los defaults de la instancia son los del layout legacy de PCM
+                # (la unit `odoo`, sus rutas, el 8072). En un servidor
+                # descubierto eso sería registrar datos que nadie midió: lo que
+                # no se leyó va vacío (el gevent_port queda en 0 = desconocido).
+                vals["gevent_port"] = False
+                vals.update({"slug": slug, "environment_id": entorno.id,
+                             "project_id": proyecto_centinela.id,
+                             # Default SEGURO: lo que no se sabe qué es se trata
+                             # como producción (el gate del restore pide el
+                             # nombre exacto y no se neutraliza).
+                             "env_type": "production"})
+                instancias |= Instance.create(vals)
+
+        if datos.get("units_error"):
+            notas.append(datos["units_error"])
+
+        bases = 0
+        for db in datos.get("databases") or []:
+            if not DB_NAME_RE.match(db.get("name") or ""):
+                notas.append(_("Base con nombre no soportado, omitida: %s")
+                             % db.get("name"))
+                continue
+            duenas = instancias.filtered(lambda i: i.pg_user == db.get("owner"))
+            vals_db = {
+                "name": db["name"], "account_id": self.account_id.id,
+                "environment_id": entorno.id, "db_type": "local_pg",
+                "ec2_instance_id": self.id, "state": "available",
+            }
+            previa = self.env["primate.cloud.database"].search(
+                [("environment_id", "=", entorno.id), ("name", "=", db["name"])],
+                limit=1)
+            # Se asocia por el dueño de la base, y sólo si la base no tenía ya
+            # una instancia: una asociación previa puede ser una corrección
+            # manual, y reimportar no la pisa.
+            asociar = len(duenas) == 1 and not (previa and previa.instance_id)
+            if asociar:
+                vals_db["instance_id"] = duenas.id
+            # Copia: el create del mixin instance.linked MUTA el dict que
+            # recibe (le agrega instance_id), así que no se puede inspeccionar
+            # vals_db después para saber qué se decidió acá.
+            registro = entorno._upsert_provisioned_database(dict(vals_db))
+            # El mixin completa instance_id con la instancia PRIMARIA del
+            # entorno cuando no viene. En el discovery eso es adivinar: una
+            # base cuyo dueño no es ninguna instancia (p. ej. de postgres)
+            # queda SUELTA, para asociarla a mano.
+            if not previa and not asociar and registro.instance_id:
+                registro.instance_id = False
+            if len(duenas) == 1 and not duenas.database_id:
+                duenas.database_id = registro
+            bases += 1
+        if datos.get("databases_error"):
+            notas.append(datos["databases_error"])
+
+        if not instancias:
+            notas.insert(0, _(
+                "Layout no reconocido: ninguna unit de Odoo con odoo.conf "
+                "legible (%(n)s base(s) encontradas).", n=bases))
+        return {
+            "estado": "ok" if instancias else "no_reconocido",
+            "instancias": len(instancias),
+            "bases": bases,
+            "detalle": "\n".join(notas),
+        }
+
     # --- Runtime detectado on-demand por SSM (Fase panel, Bloque B1) ---
     runtime_python_version = fields.Char(string="Versión Python", readonly=True)
     runtime_odoo_version = fields.Char(string="Versión Odoo", readonly=True)
@@ -312,7 +518,7 @@ class PrimateCloudEc2Instance(models.Model):
             "last_sync_date": now,
         }
 
-    def _sync_from_aws(self, account, instances):
+    def _sync_from_aws(self, account, instances, return_records=False):
         """Crea/actualiza instancias EC2 a partir de datos normalizados de AWS.
 
         Hace upsert por (cuenta, instance_id). No toca el vínculo con el entorno
@@ -330,11 +536,17 @@ class PrimateCloudEc2Instance(models.Model):
             account (recordset): la cuenta AWS de origen.
             instances (list[dict]): salida de ``AwsEc2Service.list_instances``.
 
+            return_records (bool): agregar ``records`` al resultado. Opcional
+                para no cambiar el contrato ``{"created", "updated"}`` que usan
+                los llamadores de siempre (y que fija ``test_ec2_upsert``).
+
         Returns:
-            dict: ``{"created": int, "updated": int}``.
+            dict: ``{"created": int, "updated": int}``, más ``records`` =
+                ``[(registro, "created"|"updated"), ...]`` si se pidió.
         """
         now = fields.Datetime.now()
         created = updated = 0
+        records = []
         for data in instances:
             vals = self._aws_vals(data, now)
             existing = self.search(
@@ -347,6 +559,7 @@ class PrimateCloudEc2Instance(models.Model):
             if existing:
                 existing.write(vals)
                 updated += 1
+                records.append((existing, "updated"))
             else:
                 vals.update(
                     {
@@ -355,9 +568,12 @@ class PrimateCloudEc2Instance(models.Model):
                         "management_state": "adopted_readonly",
                     }
                 )
-                self.create(vals)
+                records.append((self.create(vals), "created"))
                 created += 1
-        return {"created": created, "updated": updated}
+        resultado = {"created": created, "updated": updated}
+        if return_records:
+            resultado["records"] = records
+        return resultado
 
     def _register_provisioned(self, account, aws_data, environment=None, os_type=None, disk_size_gb=None):
         """Crea el registro de una instancia recién creada en AWS (Fase 4).

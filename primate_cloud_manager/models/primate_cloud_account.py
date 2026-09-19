@@ -5,7 +5,7 @@ import logging
 import os
 from datetime import date, timedelta
 
-from odoo import _, api, fields, models
+from odoo import SUPERUSER_ID, _, api, fields, models
 from odoo.exceptions import UserError
 
 from ..services import (
@@ -926,6 +926,25 @@ class PrimateCloudAccount(models.Model):
                 description=_("Sincronización diaria: %s") % account.name
             ).job_sync_resources()
         _logger.info("Sincronización diaria encolada para %s cuentas.", len(accounts))
+
+    def action_import_servers(self):
+        """Abre el asistente de importación masiva de servidores (F2).
+
+        Admin-only también acá (no sólo en el wizard): es la puerta de entrada
+        de servidores de clientes a PCM.
+        """
+        self.ensure_one()
+        if self.env.uid != SUPERUSER_ID and not self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"):
+            raise UserError(_("Solo un Cloud Admin puede importar servidores."))
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Importar servidores"),
+            "res_model": "primate.cloud.server.import.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_account_id": self.id},
+        }
 
     def job_sync_resources(self):
         """Job: importa EC2, RDS y DNS desde AWS hacia el inventario.
