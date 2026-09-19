@@ -4,6 +4,35 @@
 > Los de **Backend/staging** NO se pagan como deuda suelta: se resuelven al construir la
 > Fase 8 (ver propuesta de diseño de la fase).
 
+## 🚦 ORDEN DE PUESTA EN PRODUCCIÓN (gate explícito, acordado 2026-09-19)
+
+**features → ensayo → HTTPS → producción.**
+
+1. **Features**: restauración desde dump externo, importación masiva de servidores y
+   backups programados.
+2. **Ensayo** con Barraca Julia (Odoo 19 Community, base migrada v13→v19). Corre en la
+   **cuenta AWS personal de Daryl**, no en una cuenta de cliente.
+3. **HTTPS del propio manager** — sigue siendo **bloqueante**, pero de *producción con
+   cliente real*, NO del desarrollo ni del ensayo. Antes se leía como bloqueante de todo
+   lo que viniera después del primer cliente; queda acotado acá para que el gate no
+   frene el ensayo ni se pierda de vista.
+4. **Producción** con cliente real: recién acá se exige el HTTPS resuelto.
+
+## ⏸ POSPUESTO — Backups programados con catálogo (F3)
+
+**Diseño aprobado en sep-2026, NO implementado.** Está completo en
+`F3_BACKUPS_PROGRAMADOS_DISENO.md` para retomarlo sin rediseñar.
+
+- **Motivo de la postergación:** espacio en disco del servidor, sobre todo en producción
+  (el zip formato Odoo no se puede streamear: obliga a bajar a disco, ≈3× el tamaño), y no
+  hace falta para el ensayo de Barraca Julia.
+- 🔴 **Requerido antes de pasar un cliente a producción**, junto con el **HTTPS del manager**
+  (ver el gate de arriba).
+- **Ojo:** el catálogo (`primate.cloud.backup`), la política, `job_run_backup` y "Respaldar
+  ahora" **ya existen desde la Fase 8**. Posponer F3 no los elimina: lo pospuesto es el
+  formato zip, la retención por N copias, el flag de verificación, que el cron honre la
+  frecuencia, el catálogo en la ficha de base/instancia y cuenta+instancia en la key.
+
 ## ✅ RESUELTO
 
 - **F5 — Integridad del validador de respaldos: falso "No cumple" por BD huérfana.**
@@ -69,6 +98,17 @@
   el sync real a nivel entorno (ver ítem de Backend).
 
 ## Tests
+
+- **`TestPcmApp.test_accent_default_teal` falla: el test quedó viejo, no el código.**
+  Espera `pcm_accent == "teal"` y el default del campo es **`violet`**
+  (`models/res_users.py:33`). El test es del commit fundacional `2cddcfc`; el
+  default se cambió después en `7ddf047` («reconciliar tokens al handoff de
+  diseño»), y el test no se actualizó. **Verificado preexistente** el 2026-09-19:
+  corrido con el árbol sin los cambios de F1 (stash) falla igual
+  (`'violet' != 'teal'`, 1 failed of 1). Arreglo: cambiar el esperado a `violet`
+  y, de paso, renombrar el test (`test_accent_default_teal` miente). No se tocó
+  en F1 por estar fuera de su alcance.
+
 
 - **Test de tags con strings literales** — `test_aws_base.py` compara las claves contra las
   constantes de `aws_base` (constante vs constante): un typo en la constante pasaría el
