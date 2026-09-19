@@ -19,7 +19,9 @@
                         <field name="origin_database_id"
                                domain="[('environment_id', '=', origin_environment_id)]"/>
                         <field name="account_id"/>
-                        <field name="region"/>
+                        <!-- Con servidor destino existente la región es la de su
+                             máquina (se resuelve sola): sólo se elige para uno nuevo. -->
+                        <field name="region" readonly="target_server_id" force_save="1"/>
                         <field name="name"/>
                         <field name="domain" placeholder="staging.forum.primate.cloud"/>
                         <field name="target_server_id"/>

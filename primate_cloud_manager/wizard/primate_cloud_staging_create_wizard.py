@@ -152,15 +152,32 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
         if not self.target_server_id and origin.state == "active" \
                 and not origin._is_legacy_layout():
             self.target_server_id = origin
+        self._region_desde_destino()
         # Origen explícito: preselección solo cuando es inequívoco.
         if not self.origin_instance_id and len(origin.ec2_instance_ids) == 1:
             self.origin_instance_id = origin.ec2_instance_ids
         if not self.origin_database_id and len(origin.database_ids) == 1:
             self.origin_database_id = origin.database_ids
 
+    @api.onchange("target_server_id")
+    def _onchange_target_server(self):
+        self._region_desde_destino()
+
+    def _region_desde_destino(self):
+        """Con servidor destino EXISTENTE, la región es la de su máquina.
+
+        No es una decisión del operador: el staging vive donde vive el
+        servidor. El campo queda readonly en la vista; sólo se elige región
+        para un servidor dedicado NUEVO.
+        """
+        machine = self.target_server_id._active_machine() if self.target_server_id else False
+        if machine and machine.region:
+            self.region = machine.region
+
     def _prepare_params(self):
         """Construye el dict de parámetros para el flujo de staging."""
         self.ensure_one()
+        self._region_desde_destino()
         security_groups = [
             sg.strip() for sg in (self.security_group_ids or "").split(",") if sg.strip()
         ]

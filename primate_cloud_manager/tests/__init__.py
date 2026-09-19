@@ -28,3 +28,4 @@ from . import test_f2_importacion
 from . import test_restore_neutralizacion
 from . import test_ui_acciones
 from . import test_cadena_validacion
+from . import test_region_y_filestore

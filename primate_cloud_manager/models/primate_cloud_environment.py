@@ -1326,7 +1326,12 @@ class PrimateCloudEnvironment(models.Model):
                         "El servidor no tiene una máquina activa."))
                 base = self.account_id._get_aws_service()
                 ssm = aws_ssm.AwsSsmService(base)
-                region = (params.get("region") or machine.region
+                # La región es la de la MÁQUINA del servidor, siempre: el
+                # formulario de staging trae su propio campo región (default: la
+                # de la cuenta) y, si pisaba a la de la máquina, el SSM iba a
+                # otra región → "InvalidInstanceId" (ensayo de Barraca Julia,
+                # servidor en us-east-2 con la cuenta en us-east-1).
+                region = (machine.region or params.get("region")
                           or self.account_id.default_region)
                 instance.state = "installing"
                 # Layout por slug en el REGISTRO (rutas + pg_user propio,
@@ -2069,15 +2074,19 @@ class PrimateCloudEnvironment(models.Model):
         if not self.job_add_instance(instance_id, params):
             return False   # job_add_instance ya auditó y dejó la instancia en error
         try:
-            region = params.get("region") or self.account_id.default_region
             machine = self._active_machine()
+            # Cada máquina con SU región (ver job_add_instance): el destino, la
+            # de este servidor; el backup del origen, la de la máquina origen.
+            region = (machine.region or params.get("region")
+                      or self.account_id.default_region)
             # 2. Copiar la base del origen sobre la del staging (pipeline B4).
             origin_instance = self.env["primate.cloud.ec2.instance"].browse(
                 params.get("origin_instance_id") or []).exists()
             origin_db = self.env["primate.cloud.database"].browse(
                 params.get("origin_database_id") or []).exists()
+            origin_region = origin_instance.region or region
             source = self._staging_source_backup(
-                origin, origin_instance, origin_db, region,
+                origin, origin_instance, origin_db, origin_region,
                 use_last_backup=params.get("use_last_backup"),
                 bucket=params.get("transfer_bucket"))
             ok = self.job_restore_backup({
@@ -3362,8 +3371,15 @@ class PrimateCloudEnvironment(models.Model):
                 "ec2_instance_id": instance.id,
                 "instance_id": odoo_instance.id,
             })
-        extra = "" if has_filestore else _(" (sin filestore: el backup no "
-                                           "tenía o el objeto ya no está)")
+        # El filestore se informa desde lo que PASÓ. Con dump externo, los
+        # marcadores del script (PCM_FILESTORE_OK/SKIP + la cantidad); la nota
+        # de has_filestore es del camino del catálogo y con un dump externo
+        # decía "sin filestore" aunque se hubieran restaurado 2.470 archivos.
+        if origen:
+            extra = ""
+        else:
+            extra = "" if has_filestore else _(" (sin filestore: el backup no "
+                                               "tenía o el objeto ya no está)")
 
         # --- F1: limpieza, borrado del origen y retención de los pre-backups ---
         # La limpieza de temporales la hace el `trap` del script SIEMPRE (éxito
@@ -3376,6 +3392,12 @@ class PrimateCloudEnvironment(models.Model):
                          % marcas["cleaned"])
         if marcas.get("format"):
             notas.append(_("Formato detectado: %s.") % marcas["format"])
+        if origen and "filestore" in marcas:
+            if marcas["filestore"]:
+                notas.append(_("Filestore restaurado (%s archivos).")
+                             % (marcas.get("filestore_files") or "?"))
+            else:
+                notas.append(_("Sin filestore en el origen: se restauró sólo la base."))
         if marcas.get("warning_role"):
             notas.append(_("ATENCIÓN: %s") % marcas["warning_role"])
         if origen:
@@ -3626,6 +3648,8 @@ class PrimateCloudEnvironment(models.Model):
                 datos["filestore"] = linea[len("PCM_FILESTORE_OK "):]
             elif linea == "PCM_FILESTORE_SKIP":
                 datos["filestore"] = ""
+            elif linea.startswith("PCM_FILESTORE_FILES="):
+                datos["filestore_files"] = linea.split("=", 1)[1].strip()
             elif linea.startswith("PCM_WARNING_ROLE"):
                 datos["warning_role"] = linea[len("PCM_WARNING_ROLE"):].strip()
         return datos
@@ -4122,6 +4146,9 @@ class PrimateCloudEnvironment(models.Model):
             '  rsync -a --delete "$WORK/x/filestore/" %s/' % target_dir,
             "  chown -R odoo:odoo %s" % target_dir,
             '  say "PCM_FILESTORE_OK %s"' % target_dir,
+            # Cuántos archivos quedaron: lo que el chatter cuenta, medido.
+            '  say "PCM_FILESTORE_FILES=$(find %s -type f | wc -l | tr -d \' \')"'
+            % target_dir,
             "else",
             '  say "PCM_FILESTORE_SKIP"',
             "fi",
