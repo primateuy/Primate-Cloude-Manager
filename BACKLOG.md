@@ -136,6 +136,15 @@ base (p. ej. 1,5 × `dump.sql`), y chequear `df` del volumen de PG, no sólo el 
 
 ## UI
 
+- **La salida de los comandos SSM se ve como HTML escapado en el chatter** (visto 2026-09-19 en el
+  ensayo de Barraca Julia: `&lt;b&gt;Comando SSM&lt;/b&gt;…` en el mensaje de `bj-ensayo`).
+  `job_execute_command` (`primate_cloud_ec2_instance.py`) arma el cuerpo como `str` con `%` y se lo
+  pasa a `message_post`, que desde Odoo 17 escapa todo `str`. El arreglo NO es envolver el
+  resultado en `Markup` a secas: el comando, el stdout y el stderr vienen del servidor y tienen que
+  ir **escapados** dentro de un `Markup` (`Markup("…<pre>%s</pre>") % stdout`), o se abre un
+  camino para inyectar HTML en el chatter. Buscar el mismo patrón en los demás `message_post` que
+  interpolan salida de SSM. Con test: el cuerpo trae `<pre>` real y un `<script>` en el stdout
+  sale escapado.
 - **Label honesto del botón "Sincronizar" del entorno** — sigue diciendo "Sincronizar"
   (`entorno_detalle.xml:65`); debe decir "Sincronizar servidores desde AWS" hasta que exista
   el sync real a nivel entorno (ver ítem de Backend).
