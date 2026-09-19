@@ -1213,6 +1213,96 @@
         }
     }
 
+    // Formularios ODOO embebidos en la app: en el drawer (WizardDrawer, lleva
+    // la clase `modal`; los formularios propios de PCM usan PcmFormDrawer, sin
+    // ella) y en el área principal (pantallas nativas: nuevo proyecto, nuevo
+    // entorno, "Gestionar"). Defectos que destapó el mapeo de pantallas para el
+    // manual (2026-09-19):
+    // - Contraste: Odoo pinta su propia hoja, barra de estado y chatter en
+    //   BLANCO y los valores heredan el texto del tema; en apariencia oscura
+    //   quedaba texto casi blanco sobre blanco (en un restore: el entorno y el
+    //   servidor destino, lo que hay que leer antes de dropear). Se les da la
+    //   superficie y el texto de la app con los tokens de apariencia existentes
+    //   (sirven igual en claro y en oscuro: en claro no cambia nada visible).
+    // - Ancho (sólo drawer): los asistentes de Odoo arman dos columnas de
+    //   etiqueta+valor y en 560px los valores se cortaban ("SM…", "s3://pcm-…").
+    // Las LISTAS nativas no entran: ya se leían bien.
+    @mixin pcm-form-odoo-legible {
+        .o_form_renderer,
+        .o_form_sheet_bg,
+        .o_form_sheet,
+        .o_form_statusbar,
+        .o-mail-Form-chatter,
+        .o-mail-Chatter,
+        .o-mail-Chatter-top {
+            background: var(--pcm-card);
+            color: var(--pcm-ink-text);
+            border-color: var(--pcm-line);
+        }
+        .o_form_label,
+        .o_field_widget,
+        .o_field_widget input,
+        .o_field_widget select,
+        .o_field_widget textarea,
+        .o_field_widget .o_input,
+        .o-mail-Message-body,
+        .o-mail-Message-author {
+            color: var(--pcm-ink-text);
+        }
+        .o_input {
+            border-color: var(--pcm-line);
+        }
+        .o_input::placeholder,
+        .o_field_widget input::placeholder,
+        .o_field_widget textarea::placeholder {
+            color: var(--pcm-soft);
+            opacity: 1;
+        }
+        .o_horizontal_separator,
+        .text-muted,
+        .o-mail-Message-date,
+        .o-mail-DateSection {
+            color: var(--pcm-soft) !important;
+        }
+        // Botones secundarios y pasos de la barra de estado: venían en blanco.
+        .o_form_statusbar .btn-secondary,
+        .o-mail-Chatter-top .btn-secondary {
+            background: var(--pcm-card);
+            color: var(--pcm-ink-text);
+            border-color: var(--pcm-line);
+        }
+        .o_statusbar_status .o_arrow_button:not(.o_arrow_button_current) {
+            background: var(--pcm-card);
+            color: var(--pcm-soft);
+        }
+        // Pestañas (<notebook>): el encabezado también venía en blanco.
+        .o_notebook_headers,
+        .o_notebook .nav-tabs {
+            background: var(--pcm-card);
+            border-color: var(--pcm-line);
+        }
+        .o_notebook .nav-link {
+            background: transparent;
+            color: var(--pcm-soft);
+            &.active {
+                background: var(--pcm-card);
+                color: var(--pcm-ink-text);
+                border-color: var(--pcm-line) var(--pcm-line) var(--pcm-card);
+            }
+        }
+    }
+
+    .o_pcm_drawer.modal {
+        // = min(920px, 60vw), sin min(): libsass lo toma como función propia y
+        // revienta con unidades mezcladas (y con él, el bundle entero).
+        width: 920px;
+        max-width: 60vw;
+        @include pcm-form-odoo-legible;
+    }
+    .o_pcm_screen.o_pcm_native .o_form_view {
+        @include pcm-form-odoo-legible;
+    }
+
     // ========================================================================
     // Kit de formulario OWL (DNS y futuros bloques). Estructura ÚNICA; el
     // aspecto por tema sale de los tokens (radios/espacios/tipografía), NUNCA de

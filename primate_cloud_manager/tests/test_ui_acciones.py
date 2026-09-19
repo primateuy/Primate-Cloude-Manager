@@ -141,3 +141,26 @@ class TestAccionesUI(TransactionCase):
         form.partner_id = self.partner
         proyecto = form.save()
         self.assertEqual(proyecto.partner_id, self.partner)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestBundleScss(TransactionCase):
+    """El SCSS de la app COMPILA (2026-09-19).
+
+    Un error de compilación del SCSS no rompe la instalación ni ningún test: el
+    servidor lo deja como WARNING en el log y sirve el bundle sin las reglas
+    nuevas (o con el CSS anterior). Pasó con un ``min(920px, 60vw)`` que libsass
+    toma como función propia: el bundle ENTERO dejó de actualizarse y nada
+    falló. Este test compila el bundle de verdad y exige cero errores.
+    """
+
+    def test_bundle_web_compila_sin_errores(self):
+        bundle = self.env["ir.qweb"]._get_asset_bundle(
+            "web.assets_web", js=False)
+        css = bundle.preprocess_css()
+        self.assertFalse(bundle.css_errors,
+                         "El SCSS del bundle no compila:\n%s"
+                         % "\n".join(bundle.css_errors))
+        # Y lo compilado trae las reglas de la app (no un bundle vacío o viejo).
+        self.assertIn("o_pcm_drawer.modal", css)
+        self.assertIn("o_pcm_native", css)
