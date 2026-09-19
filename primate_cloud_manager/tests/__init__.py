@@ -25,3 +25,4 @@ from . import test_f1_restore_externo
 from . import test_f2_adopcion_readonly
 from . import test_f2_contrato_fix
 from . import test_f2_importacion
+from . import test_restore_neutralizacion

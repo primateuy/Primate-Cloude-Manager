@@ -1252,7 +1252,8 @@ class TestBackupRestore(TransactionCase):
                   "pre_backup": pre_backup}
         ssm = mock.Mock()
         ssm.run_script.return_value = ssm_output or {
-            "status": "Success", "stdout": "PCM_DROP_STARTED\nPCM_RESTORE_OK",
+            "status": "Success",
+            "stdout": "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_RESTORE_OK",
         }
         pre_record = self.env["primate.cloud.backup"].create({
             "name": "Pre-restore x", "environment_id": target.id,
@@ -1277,7 +1278,10 @@ class TestBackupRestore(TransactionCase):
         result, ssm, neutralize, _pre, _rec = self._run_restore()
         self.assertTrue(result)
         ssm.run_script.assert_called_once()
-        neutralize.assert_called_once()
+        # 2026-09-19: la neutralización va DENTRO del script del restore,
+        # antes de arrancar Odoo; ya no hay un segundo comando SSM.
+        neutralize.assert_not_called()
+        self.assertIn("pcm_start_unit", ssm.run_script.call_args[0][1])
         log = self.env["primate.cloud.operation.log"].search(
             [("action_type", "=", "backup_restore"),
              ("resource_id", "=", self.staging.id)], limit=1,
@@ -1285,10 +1289,11 @@ class TestBackupRestore(TransactionCase):
         self.assertEqual(log.result, "success")
 
     def test_job_prod_no_neutraliza(self):
-        result, _ssm, neutralize, _pre, _rec = self._run_restore(
+        result, ssm, neutralize, _pre, _rec = self._run_restore(
             target=self.prod)
         self.assertTrue(result)
         neutralize.assert_not_called()
+        self.assertNotIn("pcm_start_unit", ssm.run_script.call_args[0][1])
 
     def test_job_post_drop_muestra_pre_backup(self):
         """Fracaso post-drop: la key del pre-backup queda a la vista."""
@@ -1611,7 +1616,7 @@ class TestStagingInstanceAware(TransactionCase):
         ssm = mock.Mock()
         ssm.run_script.return_value = {
             "status": "Success",
-            "stdout": "PCM_RESTORE_OK\nNEUTRALIZED",
+            "stdout": "PCM_NEUTRALIZED\nPCM_RESTORE_OK",
         }
         with mock.patch.object(aws_s3.AwsS3Service, "head_object",
                                return_value={"key": "k"}), \

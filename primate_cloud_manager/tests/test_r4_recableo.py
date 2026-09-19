@@ -1042,7 +1042,8 @@ class TestR4B5Staging(TransactionCase):
             "status": "Success",
             "stdout": ("PCM_BOOTSTRAP_OK\nPCM_INSTALL_OK\n"
                        "PCM_DUMP_SIZE_BYTES=1\nPCM_FS_SIZE_BYTES=1\n"
-                       "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_RESTORE_OK")}
+                       "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_NEUTRALIZED\n"
+                       "PCM_RESTORE_OK")}
         params = {"region": "us-east-1", "db_name": "prod_staging",
                   "db_password": "PgPass_x", "domain": "stg.pcm.test",
                   "admin_password": "x", "transfer_bucket": "pcm-bucket",
@@ -1066,8 +1067,11 @@ class TestR4B5Staging(TransactionCase):
             ok = self.origin.job_create_staging_instance(inst.id, params)
         self.assertTrue(ok)
         self.assertEqual(inst.state, "active")
-        # Neutralizó aunque el servidor es producción (mira la INSTANCIA).
-        self.assertTrue(neutralized.get("done"))
+        # Neutralizó aunque el servidor es producción (mira la INSTANCIA):
+        # dentro del script del restore, antes de arrancar Odoo.
+        self.assertFalse(neutralized.get("done"))
+        self.assertTrue(any("pcm_start_unit" in c[0][1]
+                            for c in fake.run_script.call_args_list))
 
     def test_restore_neutraliza_por_instancia_no_por_servidor(self):
         # El fix clave de B5: un staging (env_type=staging) en un servidor de
@@ -1089,7 +1093,8 @@ class TestR4B5Staging(TransactionCase):
         rec.write({"state": "completed"})
         fake = mock.Mock()
         fake.run_script.return_value = {
-            "status": "Success", "stdout": "PCM_DROP_STARTED\nPCM_RESTORE_OK"}
+            "status": "Success",
+            "stdout": "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_RESTORE_OK"}
         called = {}
         with mock.patch.object(aws_s3.AwsS3Service, "head_object",
                                return_value={"key": "k"}), \
@@ -1103,8 +1108,10 @@ class TestR4B5Staging(TransactionCase):
                 "instance_id": self.machine.id,
                 "odoo_instance_id": stg_inst.id, "pre_backup": False})
         self.assertTrue(ok)
-        # Servidor = producción, pero la instancia destino es staging → NEUTRALIZA.
-        self.assertTrue(called.get("done"))
+        # Servidor = producción, pero la instancia destino es staging → NEUTRALIZA
+        # (dentro del script del restore, antes de arrancar Odoo).
+        self.assertFalse(called.get("done"))
+        self.assertIn("pcm_start_unit", fake.run_script.call_args[0][1])
 
 
 @tagged("post_install", "-at_install", "primate_cloud")

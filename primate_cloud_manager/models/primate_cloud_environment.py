@@ -6,6 +6,7 @@ bases, DNS). En Fase 4 gana el flujo de aprovisionamiento completo
 (EC2 → DB → install_odoo.sh por SSM → nginx → SSL → DNS), todo async vía
 queue_job. La trazabilidad (Fase 5) y el staging (Fase 7) se agregan luego.
 """
+import base64
 import json
 import logging
 import re
@@ -3116,15 +3117,38 @@ class PrimateCloudEnvironment(models.Model):
                 "Pre-backup omitido: la base '%s' no existe aún en el destino."
             ) % db_name)
 
+        # Neutralización: por default siempre que el destino NO sea
+        # producción; el refresh de staging puede saltearla explícitamente
+        # (spec §14.5). Sobre producción JAMÁS se neutraliza, pida lo que pida.
+        # R4-B5: el "producción" que importa es el de la INSTANCIA destino,
+        # NO el del servidor — un staging (env_type=staging) montado en un
+        # servidor de producción DEBE neutralizarse (si mirara self.env_type
+        # del servidor, se saltearía y el staging quedaría con mail/crons de
+        # prod: el peor accidente de staging).
+        #
+        # 2026-09-19: va DENTRO del script del restore, con Odoo parado. Antes
+        # era un segundo comando SSM después del arranque: Odoo corría sobre la
+        # base sin neutralizar (crons y SMTP de producción), y si la
+        # neutralización fallaba quedaba así (Barraca Julia).
+        neutralize = params.get("neutralize")
+        if neutralize is None:
+            neutralize = True
+        neutralize_sql = None
+        if neutralize and odoo_instance.env_type != "production":
+            neutralize_sql = self._render_neutralization_sql(
+                "https://%s" % (odoo_instance.main_url or db_name))
+
         # 4-5. Script: valida espacio y versión PG ANTES del drop; después
-        # stop Odoo → terminar conexiones → drop → restore → filestore → start.
+        # stop Odoo → terminar conexiones → drop → restore → filestore →
+        # neutralización (si corresponde) → start.
         # (todo sobre la unit/pg_user/filestore de la instancia ODOO destino).
         try:
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id,
                 self._build_backup_restore_script(
                     db_name, backup, has_filestore, odoo_instance,
-                    origin=origen, origin_size_mb=origen_mb),
+                    origin=origen, origin_size_mb=origen_mb,
+                    neutralize_sql=neutralize_sql),
                 region=instance.region or region,
                 comment="pcm restore: %s" % db_name,
                 timeout=3600,
@@ -3143,6 +3167,16 @@ class PrimateCloudEnvironment(models.Model):
         ref_log = (_(" Log completo en el servidor: %s.") % marcas["log_path"]
                    if marcas.get("log_path") else "")
         log_remoto["ref"] = ref_log
+        if "PCM_NEUTRALIZE_FAILED" in stdout + stderr:
+            # La base quedó restaurada pero sin neutralizar, y por eso la
+            # unit quedó PARADA a propósito (pcm_start_unit).
+            self.staging_neutralization_log = (stderr or stdout).strip()
+            return fail(_(
+                "Restore OK pero la NEUTRALIZACIÓN falló. Odoo quedó DETENIDO "
+                "a propósito: no se arranca sobre una base con el correo y los "
+                "crons de origen. Neutralizar a mano y recién ahí arrancar la "
+                "unit. Detalle: %s") % (stderr or stdout).strip()[-2000:],
+                result="partial")
         if output.get("status") != "Success" or "PCM_RESTORE_OK" not in stdout:
             error_text = stderr or stdout or output.get("status")
             if "PCM_ERROR_PG_MISMATCH" in stdout + stderr:
@@ -3151,6 +3185,10 @@ class PrimateCloudEnvironment(models.Model):
                     "versión más nueva que la del destino (actualizá "
                     "PostgreSQL del destino o usá otra instancia). Detalle: %s"
                 ) % error_text
+            if "PCM_UNIT_LEFT_STOPPED" in stdout + stderr:
+                error_text = _(
+                    "%s (Odoo quedó DETENIDO: la base se recreó y no llegó a "
+                    "neutralizarse.)") % error_text
             if "PCM_DROP_STARTED" in stdout:
                 # Fracaso POST-DROP: el camino de recuperación, a la vista.
                 if pre_record:
@@ -3167,29 +3205,19 @@ class PrimateCloudEnvironment(models.Model):
                         "Error: %(error)s", db=db_name, error=error_text)
             return fail(error_text)
 
-        # 6. Neutralización: por default siempre que el destino NO sea
-        # producción; el refresh de staging puede saltearla explícitamente
-        # (spec §14.5). Sobre producción JAMÁS se neutraliza, pida lo que pida.
-        # R4-B5: el "producción" que importa es el de la INSTANCIA destino,
-        # NO el del servidor — un staging (env_type=staging) montado en un
-        # servidor de producción DEBE neutralizarse (si mirara self.env_type
-        # del servidor, se saltearía y el staging quedaría con mail/crons de
-        # prod: el peor accidente de staging).
-        neutralize = params.get("neutralize")
-        if neutralize is None:
-            neutralize = True
-        if neutralize and odoo_instance.env_type != "production":
-            url = "https://%s" % (odoo_instance.main_url or db_name)
-            try:
-                self._staging_neutralize(
-                    instance, {"db_name": db_name},
-                    instance.region or region, url,
-                )
-            except Exception as error:  # noqa: BLE001 - alerta fuerte, sin silencio
+        # 6. Neutralización: ya corrió DENTRO del script, antes del arranque.
+        # Se exige su marcador: un script que dijo OK sin neutralizar (no
+        # debería pasar) no se da por bueno en silencio.
+        if neutralize_sql:
+            if "PCM_NEUTRALIZED" not in stdout:
                 return fail(_(
-                    "Restore OK pero la NEUTRALIZACIÓN falló: %s. NO usar el "
-                    "entorno hasta neutralizar a mano.") % error,
+                    "El restore terminó sin confirmar la neutralización. NO "
+                    "usar el entorno hasta verificarla a mano."),
                     result="partial")
+            self.staging_neutralization_log = _(
+                "Neutralizada dentro del restore, antes de arrancar Odoo.")
+            self.message_post(body=_(
+                "Base neutralizada para staging (antes de arrancar Odoo)."))
 
         # 7. Registro de la base destino (si no existía) + bitácora.
         if not target_db:
@@ -3521,7 +3549,7 @@ class PrimateCloudEnvironment(models.Model):
     @api.model
     def _build_backup_restore_script(self, db_name, backup, has_filestore,
                                      odoo_instance, origin=None,
-                                     origin_size_mb=0):
+                                     origin_size_mb=0, neutralize_sql=None):
         """Script SSM del restore (orden aprobado en el diseño del Bloque 4).
 
         Valida TODO antes de dropear (espacio en disco, versión PostgreSQL);
@@ -3552,6 +3580,12 @@ class PrimateCloudEnvironment(models.Model):
             origin_size_mb (float): tamaño del objeto de origen, ya resuelto
                 por el job (``head-object`` en S3 o ``stat`` en el servidor).
                 Es la base del cálculo de espacio de la etapa 1.
+            neutralize_sql (str, optional): SQL de neutralización ya
+                renderizado. Si viene, se aplica DENTRO del script, con Odoo
+                todavía parado, y el ``trap`` NO arranca la unit sobre una base
+                recreada que no quedó neutralizada (ver
+                ``_restore_lineas_neutralizacion``). Sin él (destino de
+                producción) el script es el de siempre, byte por byte.
 
         Returns:
             str: el script, envuelto para correr bajo bash.
@@ -3563,20 +3597,79 @@ class PrimateCloudEnvironment(models.Model):
         db = shlex.quote(db_name)
         if not origin:
             return self._build_restore_script_catalogo(
-                db_name, backup, has_filestore, service, pg_user, data_dir, db)
+                db_name, backup, has_filestore, service, pg_user, data_dir, db,
+                neutralize_sql=neutralize_sql)
         return self._build_restore_script_externo(
-            db_name, origin, origin_size_mb, service, pg_user, data_dir, db)
+            db_name, origin, origin_size_mb, service, pg_user, data_dir, db,
+            neutralize_sql=neutralize_sql)
+
+    @staticmethod
+    def _restore_lineas_neutralizacion(db, service, sql, say):
+        """Piezas del restore que neutraliza ANTES de arrancar Odoo.
+
+        El orden viejo —restore, arrancar la unit, y recién después un segundo
+        comando SSM con la neutralización— dejaba a Odoo corriendo sobre la base
+        restaurada SIN neutralizar: en el ensayo de Barraca Julia
+        (2026-09-19) los crons vencidos corrieron al minuto de arrancar, con el
+        SMTP real de producción activo, y si la neutralización fallaba, el
+        servicio quedaba así indefinidamente.
+
+        Ahora la neutralización es un paso del MISMO script, con la unit todavía
+        parada, y el arranque pasa por ``pcm_start_unit``: si la base ya se
+        dropeó y la neutralización no quedó aplicada —falló ella, o falló la
+        carga antes de llegar—, la unit NO se arranca. Es la misma garantía del
+        ``trap`` (cualquier salida pasa por ahí), con una condición: un Odoo
+        caído se ve y se arregla; uno arriba con correo y crons de producción
+        no se deshace.
+
+        Si la salida es ANTES del drop, la base vieja sigue intacta y la unit
+        arranca como siempre.
+
+        Returns:
+            dict: ``init`` (variables y la función de arranque), ``start`` (lo
+            que reemplaza al ``systemctl start`` del trap), ``dropped`` (marca
+            del punto de no retorno) y ``apply`` (el paso de neutralización).
+        """
+        # base64: el SQL viaja sin que ninguna comilla, `$` o línea suelta
+        # interfiera con el heredoc de _wrap_bash ni con el shell.
+        b64 = base64.b64encode(sql.encode("utf-8")).decode("ascii")
+        return {
+            "init": [
+                "PCM_DROPPED=0",
+                "PCM_NEUTRALIZED=0",
+                "pcm_start_unit() { "
+                'if [ "$PCM_DROPPED" = 1 ] && [ "$PCM_NEUTRALIZED" != 1 ]; then '
+                '%s "PCM_UNIT_LEFT_STOPPED: la base se recreó y NO quedó '
+                'neutralizada; no se arranca Odoo sobre ella"; '
+                "else systemctl start %s || true; fi; }" % (say, service),
+            ],
+            "start": "pcm_start_unit;",
+            "dropped": "PCM_DROPPED=1",
+            "apply": [
+                "if printf '%%s' %s | base64 -d | sudo -u postgres psql -q "
+                "-v ON_ERROR_STOP=1 -d %s; then PCM_NEUTRALIZED=1; "
+                '%s "PCM_NEUTRALIZED"; else %s "PCM_NEUTRALIZE_FAILED"; exit 1; fi'
+                % (shlex.quote(b64), db, say, say),
+            ],
+        }
 
     @api.model
     def _build_restore_script_catalogo(self, db_name, backup, has_filestore,
-                                       service, pg_user, data_dir, db):
+                                       service, pg_user, data_dir, db,
+                                       neutralize_sql=None):
         """Camino histórico: el dump sale de un registro del catálogo.
 
         Se conserva TAL CUAL (incluidos el orden de las guardas y la forma del
         ``trap``) porque es el que usan los cuatro llamadores del staging, ya
         verificados en real. Cualquier mejora del camino nuevo que quiera
         aplicarse acá es un cambio aparte, con su propia prueba.
+
+        Excepción (2026-09-19): con ``neutralize_sql`` se agrega la
+        neutralización antes del arranque (el staging es justamente quien más
+        la necesita). Sin él, el script sigue igual byte por byte.
         """
+        neu = (self._restore_lineas_neutralizacion(
+            db, service, neutralize_sql, "echo") if neutralize_sql else None)
         bkt = shlex.quote(backup._resolve_bucket())
         dump_key = shlex.quote(backup.s3_key)
         # El nombre del directorio dentro del tar es el de la BD de ORIGEN.
@@ -3610,15 +3703,24 @@ class PrimateCloudEnvironment(models.Model):
             # Orden aprobado: 1) detener Odoo (SOLO la unit de esta instancia),
             # 2) terminar conexiones residuales, 3) recién ahí el drop.
             "systemctl stop %s" % service,
+        ]
+        if neu:
+            lines += neu["init"]
+        lines += [
             # Desde acá, CUALQUIER salida (éxito o fallo) re-arranca ESTA unit:
             # el servidor puede hospedar más Odoo y un restore fallido no puede
             # dejar el servicio abajo. El start vive en el trap EXIT.
-            "trap 'systemctl start %s || true; rm -rf \"$FNAME\" \"$FS_TAR\" "
-            "\"$FS_TMP\" 2>/dev/null || true' EXIT" % service,
+            "trap '%s rm -rf \"$FNAME\" \"$FS_TAR\" "
+            "\"$FS_TMP\" 2>/dev/null || true' EXIT"
+            % (neu["start"] if neu else "systemctl start %s || true;" % service),
             'sudo -u postgres psql -tAc "SELECT pg_terminate_backend(pid) '
             "FROM pg_stat_activity WHERE datname = '%s' AND pid <> "
             'pg_backend_pid();" || true' % db_name,
             'echo "PCM_DROP_STARTED"',
+        ]
+        if neu:
+            lines.append(neu["dropped"])
+        lines += [
             "sudo -u postgres dropdb --if-exists %s" % db,
             "sudo -u postgres createdb -O %s %s" % (pg_user, db),
             'sudo -u postgres pg_restore -d %s "$FNAME" || true' % db,
@@ -3640,6 +3742,9 @@ class PrimateCloudEnvironment(models.Model):
                 'mv "$FS_TMP"/%s %s' % (origin_dir, target_dir),
                 "chown -R odoo:odoo %s" % target_dir,
             ]
+        if neu:
+            # Con Odoo todavía parado: el trap sólo lo arranca si esto pasó.
+            lines += neu["apply"]
         lines += [
             # El start NO va acá: lo hace el trap EXIT re-armado tras el stop,
             # para cubrir también todos los caminos de error.
@@ -3683,8 +3788,11 @@ class PrimateCloudEnvironment(models.Model):
     # un restore verboso perdería justamente el final.
     @api.model
     def _build_restore_script_externo(self, db_name, origin, origin_size_mb,
-                                      service, pg_user, data_dir, db):
+                                      service, pg_user, data_dir, db,
+                                      neutralize_sql=None):
         """Script del restore desde un dump externo (F1)."""
+        neu = (self._restore_lineas_neutralizacion(
+            db, service, neutralize_sql, "say") if neutralize_sql else None)
         # El dueño de la base destino, en crudo. Un dump externo suele venir
         # `--no-owner`: si se carga como `postgres`, TODAS las tablas quedan a
         # nombre de `postgres` y Odoo —que se conecta como `pg_user`, dueño de
@@ -3824,17 +3932,27 @@ class PrimateCloudEnvironment(models.Model):
         # --- Punto de no retorno: mismo orden aprobado que el camino histórico
         lines += [
             "systemctl stop %s" % service,
+        ]
+        if neu:
+            lines += neu["init"]
+        lines += [
             # Re-armado del trap: desde acá cualquier salida re-arranca la unit
-            # (el servidor puede hospedar otros Odoo) y limpia igual.
-            'cleanup() { rc=$?; set +x; systemctl start %s || true; '
+            # (el servidor puede hospedar otros Odoo) y limpia igual. Con
+            # neutralización, el arranque pasa por pcm_start_unit.
+            'cleanup() { rc=$?; set +x; %s '
             'rm -rf "$WORK" ${DL:+"$DL"} 2>/dev/null || true; '
             'say "PCM_CLEANED work=$WORK descargado=${DL:-(ninguno)}"; '
             'tail -c %d "$LOG" >&3 2>/dev/null || true; exit $rc; }'
-            % (service, tail),
+            % (neu["start"] if neu else "systemctl start %s || true;" % service,
+               tail),
             'sudo -u postgres psql -tAc "SELECT pg_terminate_backend(pid) '
             "FROM pg_stat_activity WHERE datname = '%s' AND pid <> "
             'pg_backend_pid();" || true' % db_name,
             'say "PCM_DROP_STARTED"',
+        ]
+        if neu:
+            lines.append(neu["dropped"])
+        lines += [
             "sudo -u postgres dropdb --if-exists %s" % db,
             "sudo -u postgres createdb -O %s %s" % (pg_user, db),
             # --- Restore según formato ---
@@ -3872,6 +3990,11 @@ class PrimateCloudEnvironment(models.Model):
             "else",
             '  say "PCM_FILESTORE_SKIP"',
             "fi",
+        ]
+        if neu:
+            # Con Odoo todavía parado: el trap sólo lo arranca si esto pasó.
+            lines += neu["apply"]
+        lines += [
             # El start lo hace el trap EXIT re-armado, para cubrir los errores.
             'say "PCM_RESTORE_OK"',
         ]
