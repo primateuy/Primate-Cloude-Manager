@@ -12,12 +12,29 @@
                     antes, salvo que lo desactives.
                 </div>
                 <group>
-                    <group string="Origen">
+                    <!-- Origen del CATÁLOGO: sólo cuando el wizard llega con un
+                         backup (botón "Restaurar" de un registro). No se elige
+                         acá; los orígenes elegibles son los de abajo. -->
+                    <group string="Origen (copia del catálogo)"
+                           invisible="not backup_id">
                         <field name="backup_id"/>
                         <field name="backup_environment_id"/>
                         <field name="backup_date"/>
                         <field name="backup_size_mb"/>
                         <field name="backup_s3_key"/>
+                    </group>
+                    <!-- Origen EXTERNO: un dump que no produjo PCM. -->
+                    <group string="Origen (dump externo)"
+                           invisible="backup_id">
+                        <field name="origin_type"/>
+                        <field name="origin_uri"
+                               required="origin_type"
+                               invisible="not origin_type"
+                               placeholder="s3://pcm-backups-…/incoming/dump.zip"/>
+                        <field name="origin_format"
+                               invisible="not origin_type"/>
+                        <field name="delete_source"
+                               invisible="origin_type != 's3_uri'"/>
                     </group>
                     <group string="Destino">
                         <field name="target_environment_id"/>
@@ -28,6 +45,19 @@
                         <field name="pre_backup"/>
                     </group>
                 </group>
+                <div class="alert alert-info" role="alert"
+                     invisible="origin_type != 's3_uri'">
+                    El dump tiene que estar en un bucket <strong>pcm-*</strong>:
+                    los permisos de S3 están acotados a esos buckets, así que
+                    ni PCM ni la instancia pueden leer en otro. Subilo con
+                    <code>aws s3 cp</code> y pegá acá la key completa.
+                </div>
+                <div class="alert alert-info" role="alert"
+                     invisible="origin_type != 'server_path'">
+                    La ruta tiene que ser absoluta y existir en el servidor. El
+                    archivo <strong>no se borra</strong> al terminar: lo dejó el
+                    operador, no es un temporal de PCM.
+                </div>
                 <div class="alert alert-warning" role="alert"
                      invisible="not target_is_production">
                     <strong>El destino es PRODUCCIÓN.</strong> Escribí el

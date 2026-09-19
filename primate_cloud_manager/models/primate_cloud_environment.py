@@ -82,6 +82,20 @@ ODOO_CONF_PATH = "/etc/odoo/odoo.conf"
 # (viaja dentro de SQL y de comandos shell: nada de comillas ni metacaracteres).
 DB_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 
+# F1 (restore desde dump externo): el detalle completo del restore va a un
+# archivo en el servidor —ruta predecible, para poder ir a buscarlo— y a la
+# bitácora viaja sólo un tail acotado: ``get_command_invocation`` trunca la
+# salida a 24.000 caracteres, así que un restore verboso perdería justo el
+# final, que es lo que se necesita leer cuando algo falla.
+# F1: retención CORTA propia para los pre-backups del restore, que van a S3 y
+# hasta ahora quedaban sin regla de expiración (se acumulaban). Es corta a
+# propósito: no es la retención de la política, que puede ser de meses.
+# Configurable por el parámetro ``pcm.pre_restore_retention_days``.
+PRE_RESTORE_RETENTION_DAYS = 7
+
+RESTORE_LOG_DIR = "/var/tmp/pcm/logs"
+RESTORE_TAIL_BYTES = 4000
+
 
 class PrimateCloudEnvironment(models.Model):
     """Combinación de infraestructura, base de datos y configuración de un Odoo."""
@@ -2984,25 +2998,45 @@ class PrimateCloudEnvironment(models.Model):
         su camino de recuperación sin buscarlo (sin auto-rollback en v1,
         decisión consciente).
 
+        **F1 (origen externo).** ``origin`` permite restaurar un dump que NO
+        produjo PCM: una key de S3 (subida por el operador a un bucket
+        ``pcm-*``) o una ruta del servidor. El contrato es **exactamente uno**
+        de ``backup_id`` u ``origin``, validado server-side por
+        :meth:`_restore_origen_normalizado`. Sin ``origin`` el camino es EL
+        MISMO de antes: los cuatro llamadores del staging no lo pasan.
+
         Args:
-            params (dict): ``backup_id``, ``db_name``, ``instance_id``,
-                ``pre_backup`` (bool).
+            params (dict): ``db_name``, ``instance_id``, ``pre_backup``
+                (bool), y **uno** de ``backup_id`` u ``origin``. Opcionales:
+                ``odoo_instance_id``, ``neutralize``, ``delete_source``
+                (borrar la key de origen si el restore sale bien).
         """
         self.ensure_one()
+        origen = self._restore_origen_normalizado(params)
         backup = self.env["primate.cloud.backup"].browse(
-            params["backup_id"]
+            params.get("backup_id") or []
         ).exists()
         db_name = params["db_name"]
         instance = self.env["primate.cloud.ec2.instance"].browse(
             params["instance_id"]
         ).exists()
-        log_name = _("Restaurar %(backup)s → %(env)s",
-                     backup=backup.name or "?", env=self.name)
+        # Con dump externo no hay registro de catálogo: el nombre de la
+        # bitácora sale del origen, para que diga QUÉ se restauró y no "?".
+        log_name = _("Restaurar %(origen)s → %(env)s",
+                     origen=(origen["uri"] if origen else (backup.name or "?")),
+                     env=self.name)
+
+        # Contenedor mutable: `fail` se define antes de que el script corra,
+        # pero el mensaje de error tiene que poder citar la ruta del log
+        # completo cuando ya existe (F1). Sin esto, el operador recibe el tail
+        # y no sabe dónde está el resto.
+        log_remoto = {"ref": ""}
 
         def fail(message, result="failed"):
+            detalle = "%s%s" % (message, log_remoto["ref"])
             self._log("backup_restore", name=log_name, result=result,
-                      error_message=message)
-            self.message_post(body=_("Restore fallido: %s") % message)
+                      error_message=detalle)
+            self.message_post(body=_("Restore fallido: %s") % detalle)
             return False
 
         # R4-B4: el guard del restore (el peor caso) se levantó. El script
@@ -3011,34 +3045,22 @@ class PrimateCloudEnvironment(models.Model):
         # Odoo de otro cliente del mismo servidor. La instancia destino se
         # resuelve explícita (params) o por la BD destino.
 
-        # 1. Registro válido + objetos realmente en S3 (¿los borró el lifecycle?).
-        if not backup or backup.state != "completed":
-            return fail(_("El backup no está disponible (estado: %s).")
-                        % (backup.state if backup else "?"))
+        # 1. Origen válido. El nombre de la base destino se valida SIEMPRE.
+        #    El resto lo resuelve el resolver que corresponda (F1): el del
+        #    catálogo verifica el registro y que los objetos SIGAN en S3; el
+        #    externo mide el dump para la guarda de espacio. Los dos devuelven
+        #    la misma tupla, así que acá no hay `if` de cuarenta líneas ni
+        #    reindentación del bloque histórico.
         if not DB_NAME_RE.match(db_name or ""):
             return fail(_("Nombre de base destino inválido: '%s'.") % db_name)
-        # Fallback explícito para registros previos al campo s3_bucket
-        # (decisión Bloque 4): el bucket de la política del entorno de origen.
-        bucket = backup._resolve_bucket()
-        if not bucket or not backup.s3_key:
-            return fail(_(
-                "No se pudo resolver el bucket del backup: el registro no lo "
-                "tiene y la política del entorno de origen tampoco lo define "
-                "(o falta la key S3)."))
-        origin_account = backup.environment_id.account_id
-        region = origin_account.default_region
-        try:
-            s3 = aws_s3.AwsS3Service(origin_account._get_aws_service())
-            if not s3.head_object(bucket, backup.s3_key, region=region):
-                return fail(_(
-                    "El dump ya no está en S3 (¿expiró por lifecycle?): "
-                    "s3://%(bucket)s/%(key)s",
-                    bucket=bucket, key=backup.s3_key))
-            has_filestore = bool(backup.s3_filestore_key) and bool(
-                s3.head_object(bucket, backup.s3_filestore_key,
-                               region=region))
-        except Exception as error:  # noqa: BLE001 - se audita y aborta
-            return fail(_("No se pudo verificar el dump en S3: %s") % error)
+        if origen:
+            (bucket, region, origin_account, has_filestore, origen_mb,
+             error) = self._restore_resolver_externo(origen)
+        else:
+            (bucket, region, origin_account, has_filestore, origen_mb,
+             error) = self._restore_resolver_catalogo(backup, db_name)
+        if error:
+            return fail(error)
 
         # 2. Instancia destino corriendo (no se enciende infra para restaurar).
         if not instance or instance.environment_id != self:
@@ -3092,7 +3114,8 @@ class PrimateCloudEnvironment(models.Model):
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id,
                 self._build_backup_restore_script(
-                    db_name, backup, has_filestore, odoo_instance),
+                    db_name, backup, has_filestore, odoo_instance,
+                    origin=origen, origin_size_mb=origen_mb),
                 region=instance.region or region,
                 comment="pcm restore: %s" % db_name,
                 timeout=3600,
@@ -3104,6 +3127,13 @@ class PrimateCloudEnvironment(models.Model):
             return fail(_("SSM inaccesible: %s") % error)
         stdout = output.get("stdout") or ""
         stderr = output.get("stderr") or ""
+        # F1: el script emite marcadores por stdout (el detalle va a un archivo
+        # en el servidor). De acá salen la ruta del log, el formato detectado y
+        # QUÉ se limpió — las tres cosas van a la bitácora.
+        marcas = self._restore_marcadores(stdout)
+        ref_log = (_(" Log completo en el servidor: %s.") % marcas["log_path"]
+                   if marcas.get("log_path") else "")
+        log_remoto["ref"] = ref_log
         if output.get("status") != "Success" or "PCM_RESTORE_OK" not in stdout:
             error_text = stderr or stdout or output.get("status")
             if "PCM_ERROR_PG_MISMATCH" in stdout + stderr:
@@ -3162,11 +3192,43 @@ class PrimateCloudEnvironment(models.Model):
             })
         extra = "" if has_filestore else _(" (sin filestore: el backup no "
                                            "tenía o el objeto ya no está)")
-        self._log("backup_restore", name=log_name, result="success")
+
+        # --- F1: limpieza, borrado del origen y retención de los pre-backups ---
+        # La limpieza de temporales la hace el `trap` del script SIEMPRE (éxito
+        # o fallo); acá sólo se ASIENTA lo que informó, porque el motivo de
+        # todo esto es el espacio en disco del servidor y hay que poder
+        # auditarlo después.
+        notas = []
+        if marcas.get("cleaned"):
+            notas.append(_("Temporales borrados en el servidor: %s.")
+                         % marcas["cleaned"])
+        if marcas.get("format"):
+            notas.append(_("Formato detectado: %s.") % marcas["format"])
+        if origen:
+            # El borrado de la key de origen va SÓLO con el restore exitoso: si
+            # falló, la key se conserva para reintentar sin volver a subir
+            # varios GB. `delete_source` viene del wizard (default: sí).
+            if params.get("delete_source", True):
+                borrado = self._restore_borrar_origen(
+                    origen, origin_account, region)
+                notas.append(_("Origen borrado: %s.") % borrado)
+            else:
+                notas.append(_("Origen conservado a pedido: %s.")
+                             % origen["uri"])
+        if params.get("pre_backup") and pre_record and bucket:
+            # Los pre-backups van a S3 y hasta ahora quedaban sin regla de
+            # expiración: se acumulaban. Retención CORTA propia (no la de la
+            # política, que puede ser de meses).
+            self._restore_asegurar_retencion_pre_backup(bucket, region)
+        resumen = (" " + " ".join(notas)) if notas else ""
+
+        self._log("backup_restore", name=log_name, result="success",
+                  error_message=(resumen.strip() + ref_log).strip() or None)
         self.message_post(body=_(
-            "Backup %(backup)s restaurado en '%(db)s' (instancia "
-            "%(instance)s)%(extra)s.", backup=backup.name, db=db_name,
-            instance=instance.name, extra=extra))
+            "%(origen)s restaurado en '%(db)s' (instancia "
+            "%(instance)s)%(extra)s.%(resumen)s%(log)s",
+            origen=(origen["uri"] if origen else backup.name), db=db_name,
+            instance=instance.name, extra=extra, resumen=resumen, log=ref_log))
         return True
 
     def _resolve_restore_instance(self, odoo_instance_id=None, target_db=None):
@@ -3187,14 +3249,271 @@ class PrimateCloudEnvironment(models.Model):
         vivas = self.instance_ids.filtered(lambda i: i.state != "archived")
         return vivas if len(vivas) == 1 else Instance
 
+    # ------------------------------------------------------------------
+    # F1: resolución del ORIGEN del restore
+    # ------------------------------------------------------------------
+    def _restore_resolver_catalogo(self, backup, db_name):
+        """Resuelve el origen cuando viene del CATÁLOGO. No reindenta el job.
+
+        Extraído del cuerpo de :meth:`job_restore_backup` para que la
+        bifurcación catálogo/externo (F1) sea de dos líneas en vez de un
+        ``if/else`` de cuarenta. **La lógica es la de siempre**, verbatim: el
+        estado del registro, el fallback de bucket para registros previos al
+        campo ``s3_bucket``, y que los objetos SIGAN en S3 (el lifecycle pudo
+        haberlos borrado).
+
+        Returns:
+            tuple: ``(bucket, region, account, has_filestore, tamano_mb,
+                error)``. El tamaño va en 0: en este camino la guarda de
+                espacio la calcula el script con ``backup.size_mb``. Si
+                ``error`` no es ``None`` es el mensaje para ``fail()`` y el
+                resto viene vacío — se devuelve en vez de levantar para no
+                cambiar el comportamiento del job, que registra el fallo en la
+                bitácora y devuelve ``False``.
+        """
+        self.ensure_one()
+        vacio = (False, False, self.env["primate.cloud.account"], False, 0.0)
+        if not backup or backup.state != "completed":
+            return vacio + (_("El backup no está disponible (estado: %s).")
+                            % (backup.state if backup else "?"),)
+        bucket = backup._resolve_bucket()
+        if not bucket or not backup.s3_key:
+            return vacio + (_(
+                "No se pudo resolver el bucket del backup: el registro no lo "
+                "tiene y la política del entorno de origen tampoco lo define "
+                "(o falta la key S3)."),)
+        account = backup.environment_id.account_id
+        region = account.default_region
+        try:
+            s3 = aws_s3.AwsS3Service(account._get_aws_service())
+            if not s3.head_object(bucket, backup.s3_key, region=region):
+                return vacio + (_(
+                    "El dump ya no está en S3 (¿expiró por lifecycle?): "
+                    "s3://%(bucket)s/%(key)s",
+                    bucket=bucket, key=backup.s3_key),)
+            has_filestore = bool(backup.s3_filestore_key) and bool(
+                s3.head_object(bucket, backup.s3_filestore_key, region=region))
+        except Exception as error:  # noqa: BLE001 - se audita y aborta
+            return vacio + (_("No se pudo verificar el dump en S3: %s")
+                            % error,)
+        return bucket, region, account, has_filestore, 0.0, None
+
+    def _restore_resolver_externo(self, origen):
+        """Resuelve el origen cuando es un dump EXTERNO (F1).
+
+        Con dump externo no hay entorno de origen: la cuenta es la del entorno
+        **destino**. El filestore, si viene, está DENTRO del zip, así que
+        ``has_filestore`` es False acá (lo maneja el script por formato).
+
+        Devuelve el tamaño en la misma tupla a propósito: medir el objeto ES
+        la validación de que existe, así que separar ambas cosas obligaba a
+        pegarle DOS veces a ``head_object`` por restore y dejaba la lectura del
+        tamaño lejos de su chequeo (si una cambia, la otra queda desfasada).
+
+        Returns:
+            tuple: ``(bucket, region, account, has_filestore, tamano_mb,
+                error)``.
+        """
+        self.ensure_one()
+        account = self.account_id
+        region = account.default_region
+        try:
+            tamano_mb = self._restore_origen_tamano_mb(origen, account, region)
+        except UserError as error:
+            return (False, False, account, False, 0.0, str(error))
+        return (origen.get("bucket") or False, region, account, False,
+                tamano_mb, None)
+
+    @api.model
+    def _restore_origen_normalizado(self, params):
+        """Valida y normaliza el origen del restore. Devuelve ``dict`` o ``None``.
+
+        Invariante del contrato (server-side, no se confía en la vista):
+        **exactamente uno** de ``backup_id`` (copia del catálogo) u ``origin``
+        (dump externo). Nunca los dos, nunca ninguno. Sin ``origin`` devuelve
+        ``None`` y el job sigue por el camino histórico, que es el que usan los
+        cuatro llamadores del staging.
+
+        Raises:
+            UserError: si vienen los dos, si no viene ninguno, o si el origen
+                externo está mal formado.
+        """
+        origin = params.get("origin") or None
+        tiene_backup = bool(params.get("backup_id"))
+        if origin and tiene_backup:
+            raise UserError(_(
+                "Origen ambiguo: llegaron una copia del catálogo Y un origen "
+                "externo. Tiene que ser exactamente uno."))
+        if not origin and not tiene_backup:
+            raise UserError(_(
+                "Falta el origen del restore: una copia del catálogo o un "
+                "dump externo (key de S3 o ruta en el servidor)."))
+        if not origin:
+            return None
+
+        tipo = origin.get("type")
+        if tipo not in ("s3_uri", "server_path"):
+            raise UserError(_(
+                "Tipo de origen no soportado: '%s'. Se admiten una key de S3 "
+                "o una ruta en el servidor.") % (tipo or ""))
+        uri = (origin.get("uri") or "").strip()
+        if not uri:
+            raise UserError(_("El origen externo no tiene ruta ni key."))
+        fmt = origin.get("format") or "auto"
+        if fmt not in ("auto", "custom", "plain", "odoo_zip"):
+            raise UserError(_("Formato de dump no soportado: '%s'.") % fmt)
+
+        if tipo == "s3_uri":
+            if not uri.startswith("s3://"):
+                raise UserError(_(
+                    "La key de origen tiene que ser una URI de S3 "
+                    "(s3://bucket/key). Recibido: %s") % uri)
+            bucket, _sep, key = uri[len("s3://"):].partition("/")
+            if not bucket or not key:
+                raise UserError(_(
+                    "URI de S3 incompleta: falta el bucket o la key (%s).")
+                    % uri)
+            # La IAM está acotada a arn:aws:s3:::pcm-* en las DOS identidades
+            # (el user pcm-operator y el instance profile pcm-ssm-role): un
+            # objeto fuera de esos buckets falla con AccessDenied recién en el
+            # servidor, a mitad del job. Se corta acá, con mensaje accionable.
+            if not bucket.startswith("pcm-"):
+                raise UserError(_(
+                    "El bucket '%(bucket)s' no empieza con 'pcm-'. Los "
+                    "permisos de S3 están acotados a los buckets pcm-*, así "
+                    "que ni PCM ni la instancia pueden leer ahí. Subí el dump "
+                    "a un bucket pcm-* y reintentá.", bucket=bucket))
+            return {"type": tipo, "uri": uri, "format": fmt,
+                    "bucket": bucket, "key": key}
+
+        # server_path: ruta absoluta y sin metacaracteres de shell. El tamaño
+        # NO se puede resolver desde Odoo (el archivo vive en el servidor), así
+        # que la guarda de espacio de esa rama la hace el script con `stat`.
+        if not uri.startswith("/"):
+            raise UserError(_(
+                "La ruta en el servidor tiene que ser absoluta (empezar con "
+                "'/'). Recibido: %s") % uri)
+        if any(c in uri for c in "\n\r\t\"'`$;|&<>*?"):
+            raise UserError(_(
+                "La ruta en el servidor tiene caracteres no permitidos: %s")
+                % uri)
+        return {"type": tipo, "uri": uri, "format": fmt}
+
+    def _restore_origen_tamano_mb(self, origen, account, region):
+        """Tamaño del objeto de origen, en MB, para la guarda de espacio.
+
+        Sólo resuelve el caso ``s3_uri``, con ``head_object`` (usa
+        ``s3:GetObject``, que ya está en la política: cero IAM nuevo). Para
+        ``server_path`` devuelve 0 y la guarda la hace el script con ``stat``,
+        porque el archivo está en el servidor y Odoo no lo puede medir.
+
+        Raises:
+            UserError: si el objeto no existe o no se puede leer — es mejor
+                fallar acá que a mitad del restore.
+        """
+        self.ensure_one()
+        if origen["type"] != "s3_uri":
+            return 0.0
+        try:
+            s3 = aws_s3.AwsS3Service(account._get_aws_service())
+            meta = s3.head_object(origen["bucket"], origen["key"],
+                                  region=region)
+        except Exception as error:  # noqa: BLE001 - se normaliza a UserError
+            raise UserError(_(
+                "No se pudo leer el dump en S3 (%(uri)s): %(error)s",
+                uri=origen["uri"], error=error))
+        if not meta:
+            raise UserError(_(
+                "El dump no existe en S3: %s. Verificá que lo subiste y que "
+                "la key está bien escrita.") % origen["uri"])
+        # OJO: `head_object` del adaptador NO devuelve el dict crudo de
+        # boto3: normaliza a {"key", "size", "last_modified"}. Leer
+        # "ContentLength" acá daba SIEMPRE None → tamaño 0 → la guarda de
+        # espacio quedaba desactivada en silencio (ver aws_s3.py:147).
+        return (meta.get("size") or 0) / (1024.0 * 1024.0)
+
+    @staticmethod
+    def _restore_marcadores(stdout):
+        """Extrae los marcadores ``PCM_*`` que emite el script del restore.
+
+        Devuelve un dict con lo que haya: ``log_path``, ``format``,
+        ``cleaned``, ``filestore``. Se usa para la bitácora y el chatter.
+        """
+        datos = {}
+        for linea in (stdout or "").splitlines():
+            linea = linea.strip()
+            if linea.startswith("PCM_LOG_PATH="):
+                datos["log_path"] = linea.split("=", 1)[1]
+            elif linea.startswith("PCM_FORMAT="):
+                datos["format"] = linea.split("=", 1)[1]
+            elif linea.startswith("PCM_CLEANED "):
+                datos["cleaned"] = linea[len("PCM_CLEANED "):]
+            elif linea.startswith("PCM_FILESTORE_OK "):
+                datos["filestore"] = linea[len("PCM_FILESTORE_OK "):]
+            elif linea == "PCM_FILESTORE_SKIP":
+                datos["filestore"] = ""
+        return datos
+
+    def _restore_borrar_origen(self, origen, account, region):
+        """Borra la key de origen en S3 tras un restore EXITOSO.
+
+        Sólo aplica a ``s3_uri``: una ruta del servidor la dejó el operador y
+        no es un temporal nuestro. Ante un fallo NO se llama — la key tiene que
+        seguir ahí para reintentar sin volver a subir varios GB.
+
+        Returns:
+            str: descripción de lo borrado, o el motivo por el que no se pudo
+                (nunca levanta: el restore ya salió bien y no se va a marcar
+                fallido por no poder limpiar).
+        """
+        self.ensure_one()
+        if origen["type"] != "s3_uri":
+            return _("no aplica (el origen es una ruta del servidor, la deja "
+                     "el operador)")
+        try:
+            s3 = aws_s3.AwsS3Service(account._get_aws_service())
+            s3.delete_object(origen["bucket"], origen["key"], region=region)
+        except Exception as error:  # noqa: BLE001 - se informa, no se propaga
+            return _("NO se pudo borrar %(uri)s: %(error)s",
+                     uri=origen["uri"], error=error)
+        return origen["uri"]
+
+    def _restore_asegurar_retencion_pre_backup(self, bucket, region):
+        """Regla de lifecycle propia para el prefijo ``pre-restore/``.
+
+        Los pre-backups del restore van a S3 (no a disco) y hasta ahora
+        quedaban SIN regla de expiración: se acumulaban copia tras copia. Se
+        les aplica una retención CORTA propia —no la de la política, que puede
+        ser de meses— configurable por ``pcm.pre_restore_retention_days``
+        (default 7). Es plata en S3, no riesgo operativo, pero no hay motivo
+        para pagarla.
+
+        Nunca levanta: si la regla no se puede asegurar, el restore sigue.
+        """
+        self.ensure_one()
+        dias = int(self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.pre_restore_retention_days", PRE_RESTORE_RETENTION_DAYS))
+        if dias <= 0:
+            return None
+        try:
+            s3 = aws_s3.AwsS3Service(self.account_id._get_aws_service())
+            return s3.put_lifecycle_rule(
+                bucket, "pre-restore/", dias, region=region)
+        except Exception as error:  # noqa: BLE001 - se avisa, no bloquea
+            _logger.warning(
+                "No se pudo asegurar la retención de pre-restore/ en %s: %s",
+                bucket, error)
+            return None
+
     @api.model
     def _build_backup_restore_script(self, db_name, backup, has_filestore,
-                                     odoo_instance):
+                                     odoo_instance, origin=None,
+                                     origin_size_mb=0):
         """Script SSM del restore (orden aprobado en el diseño del Bloque 4).
 
         Valida TODO antes de dropear (espacio en disco, versión PostgreSQL);
         recién después: **stop Odoo → pg_terminate_backend → dropdb** →
-        createdb → pg_restore → filestore → start Odoo. ``PCM_DROP_STARTED``
+        createdb → restore → filestore → start Odoo. ``PCM_DROP_STARTED``
         marca el punto de no retorno: si el script falla después, el job arma
         el mensaje de recuperación con la key del pre-backup.
 
@@ -3202,12 +3521,49 @@ class PrimateCloudEnvironment(models.Model):
         el filestore destino (``data_dir``) salen de ``odoo_instance`` — en
         multi se para/crea/restaura SOLO lo de esa instancia, jamás el Odoo
         vecino.
+
+        **F1 (origen externo).** Sin ``origin`` el script es EL MISMO de antes,
+        byte por byte: los cuatro llamadores del staging no pasan origen y no
+        se les cambia el camino. Con ``origin`` el dump no viene del catálogo
+        sino de una key de S3 o de una ruta del servidor, el formato se detecta
+        por *magic* y se agregan el log a archivo y la limpieza garantizada.
+
+        Args:
+            db_name (str): base destino (el nombre FINAL, no el del origen).
+            backup (recordset): registro del catálogo; se ignora con ``origin``.
+            has_filestore (bool): si el backup del catálogo tiene filestore.
+            odoo_instance (recordset): instancia Odoo destino (unit, pg_user,
+                data_dir).
+            origin (dict, optional): ``{"type": "s3_uri"|"server_path",
+                "uri": str, "format": "auto"|"custom"|"plain"|"odoo_zip"}``.
+            origin_size_mb (float): tamaño del objeto de origen, ya resuelto
+                por el job (``head-object`` en S3 o ``stat`` en el servidor).
+                Es la base del cálculo de espacio de la etapa 1.
+
+        Returns:
+            str: el script, envuelto para correr bajo bash.
         """
         service = shlex.quote(odoo_instance.service_name or LEGACY_SERVICE)
         pg_user = shlex.quote(odoo_instance.pg_user or "odoo")
         data_dir = (odoo_instance.data_dir
                     or "/opt/odoo/.local/share/Odoo").rstrip("/")
         db = shlex.quote(db_name)
+        if not origin:
+            return self._build_restore_script_catalogo(
+                db_name, backup, has_filestore, service, pg_user, data_dir, db)
+        return self._build_restore_script_externo(
+            db_name, origin, origin_size_mb, service, pg_user, data_dir, db)
+
+    @api.model
+    def _build_restore_script_catalogo(self, db_name, backup, has_filestore,
+                                       service, pg_user, data_dir, db):
+        """Camino histórico: el dump sale de un registro del catálogo.
+
+        Se conserva TAL CUAL (incluidos el orden de las guardas y la forma del
+        ``trap``) porque es el que usan los cuatro llamadores del staging, ya
+        verificados en real. Cualquier mejora del camino nuevo que quiera
+        aplicarse acá es un cambio aparte, con su propia prueba.
+        """
         bkt = shlex.quote(backup._resolve_bucket())
         dump_key = shlex.quote(backup.s3_key)
         # El nombre del directorio dentro del tar es el de la BD de ORIGEN.
@@ -3278,6 +3634,204 @@ class PrimateCloudEnvironment(models.Model):
         ]
         # Bajo bash (heredoc): usa pipefail/PIPESTATUS y arrays si hiciera falta;
         # SSM corre con dash, que no soporta pipefail.
+        return self._wrap_bash("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # F1: restore desde un dump EXTERNO (no producido por PCM)
+    # ------------------------------------------------------------------
+    # CÁLCULO DEL ESPACIO NECESARIO, POR FORMATO (decidido 2026-09-19)
+    #
+    # - ``custom`` (pg_dump -Fc): tamaño del archivo **× 1.5**. Es la
+    #   heurística histórica y se conserva: ``pg_restore`` lee el archivo
+    #   comprimido, no lo expande en disco; el 1.5 cubre los temporales.
+    # - ``plain`` (SQL): tamaño del archivo **× 1.5**. El archivo YA está
+    #   descomprimido, así que su tamaño es el real; el 1.5 cubre los
+    #   temporales de ``psql``.
+    # - ``odoo_zip``: **NO se usa un múltiplo del tamaño del archivo.** El
+    #   ``dump.sql`` de adentro comprime 5-10×, así que cualquier factor sobre
+    #   el zip SUBESTIMA justo en las bases grandes. Se verifica en DOS
+    #   etapas, porque el tamaño descomprimido no se conoce hasta tener el
+    #   archivo en disco:
+    #     * etapa 1, ANTES de bajarlo:  ``zip × 1.2``  (tamaño de head-object)
+    #     * etapa 2, con el zip abajo:  ``total de unzip -l × 1.2``
+    #   El pico real es ``zip + descomprimido``; en la etapa 2 el zip ya está
+    #   contabilizado dentro del ``df``, así que la suma queda cubierta.
+    #   La extracción del zip ocurre en esa misma etapa —ANTES de parar Odoo
+    #   y dropear— para que un zip corrupto falle sin tocar la base.
+    #
+    # LIMPIEZA: no hay mecanismo nuevo — se extiende el ``trap`` que ya
+    # garantizaba el re-arranque de la unit. Borra el descargado y el
+    # directorio de extracción; NUNCA borra el archivo que el operador dejó en
+    # el servidor (``server_path``), que no es un temporal nuestro.
+    #
+    # LOG: el detalle completo va a ``/var/tmp/pcm/logs/`` (ruta predecible) y
+    # a stdout —lo que viaja a la Bitácora— sólo los marcadores y un tail
+    # acotado. ``get_command_invocation`` trunca a 24.000 caracteres, así que
+    # un restore verboso perdería justamente el final.
+    @api.model
+    def _build_restore_script_externo(self, db_name, origin, origin_size_mb,
+                                      service, pg_user, data_dir, db):
+        """Script del restore desde un dump externo (F1)."""
+        uri = origin.get("uri") or ""
+        fmt = origin.get("format") or "auto"
+        es_s3 = origin.get("type") == "s3_uri"
+        q_uri = shlex.quote(uri)
+        log_dir = RESTORE_LOG_DIR
+        tail = RESTORE_TAIL_BYTES
+        # Etapa 1 del espacio: lo único que se conoce antes de tener el archivo.
+        factor = 1.2 if fmt in ("odoo_zip", "auto") else 1.5
+        need_mb = int(max(origin_size_mb or 0, 1) * factor) + 1
+
+        lines = [
+            "set -euo pipefail",
+            "command -v aws >/dev/null 2>&1 || { echo \"PCM_ERROR: aws CLI no está instalado en la instancia (el install de PCM lo trae vía snap; instalalo o re-aprovisioná)\" >&2; exit 1; }",
+            # --- Log: todo el detalle al archivo, sólo marcadores a stdout ---
+            "mkdir -p %s" % shlex.quote(log_dir),
+            'LOG="%s/restore-%s-$(date -u +%%Y%%m%%d-%%H%%M%%S)-$$.log"'
+            % (log_dir, db_name),
+            "exec 3>&1",
+            'say() { echo "$*" >&3; }',
+            'say "PCM_LOG_PATH=$LOG"',
+            'exec >>"$LOG" 2>&1',
+            "set -x",
+            # --- Temporales y limpieza garantizada (trap extendido) ---
+            'WORK="/var/tmp/pcm/restore_$$"',
+            'DL=""',  # sólo se setea si NOSOTROS descargamos el archivo
+            "mkdir -p \"$WORK\"",
+            'cleanup() { rc=$?; set +x; '
+            'rm -rf "$WORK" ${DL:+"$DL"} 2>/dev/null || true; '
+            'say "PCM_CLEANED work=$WORK descargado=${DL:-(ninguno)}"; '
+            'tail -c %d "$LOG" >&3 2>/dev/null || true; exit $rc; }' % tail,
+            "trap cleanup EXIT",
+        ]
+
+        # --- Origen: bajar de S3 (es nuestro temporal) o usar la ruta tal cual
+        if es_s3:
+            lines += [
+                "NEED_MB=%d" % need_mb,
+                "FREE_MB=$(df -Pm /var/tmp | awk 'NR==2 {print $4}')",
+                'if [ "$FREE_MB" -lt "$NEED_MB" ]; then '
+                'say "PCM_ERROR: espacio insuficiente en /var/tmp para bajar '
+                'el dump (${FREE_MB} MB < ${NEED_MB} MB)"; exit 1; fi',
+                'DL="$WORK/origen.bin"',
+                'aws s3 cp %s "$DL" --only-show-errors' % q_uri,
+                'FNAME="$DL"',
+            ]
+        else:
+            lines += [
+                # La ruta del operador NO es un temporal nuestro: se usa en el
+                # lugar (sin copiarla: duplicaría varios GB) y jamás se borra.
+                'FNAME=%s' % q_uri,
+                'if [ ! -f "$FNAME" ]; then '
+                'say "PCM_ERROR: no existe el archivo $FNAME en el servidor"; '
+                "exit 1; fi",
+            ]
+
+        # --- Formato por magic (o forzado) ---
+        if fmt == "auto":
+            lines += [
+                'MAGIC=$(head -c 5 "$FNAME" | tr -d "\\0")',
+                "case \"$MAGIC\" in",
+                "  PGDMP*) FMT=custom ;;",
+                "  PK*)    FMT=odoo_zip ;;",
+                "  *)      FMT=plain ;;",
+                "esac",
+            ]
+        else:
+            lines.append("FMT=%s" % shlex.quote(fmt))
+        lines.append('say "PCM_FORMAT=$FMT"')
+
+        # --- Etapa 2 del espacio + versión PG, ANTES de tocar el destino ---
+        lines += [
+            'if [ "$FMT" = "odoo_zip" ]; then',
+            "  command -v unzip >/dev/null 2>&1 || { "
+            'say "PCM_ERROR: falta unzip en la instancia"; exit 1; }',
+            # unzip -l: la última línea trae el total de bytes descomprimidos.
+            '  UNZ=$(unzip -l "$FNAME" | tail -1 | awk \'{print $1}\')',
+            '  NEED2=$(( ${UNZ:-0} / 1048576 * 12 / 10 + 1 ))',
+            "  FREE2=$(df -Pm /var/tmp | awk 'NR==2 {print $4}')",
+            '  if [ "$FREE2" -lt "$NEED2" ]; then '
+            'say "PCM_ERROR: espacio insuficiente para descomprimir el zip '
+            '(${FREE2} MB < ${NEED2} MB; descomprimido ${UNZ:-0} bytes)"; '
+            "exit 1; fi",
+            # Se EXTRAE y se VERIFICA acá, ANTES de parar Odoo y dropear:
+            # un zip corrupto o que no es un backup de Odoo tiene que fallar
+            # sin haber tocado la base. El pre-backup queda como red para los
+            # fallos POSTERIORES (un psql que muere a mitad), no para un caso
+            # evitable. El espacio ya se validó arriba con NEED2.
+            '  unzip -q -o "$FNAME" -d "$WORK/x"',
+            '  if [ ! -f "$WORK/x/dump.sql" ]; then '
+            'say "PCM_ERROR: el zip no tiene dump.sql (no es un backup de '
+            'Odoo)"; exit 1; fi',
+            # Con el dump.sql ya extraído, la versión de origen sale de su
+            # header sin volver a descomprimir.
+            '  SRC_VER=$(head -n 200 "$WORK/x/dump.sql" | '
+            "sed -n 's/.*Dumped from database version \\([0-9]*\\).*/\\1/p' "
+            "| head -1)",
+            'elif [ "$FMT" = "custom" ]; then',
+            '  SRC_VER=$(sudo -u postgres pg_restore -l "$FNAME" | '
+            "sed -n 's/.*dumped from database version \\([0-9]*\\).*/\\1/p' "
+            "| head -1)",
+            "else",
+            '  SRC_VER=$(head -n 200 "$FNAME" | '
+            "sed -n 's/.*Dumped from database version \\([0-9]*\\).*/\\1/p' "
+            "| head -1)",
+            "fi",
+            'DST_VER=$(sudo -u postgres psql -tAc "show server_version" '
+            "| cut -d. -f1)",
+            'if [ -n "$SRC_VER" ] && [ "$SRC_VER" -gt "$DST_VER" ]; then '
+            'say "PCM_ERROR_PG_MISMATCH origen=$SRC_VER destino=$DST_VER"; '
+            "exit 1; fi",
+        ]
+
+        # --- Punto de no retorno: mismo orden aprobado que el camino histórico
+        lines += [
+            "systemctl stop %s" % service,
+            # Re-armado del trap: desde acá cualquier salida re-arranca la unit
+            # (el servidor puede hospedar otros Odoo) y limpia igual.
+            'cleanup() { rc=$?; set +x; systemctl start %s || true; '
+            'rm -rf "$WORK" ${DL:+"$DL"} 2>/dev/null || true; '
+            'say "PCM_CLEANED work=$WORK descargado=${DL:-(ninguno)}"; '
+            'tail -c %d "$LOG" >&3 2>/dev/null || true; exit $rc; }'
+            % (service, tail),
+            'sudo -u postgres psql -tAc "SELECT pg_terminate_backend(pid) '
+            "FROM pg_stat_activity WHERE datname = '%s' AND pid <> "
+            'pg_backend_pid();" || true' % db_name,
+            'say "PCM_DROP_STARTED"',
+            "sudo -u postgres dropdb --if-exists %s" % db,
+            "sudo -u postgres createdb -O %s %s" % (pg_user, db),
+            # --- Restore según formato ---
+            'if [ "$FMT" = "custom" ]; then',
+            # pg_restore devuelve != 0 por avisos ignorables (owners, etc.).
+            '  sudo -u postgres pg_restore -d %s "$FNAME" || true' % db,
+            'elif [ "$FMT" = "odoo_zip" ]; then',
+            # Ya extraído y verificado antes del stop: acá sólo se carga.
+            '  sudo -u postgres psql -q -d %s -f "$WORK/x/dump.sql"' % db,
+            "else",
+            '  sudo -u postgres psql -q -d %s -f "$FNAME"' % db,
+            "fi",
+            # La sanidad real: que lo restaurado sea un Odoo.
+            'sudo -u postgres psql -d %s -tAc "SELECT count(*) FROM '
+            'ir_module_module" >/dev/null' % db,
+        ]
+
+        # --- Filestore del zip: al nombre de la base DESTINO, no la del zip ---
+        target_dir = "%s/filestore/%s" % (shlex.quote(data_dir), db)
+        lines += [
+            'if [ "$FMT" = "odoo_zip" ] && [ -d "$WORK/x/filestore" ]; then',
+            '  mkdir -p %s' % target_dir,
+            # rsync --delete: la base se acaba de recrear, el filestore que
+            # corresponde es EXACTAMENTE el del dump. El destino lleva el
+            # nombre FINAL de la base, no el que traía el zip.
+            '  rsync -a --delete "$WORK/x/filestore/" %s/' % target_dir,
+            "  chown -R odoo:odoo %s" % target_dir,
+            '  say "PCM_FILESTORE_OK %s"' % target_dir,
+            "else",
+            '  say "PCM_FILESTORE_SKIP"',
+            "fi",
+            # El start lo hace el trap EXIT re-armado, para cubrir los errores.
+            'say "PCM_RESTORE_OK"',
+        ]
         return self._wrap_bash("\n".join(lines))
 
     # ------------------------------------------------------------------

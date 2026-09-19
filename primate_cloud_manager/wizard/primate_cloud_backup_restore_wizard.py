@@ -26,10 +26,39 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
     _name = "primate.cloud.backup.restore.wizard"
     _description = "Asistente de Restauración de Backup"
 
+    origin_type = fields.Selection(
+        [("s3_uri", "Key S3 manual"),
+         ("server_path", "Ruta local en el servidor")],
+        string="Origen del dump",
+        help="De dónde sale el dump a restaurar. El dump lo sube el operador "
+             "a un bucket pcm-* (los permisos de S3 están acotados a esos "
+             "buckets) o lo deja en una ruta del servidor.",
+    )
+    origin_uri = fields.Char(
+        string="Key S3 o ruta",
+        help="s3://pcm-…/carpeta/dump.zip  ·  /var/tmp/pcm/dump.zip",
+    )
+    origin_format = fields.Selection(
+        [("auto", "Detectar automáticamente"),
+         ("custom", "Dump PostgreSQL (pg_dump -Fc)"),
+         ("plain", "SQL plano"),
+         ("odoo_zip", "ZIP de Odoo (dump.sql + filestore)")],
+        string="Formato", default="auto",
+        help="Por default se detecta en el servidor leyendo la firma del "
+             "archivo; forzarlo sólo si la detección falla.",
+    )
+    delete_source = fields.Boolean(
+        string="Eliminar el dump de S3 al finalizar", default=True,
+        help="Sólo si el restore sale BIEN. Si falla, el dump se conserva "
+             "para reintentar sin volver a subirlo.",
+    )
+
+    # `required=False`: con un dump externo no hay registro de catálogo. La
+    # invariante "exactamente uno de backup_id | origen" se valida server-side
+    # acá y otra vez en el job, que es la fuente de verdad.
     backup_id = fields.Many2one(
         "primate.cloud.backup",
         string="Backup",
-        required=True,
         readonly=True,
         ondelete="cascade",
         # Sin filtro por tipo/nombre: un "Pre-restore …" también es un origen
@@ -106,6 +135,9 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
             target_db = self.env["primate.cloud.database"].search(
                 [("environment_id", "=", env.id),
                  ("name", "=", wizard.target_db_name)], limit=1)
+            # Con dump externo la base destino puede no existir todavía: el
+            # fallback a la instancia primaria (y el default seguro a
+            # producción) ya cubre ese caso, sin mirar el backup.
             odoo_inst = target_db.instance_id or env.primary_instance_id
             # Sin instancia resoluble (base nueva sin instancia clara) → prod.
             wizard.target_is_production = (
@@ -125,9 +157,24 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
         target = self.target_environment_id
         # R4-B4: el restore se recableó (para/dropea SOLO la instancia Odoo
         # destino, resuelta inequívoca en el job). Sin guard.
-        if backup.state != "completed":
+        #
+        # F1: invariante del origen — exactamente uno. Se valida acá para dar
+        # el error en la pantalla, y otra vez en el job (fuente de verdad):
+        # el wizard no es el único camino al job.
+        if backup and self.origin_type:
+            raise UserError(_(
+                "Elegí un solo origen: o la copia del catálogo, o un dump "
+                "externo. Llegaron los dos."))
+        if not backup and not self.origin_type:
+            raise UserError(_(
+                "Falta el origen: elegí una key de S3 o una ruta del "
+                "servidor."))
+        if backup and backup.state != "completed":
             raise UserError(_("El backup ya no está disponible (estado: %s).")
                             % backup.state)
+        if self.origin_type and not (self.origin_uri or "").strip():
+            raise UserError(_(
+                "Completá la key de S3 o la ruta del archivo en el servidor."))
         if (not self.target_instance_id
                 or self.target_instance_id.environment_id != target):
             raise UserError(_("Elegí una instancia EC2 del entorno destino."))
@@ -143,10 +190,16 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
         target.with_delay(
             description=_("Restaurar backup en %s") % target.name
         ).job_restore_backup({
-            "backup_id": backup.id,
             "db_name": self.target_db_name,
             "instance_id": self.target_instance_id.id,
             "pre_backup": self.pre_backup,
+            # Exactamente uno de los dos, ya validado arriba y en el job.
+            **({"backup_id": backup.id} if backup else {
+                "origin": {"type": self.origin_type,
+                           "uri": (self.origin_uri or "").strip(),
+                           "format": self.origin_format or "auto"},
+                "delete_source": self.delete_source,
+            }),
         })
         return {
             "type": "ir.actions.client",
