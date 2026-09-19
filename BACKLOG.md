@@ -122,6 +122,11 @@ base (p. ej. 1,5 × `dump.sql`), y chequear `df` del volumen de PG, no sólo el 
   `ec2.action_sync_from_aws` sobre los servidores del entorno; no sincroniza BDs/DNS ni
   detecta recursos nuevos del entorno. Falta un `environment.action_sync` real.
 
+- **El re-etiquetado falló al archivar el entorno 80 (2026-09-19) por IAM, no por el recurso terminado**:
+  `pcm-operator` no tiene `ec2:DeleteTags` (el runbook sólo lista `ec2:CreateTags`). Dos arreglos: sumar
+  `ec2:DeleteTags` a la policy/runbook, y que el job saltee con gracia los recursos inexistentes/terminados
+  y registre «omitido», no «Fallido».
+
 ## IAM
 
 - **El user `pcm` no tiene `iam:GetInstanceProfile`** — no bloquea el provisioning (PassRole

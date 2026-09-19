@@ -77,7 +77,7 @@ El user va a referenciarlo con `iam:PassRole`, así que conviene crearlo antes.
       "Sid": "Ec2Provision",
       "Effect": "Allow",
       "Action": [
-        "ec2:Describe*", "ec2:RunInstances", "ec2:CreateTags",
+        "ec2:Describe*", "ec2:RunInstances", "ec2:CreateTags", "ec2:DeleteTags",
         "ec2:StartInstances", "ec2:StopInstances",
         "ec2:RebootInstances", "ec2:TerminateInstances"
       ],
@@ -201,6 +201,11 @@ El user va a referenciarlo con `iam:PassRole`, así que conviene crearlo antes.
 > **objetos** (`arn:aws:s3:::pcm-*/*`). `GetLifecycleConfiguration` es necesario porque PCM
 > **lee** la config de lifecycle antes de escribirla (mergea su regla sin pisar reglas
 > ajenas). `DeleteObject` es para la limpieza (`delete_object`).
+>
+> **`ec2:DeleteTags` (agregado 2026-09-19).** El re-etiquetado de cliente (`client_id`) de un servidor
+> que pasa a compartido o sin cliente **retira** tags, y eso es `DeleteTags`, no `CreateTags`. Sin él,
+> el re-tag falla con `UnauthorizedOperation` (visto al archivar el entorno de ensayo de Barraca Julia).
+> Mismo `Resource: "*"` que `CreateTags`. Verificarlo con una llamada real en la próxima operación de tags.
 >
 > **`SsmGetPublicAmi` — verificado con una llamada real el 2026-09-19** (cuenta `603011031378`): el parámetro de Canonical devuelve `ami-00adec9774170bad2`, la MISMA AMI gp3 que resuelve la vía de respaldo `DescribeImages`. Hasta ese día la política real de la cuenta no tenía este statement aunque el runbook lo listaba: PCM caía solo a `DescribeImages` (tolerado por diseño). **Lección: el runbook describe la política que DEBERÍA estar; en cada cuenta nueva hay que verificarla con llamadas reales.**
 >
