@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_server_manage_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.server.manage.wizard.form</field>
+        <field name="model">primate.cloud.server.manage.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Habilitar la gestión">
+                <div class="alert alert-danger" role="alert">
+                    <strong>Este servidor se importó de AWS: PCM no lo creó.</strong>
+                    Al habilitar la gestión se vuelve operable —se lo puede
+                    detener, reiniciar, terminar y restaurarle bases— y las
+                    instancias Odoo que aparecen abajo son de clientes reales.
+                </div>
+                <group>
+                    <group string="Servidor">
+                        <field name="instance_id"/>
+                        <field name="aws_instance_id"/>
+                        <field name="account_name"/>
+                        <field name="region"/>
+                        <field name="instance_state"/>
+                    </group>
+                </group>
+                <group string="Instancias Odoo detectadas en el servidor">
+                    <field name="detected_instances" nolabel="1" readonly="1"/>
+                </group>
+                <div class="alert alert-warning" role="alert">
+                    Escribí el nombre exacto del servidor para confirmar. Queda
+                    registrado en la bitácora con tu usuario.
+                </div>
+                <group>
+                    <field name="confirm_server_name" required="1"
+                           placeholder="Nombre exacto del servidor"/>
+                </group>
+                <footer>
+                    <button name="action_confirm" type="object"
+                            string="Habilitar la gestión" class="btn-danger"
+                            confirm="El servidor pasará a ser operable desde PCM. ¿Continuar?"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

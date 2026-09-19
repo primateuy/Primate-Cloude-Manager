@@ -27,24 +27,28 @@
             <form string="Instancia EC2" class="o_pcm">
                 <header>
                     <button name="action_start" type="object" string="Iniciar"
-                            invisible="instance_state not in ('stopped',)"
+                            invisible="instance_state not in ('stopped',) or management_state == 'adopted_readonly'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
                     <button name="action_stop" type="object" string="Detener"
                             confirm="¿Detener esta instancia?"
-                            invisible="instance_state != 'running'"
+                            invisible="instance_state != 'running' or management_state == 'adopted_readonly'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
                     <button name="action_restart" type="object" string="Reiniciar"
                             confirm="¿Reiniciar esta instancia?"
-                            invisible="instance_state != 'running'"
+                            invisible="instance_state != 'running' or management_state == 'adopted_readonly'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
                     <button name="action_execute_command" type="object" string="Ejecutar comando"
-                            invisible="instance_state != 'running'"
+                            invisible="instance_state != 'running' or management_state == 'adopted_readonly'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
+                    <button name="action_habilitar_gestion" type="object"
+                            string="Habilitar la gestión" class="btn-warning"
+                            invisible="management_state != 'adopted_readonly'"
+                            groups="primate_cloud_manager.group_cloud_admin"/>
                     <button name="action_sync_from_aws" type="object" string="Sincronizar"
                             groups="primate_cloud_manager.group_cloud_operator"/>
                     <button name="action_open_terminate_wizard" type="object" string="Terminar"
                             class="btn-danger"
-                            invisible="instance_state == 'terminated'"
+                            invisible="instance_state == 'terminated' or management_state == 'adopted_readonly'"
                             groups="primate_cloud_manager.group_cloud_admin"/>
                     <field name="instance_state" widget="statusbar"
                            statusbar_visible="pending,running,stopping,stopped"/>
@@ -57,6 +61,7 @@
                         <group string="AWS">
                             <field name="aws_instance_id" readonly="1"/>
                             <field name="instance_state" widget="pcm_status_badge" readonly="1"/>
+                            <field name="management_state" widget="badge" readonly="1"/>
                             <field name="instance_type" readonly="1"/>
                             <field name="region" readonly="1"/>
                             <field name="os_type"/>
@@ -128,10 +133,16 @@
                 <field name="environment_id"/>
                 <filter name="running" string="En ejecución" domain="[('instance_state', '=', 'running')]"/>
                 <filter name="no_env" string="Sin entorno" domain="[('environment_id', '=', False)]"/>
+                <filter name="adoptados" string="Adoptados (solo lectura)"
+                        domain="[('management_state', '=', 'adopted_readonly')]"/>
+                <filter name="sin_clasificar" string="Sin clasificar"
+                        domain="[('environment_id.project_id', '=', False)]"/>
                 <group>
                     <filter name="group_account" string="Cuenta" context="{'group_by': 'account_id'}"/>
                     <filter name="group_env" string="Entorno" context="{'group_by': 'environment_id'}"/>
                     <filter name="group_state" string="Estado" context="{'group_by': 'instance_state'}"/>
+                    <filter name="group_mgmt" string="Modo de gestión"
+                            context="{'group_by': 'management_state'}"/>
                     <filter name="group_region" string="Región" context="{'group_by': 'region'}"/>
                 </group>
             </search>

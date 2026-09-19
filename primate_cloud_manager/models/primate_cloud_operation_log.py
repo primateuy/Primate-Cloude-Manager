@@ -39,6 +39,11 @@ ACTION_TYPES = [
     ("backup_run", "Ejecutar backup"),
     ("backup_restore", "Restaurar backup"),
     ("backup_check", "Verificar cumplimiento de respaldo"),
+    # F2: habilitar la gestión de un servidor importado
+    # (adopted_readonly → managed). Es la única transición que saca a un
+    # servidor del modo de solo lectura, así que lleva su propio tipo:
+    # hay que poder auditar QUIÉN liberó QUÉ servidor y cuándo.
+    ("server_manage_enable", "Habilitar gestión de servidor"),
     ("other", "Otra"),
 ]
 

@@ -126,6 +126,163 @@ class PrimateCloudEc2Instance(models.Model):
         help="Marca si PCM creó la instancia (paths/comandos del panel válidos).",
     )
 
+    # ------------------------------------------------------------------
+    # F2: modo de gestión — la importación es inofensiva por construcción
+    # ------------------------------------------------------------------
+    # Cuando se importa una cuenta AWS entran servidores PRODUCTIVOS de clientes
+    # reales. Un click en Detener/Terminar, o un restore apuntado ahí, sería
+    # catastrófico. Así que todo servidor que entra por la importación nace en
+    # ``adopted_readonly``: se puede MIRAR (sync de estado, discovery, logs,
+    # chequeo de SSM) y no se puede TOCAR. Habilitar la gestión es una acción
+    # explícita, admin-only y auditada.
+    #
+    # El bloqueo va en la capa MODELO, en los puntos donde la acción se
+    # EJECUTA, no donde se muestra: `_enqueue_lifecycle` y `job_lifecycle` para
+    # el ciclo de vida, `job_execute_command` para el comando SSM (el wizard lo
+    # encola directo sobre la instancia, así que gatear sólo el botón dejaría
+    # la puerta abierta). Invisible en la vista NO es un control de acceso.
+    management_state = fields.Selection(
+        [("provisioned", "Aprovisionado por PCM"),
+         ("adopted_readonly", "Adoptado — solo lectura"),
+         ("managed", "Adoptado — gestión habilitada")],
+        string="Modo de gestión", required=True, default="provisioned",
+        readonly=True, copy=False, index=True, tracking=True,
+        help="Aprovisionado: lo creó PCM, se gestiona normalmente. "
+             "Adoptado solo lectura: importado de AWS, sólo se puede observar. "
+             "Gestión habilitada: adoptado y liberado a mano por un admin.",
+    )
+
+    # Acciones de ESCRITURA que quedan bloqueadas en ``adopted_readonly``. El
+    # discovery read-only no está acá a propósito: observar es el propósito del
+    # modo.
+    _ACCIONES_BLOQUEADAS = {
+        "ec2_start": "iniciar el servidor",
+        "ec2_stop": "detener el servidor",
+        "ec2_restart": "reiniciar el servidor",
+        "ec2_terminate": "TERMINAR el servidor",
+        "ssm_command": "ejecutar comandos",
+        "config_edit": "editar la configuración",
+        "addon_add": "agregar addons",
+        "impersonate": "desplegar la impersonación",
+        "restore": "restaurar una base",
+        "odoo_restart": "reiniciar el servicio Odoo",
+    }
+
+    def _exigir_gestion_habilitada(self, accion):
+        """Levanta si el servidor está adoptado en solo lectura.
+
+        Se llama desde los puntos de EJECUCIÓN, no desde los botones: cualquier
+        camino —UI, acción de servidor, llamada programática, job encolado por
+        un wizard— tiene que chocar con esto.
+
+        Args:
+            accion (str): clave de ``_ACCIONES_BLOQUEADAS`` o texto libre, para
+                que el mensaje diga qué se intentó hacer.
+
+        Raises:
+            UserError: si el modo es ``adopted_readonly``.
+        """
+        que = self._ACCIONES_BLOQUEADAS.get(accion, accion)
+        for maquina in self:
+            if maquina.management_state != "adopted_readonly":
+                continue
+            raise UserError(_(
+                "Servidor adoptado en solo lectura — habilitá la gestión "
+                "primero.\n\n"
+                "«%(nombre)s» (cuenta %(cuenta)s) se importó de AWS y PCM no "
+                "lo creó, así que no se puede %(que)s. Es deliberado: la "
+                "importación trae servidores productivos de clientes y un "
+                "click de más sería catastrófico.\n\n"
+                "Para habilitarlo: clasificá sus instancias Odoo (asignales su "
+                "proyecto) y usá «Habilitar la gestión» en la ficha del "
+                "servidor. Queda registrado en la bitácora.",
+                nombre=maquina.name, cuenta=maquina.account_id.name, que=que))
+
+    def _instancias_sin_clasificar(self):
+        """Instancias Odoo del servidor que siguen con el proyecto centinela.
+
+        La regla del pase a ``managed`` es por INSTANCIA, no por entorno: D6/R1
+        deja ``environment.project_id`` nullable a propósito porque un servidor
+        puede ser COMPARTIDO y ahí los clientes salen de sus instancias. Exigir
+        proyecto en el entorno trabaría para siempre a un servidor compartido
+        legítimo.
+
+        Returns:
+            recordset: instancias cuyo proyecto es el centinela (o falta).
+        """
+        self.ensure_one()
+        centinela = int(self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.unclassified_project_id", 0))
+        instancias = self.environment_id.instance_ids.filtered(
+            lambda i: i.state != "archived")
+        return instancias.filtered(
+            lambda i: not i.project_id or i.project_id.id == centinela)
+
+    def action_habilitar_gestion(self):
+        """Pasa el servidor de ``adopted_readonly`` a ``managed``. Admin-only.
+
+        Exige que cada instancia Odoo detectada tenga proyecto real: si el
+        servidor no tiene ninguna instancia detectada, exige el proyecto del
+        entorno (no hay otra forma de saber de quién es).
+
+        Returns:
+            dict: acción del wizard de confirmación, que muestra el servidor,
+                la cuenta y las instancias detectadas antes de liberar.
+        """
+        self.ensure_one()
+        if self.env.uid != SUPERUSER_ID and not self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"):
+            raise UserError(_(
+                "Solo un Cloud Admin puede habilitar la gestión de un "
+                "servidor adoptado."))
+        if self.management_state != "adopted_readonly":
+            raise UserError(_(
+                "El servidor no está adoptado en solo lectura (modo actual: "
+                "%s).") % dict(
+                    self._fields["management_state"].selection)[
+                        self.management_state])
+        sin_clasificar = self._instancias_sin_clasificar()
+        if sin_clasificar:
+            raise UserError(_(
+                "Clasificá primero las instancias Odoo: %s siguen sin cliente "
+                "asignado. Asignales su proyecto y volvé a intentar.")
+                % ", ".join(sin_clasificar.mapped("display_name")))
+        if not self.environment_id.instance_ids.filtered(
+                lambda i: i.state != "archived") and not \
+                self.environment_id.project_id:
+            raise UserError(_(
+                "El servidor no tiene instancias Odoo detectadas ni proyecto "
+                "en el entorno: no hay forma de saber de quién es. Corré el "
+                "discovery o asignale el proyecto al entorno."))
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Habilitar la gestión"),
+            "res_model": "primate.cloud.server.manage.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_instance_id": self.id},
+        }
+
+    def _habilitar_gestion_confirmado(self):
+        """Efectúa el pase a ``managed``. Lo llama el wizard tras confirmar."""
+        self.ensure_one()
+        anterior = self.management_state
+        self.management_state = "managed"
+        detalle = _(
+            "Gestión habilitada: %(nombre)s (cuenta %(cuenta)s) pasó de "
+            "«%(antes)s» a «Adoptado — gestión habilitada». Instancias Odoo: "
+            "%(inst)s.",
+            nombre=self.name, cuenta=self.account_id.name,
+            antes=dict(self._fields["management_state"].selection)[anterior],
+            inst=", ".join(
+                self.environment_id.instance_ids.mapped("display_name"))
+            or _("ninguna detectada"))
+        self.message_post(body=detalle)
+        self._log("server_manage_enable", result="success",
+                  name=_("Habilitar gestión: %s") % self.name,
+                  error_message=detalle)
+        return True
+
     # --- Runtime detectado on-demand por SSM (Fase panel, Bloque B1) ---
     runtime_python_version = fields.Char(string="Versión Python", readonly=True)
     runtime_odoo_version = fields.Char(string="Versión Odoo", readonly=True)
@@ -606,6 +763,7 @@ class PrimateCloudEc2Instance(models.Model):
         self.ensure_one()
         if not self.provisioned_by_pcm:
             raise UserError(_("Solo se edita la config de instancias PCM."))
+        self._exigir_gestion_habilitada("config_edit")
         target = self._panel_target(odoo_instance)
         clean = self._validate_config(edits)
         if not clean:
@@ -872,6 +1030,7 @@ class PrimateCloudEc2Instance(models.Model):
     def clone_addon(self, url, path, ref=None, token=None, odoo_instance=None):
         """Clona un repo en la instancia (token seguro). Devuelve True si clonó."""
         self.ensure_one()
+        self._exigir_gestion_habilitada("addon_add")
         target = self._panel_target(odoo_instance)
         token_b64 = (base64.b64encode(token.encode("utf-8")).decode("ascii")
                      if token else None)
@@ -887,6 +1046,7 @@ class PrimateCloudEc2Instance(models.Model):
     def restart_odoo(self, odoo_instance=None):
         """Reinicia el Odoo DE LA INSTANCIA (p. ej. para cargar un addon)."""
         self.ensure_one()
+        self._exigir_gestion_habilitada("odoo_restart")
         target = self._panel_target(odoo_instance)
         self._get_ssm_service().run_script(
             self.aws_instance_id,
@@ -1018,6 +1178,7 @@ class PrimateCloudEc2Instance(models.Model):
         NO lo habilita (acto explícito aparte). El guard de impersonación se
         levantó al recablear esto (opera solo lo de la instancia)."""
         self.ensure_one()
+        self._exigir_gestion_habilitada("impersonate")
         target = self._panel_target(odoo_instance)
         ssm = self._get_ssm_service()
         self._ensure_custom_addons_path(odoo_instance=target)
@@ -1306,6 +1467,10 @@ class PrimateCloudEc2Instance(models.Model):
         y mostrar el resultado o el error. Mientras tanto, se muestra un cartel de
         "procesando, por favor espere".
         """
+        # F2: un servidor adoptado en solo lectura no se inicia, ni se
+        # detiene, ni se reinicia, ni se termina. Acá quedan cubiertas las
+        # cuatro puertas de UI de una sola vez (las cuatro delegan acá).
+        self._exigir_gestion_habilitada(action_type)
         spec = self._LIFECYCLE[action_type]
         for instance in self:
             instance.with_delay(
@@ -1537,6 +1702,10 @@ class PrimateCloudEc2Instance(models.Model):
         (o el motivo del error). Nunca se traga el error: queda en la bitácora.
         """
         self.ensure_one()
+        # F2: el job es alcanzable sin pasar por el botón (requeue, llamada
+        # programática), así que el guard se repite acá. Que el botón ya lo
+        # valide no alcanza: invisible en la vista no es control de acceso.
+        self._exigir_gestion_habilitada(action_type)
         spec = self._LIFECYCLE[action_type]
         try:
             service = self._get_ec2_service()
@@ -1622,6 +1791,10 @@ class PrimateCloudEc2Instance(models.Model):
         toda llamada SSM va por queue_job, así que la espera no bloquea la UI.
         """
         self.ensure_one()
+        # F2: el wizard de comandos encola este job DIRECTAMENTE sobre la
+        # instancia, sin pasar por ninguna acción del servidor. Éste es el
+        # único punto que no se puede saltear.
+        self._exigir_gestion_habilitada("ssm_command")
         try:
             service = self._get_ssm_service()
             # check=False A PROPÓSITO: es un runner de comandos genérico; un

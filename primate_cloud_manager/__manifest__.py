@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "Primate Cloud Manager",
-    "version": "19.0.1.3.0",
+    "version": "19.0.1.4.0",
     "author": "PrimateUY",
     "website": "https://primate.uy",
     "category": "Technical",
@@ -56,6 +56,7 @@ Arquitectura extensible para Azure y GCP en fases futuras.
         "wizard/primate_cloud_dns_record_wizard_views.xml",
         "wizard/primate_cloud_dns_delete_wizard_views.xml",
         "wizard/primate_cloud_instance_create_wizard_views.xml",
+        "wizard/primate_cloud_server_manage_wizard_views.xml",
         # Menús (último: referencia acciones de las vistas anteriores)
         "views/primate_cloud_menus.xml",
     ],
