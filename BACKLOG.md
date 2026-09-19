@@ -146,6 +146,16 @@ base (p. ej. 1,5 × `dump.sql`), y chequear `df` del volumen de PG, no sólo el 
   (o `REASSIGN OWNED` post-restore) en el camino del catálogo, con test de dueños. **Complemento:** el chequeo de
   sanidad post-restore (`SELECT count(*) FROM ir_module_module`) corre como `postgres` y por eso pasó: debería correr
   **como el usuario de la instancia destino**, que es quien después tiene que leer la base.
+- **Validar una cuenta cuyo AWS Account ID ya está registrado revienta con `UniqueViolation` y deja la ficha en
+  Borrador** (décimo hallazgo, grabación del 2026-09-19). `action_validate_connection` llama a AWS, **escribe de
+  vuelta el Account ID descubierto** y el `flush` del job choca con `UNIQUE(aws_account_id)`:
+  `psycopg2.errors.UniqueViolation: Key (aws_account_id)=(603011031378) already exists` en el job
+  «Validar conexión», que queda `failed`. Desde la pantalla no se entiende nada: las credenciales **son
+  correctas** (la llamada a AWS salió bien) y la cuenta igual no pasa de Borrador. **Arreglo:** antes de
+  escribir el Account ID, buscar si otra ficha ya lo tiene y fallar con un `UserError` explícito («Esa cuenta
+  de AWS ya está registrada como “…”»), sin tocar el campo. Apareció grabando el alta de una cuenta de
+  ejemplo con las credenciales de una cuenta ya dada de alta — el mismo patrón de «la documentación como QA
+  de producto» del cuarto hallazgo.
 - **No hay forma documentada de entrar por navegador al staging** (noveno hallazgo, parte 2): nginx lo sirve en el 80
   por `server_name` (`staging.<dominio>`) y su puerto propio (8079) está cerrado en `pcm-managed` (sólo 80/443). Sin
   DNS, el staging es inalcanzable salvo forzando el `Host`. Opciones en la KB; la decisión depende del gate de
