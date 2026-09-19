@@ -353,12 +353,12 @@
                             <div t-foreach="config.meta" t-as="m" t-key="m.key" class="o_pcm_kv o_pcm_cfg_row">
                                 <span class="o_pcm_muted o_pcm_mono" t-out="m.key"/>
                                 <input t-if="m.type === 'bool'" type="checkbox"
-                                       t-att-checked="String(config.work[m.key]) === 'True'"
+                                       t-att-checked="('' + config.work[m.key]) === 'True'"
                                        t-on-change="(ev) => this.setConfigField(m.key, ev.target.checked ? 'True' : 'False')"/>
                                 <select t-elif="m.type === 'enum'" class="o_pcm_select"
                                         t-on-change="(ev) => this.setConfigField(m.key, ev.target.value)">
                                     <option t-foreach="m.options" t-as="opt" t-key="opt"
-                                            t-att-value="opt" t-att-selected="String(config.work[m.key]) === opt"
+                                            t-att-value="opt" t-att-selected="('' + config.work[m.key]) === opt"
                                             t-out="opt"/>
                                 </select>
                                 <input t-else="" type="number" class="o_pcm_input"
