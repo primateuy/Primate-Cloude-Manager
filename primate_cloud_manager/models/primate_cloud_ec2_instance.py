@@ -318,6 +318,14 @@ class PrimateCloudEc2Instance(models.Model):
         Hace upsert por (cuenta, instance_id). No toca el vínculo con el entorno
         si ya existe (el inventario no pisa asociaciones manuales).
 
+        Un EC2 que ENTRA por acá lo creó otro, no PCM, así que nace en
+        ``adopted_readonly``: se puede mirar y no operar hasta que un admin
+        habilite la gestión. Es la misma regla que la migración 19.0.1.4.0
+        aplicó a los ya registrados. Los que crea PCM pasan por
+        :meth:`_register_provisioned`, que los deja en ``provisioned``. Un
+        registro que ya existe NO cambia de modo: el sync no revoca ni otorga
+        una habilitación.
+
         Args:
             account (recordset): la cuenta AWS de origen.
             instances (list[dict]): salida de ``AwsEc2Service.list_instances``.
@@ -344,6 +352,7 @@ class PrimateCloudEc2Instance(models.Model):
                     {
                         "account_id": account.id,
                         "aws_instance_id": data["aws_instance_id"],
+                        "management_state": "adopted_readonly",
                     }
                 )
                 self.create(vals)
@@ -370,6 +379,9 @@ class PrimateCloudEc2Instance(models.Model):
         vals = self._aws_vals(aws_data, fields.Datetime.now())
         # La creó PCM: el panel puede confiar en el layout estándar de paths.
         vals["provisioned_by_pcm"] = True
+        # Y se gestiona normalmente. Cubre la carrera en la que el sync la vio
+        # antes de registrarse y la dejó en ``adopted_readonly``.
+        vals["management_state"] = "provisioned"
         if environment:
             vals["environment_id"] = environment.id
         if os_type:

@@ -761,6 +761,12 @@ class PrimateCloudAccount(models.Model):
             ("environment_id", "!=", False),
             ("aws_instance_id", "!=", False),
             ("instance_state", "not in", ("terminated", "shutting-down")),
+            # Punto 9 del contrato del modo adoptado: el re-etiquetado masivo
+            # escribe tags en AWS, y un servidor importado tiene entorno en
+            # cuanto se le registra una instancia. Sin este filtro,
+            # «Re-etiquetar recursos» tocaría la EC2 de un cliente que nadie
+            # habilitó.
+            ("management_state", "!=", "adopted_readonly"),
         ])
         counts = {"already_ok": 0, "tagged": 0, "fixed": 0,
                   "skipped": 0, "failed": 0}

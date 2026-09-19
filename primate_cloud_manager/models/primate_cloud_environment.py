@@ -484,6 +484,15 @@ class PrimateCloudEnvironment(models.Model):
         if (not machine or not machine.aws_instance_id
                 or machine.instance_state == "terminated"):
             return   # sin máquina / terminada: nada que taggear
+        # Punto 8 del contrato del modo adoptado: re-taggear ESCRIBE en AWS
+        # —create_tags o delete_tags sobre la EC2 del cliente—, y lo dispara
+        # algo tan inocente como registrar una instancia. En un servidor
+        # adoptado en solo lectura no se toca AWS. No levanta: la regla de
+        # Fase 9 es que el tagging nunca rompe la operación que lo disparó.
+        if machine.management_state == "adopted_readonly":
+            _logger.info("Re-tag de client_id omitido: %s está adoptado en "
+                         "solo lectura.", machine.name)
+            return
         try:
             ec2 = aws_ec2.AwsEc2Service(self.account_id._get_aws_service())
             region = machine.region or self.account_id.default_region
