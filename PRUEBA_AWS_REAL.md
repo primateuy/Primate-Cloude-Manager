@@ -70,6 +70,9 @@ crear la cuenta por vos (AWS pide tarjeta + verificación).
 }
 ```
 
+> **Esta política está incompleta a propósito: es la guía original de la Fase 4.** La política vigente de `pcm-operator` —con S3 (incluido `PcmS3IncomingUpload`, el permiso de subida acotado a `incoming/*`), Route 53, Cost Explorer y CloudWatch— está en `RUNBOOK_ONBOARDING.md`, que es la fuente de verdad de IAM.
+
+
 4. Terminá y en **Security credentials → Create access key** (tipo *Application running
    outside AWS*). **Guardá el Access Key ID y el Secret** → van al módulo.
 

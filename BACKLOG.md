@@ -18,6 +18,49 @@
    frene el ensayo ni se pierda de vista.
 4. **Producción** con cliente real: recién acá se exige el HTTPS resuelto.
 
+## 🚦 GATE — Restore a tamaño real: pendiente para la cuenta de la EMPRESA
+
+**Requisito antes de producción**, junto con el HTTPS del manager y el arreglo del `NEED_MB`.
+
+El ensayo de Barraca Julia se hace **100 % dentro del plan gratuito** de la cuenta personal
+(`603011031378`), que no admite tipos grandes (`m6i.xlarge` lo rechazó con
+`InvalidParameterCombination`). Por eso valida **el flujo completo** —aprovisionamiento, restore
+por F1 desde una key de S3 y arranque de Odoo 19— sobre una base **reducida**
+(`bj_v19_micro_smoke.zip`), pero **no** el tamaño real. Queda explícitamente pendiente, para la
+cuenta de la empresa:
+
+- el restore de la base completa (zip de 11,2 GB, 22,3 GB descomprimido);
+- el **pico de disco** real (estimado en 60-70 GB, sin medir);
+- los **tiempos** del restore grande;
+- el tipo de instancia objetivo (`m6i.xlarge` o equivalente).
+
+## 🚦 GATE — El chequeo de espacio del restore no cuenta todo el pico (F1)
+
+**Resolver antes de habilitar el restore a operadores en producción.**
+
+El `NEED_MB` del restore desde dump externo valida `/var/tmp` en dos etapas (el zip antes de
+bajarlo, y el total de `unzip -l` con el zip ya en disco), pero **no cuenta**:
+
+- **la base restaurada en PostgreSQL**: ocupa espacio en el volumen de PG, que en PCM suele ser
+  el mismo disco raíz;
+- **la copia del filestore a `data_dir`**: el `rsync` corre mientras el directorio de extracción
+  todavía existe, así que el filestore ocupa espacio dos veces en ese momento.
+
+El chequeo puede pasar y el disco llenarse a mitad del restore. Estimación con Barraca Julia
+(zip 11,2 GB, 22,3 GB descomprimido, `dump.sql` de 12,8 GB): pico de **~60-70 GB**. Es una
+estimación, no una medición; el ensayo va a dar el número real. Para el ensayo se aprovisiona con
+100 GB de disco.
+
+Arreglo propuesto: sumar al `NEED2` el tamaño descomprimido del filestore más un estimado de la
+base (p. ej. 1,5 × `dump.sql`), y chequear `df` del volumen de PG, no sólo el de `/var/tmp`.
+
+## 📋 Para el reporte del ensayo de Barraca Julia
+
+- **El pre-backup va a ser trivial en esta corrida**: el destino es un servidor recién
+  aprovisionado, sin base previa, así que no hay nada que respaldar antes del drop. El peso real
+  del pre-backup (que va a S3 con retención de 7 días, `pcm.pre_restore_retention_days`) **se
+  mide recién en el primer restore sobre una base existente**. No registrarlo como medido.
+
 ## ⏸ POSPUESTO — Backups programados con catálogo (F3)
 
 **Diseño aprobado en sep-2026, NO implementado.** Está completo en

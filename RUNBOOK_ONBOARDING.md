@@ -140,6 +140,12 @@ El user va a referenciarlo con `iam:PassRole`, así que conviene crearlo antes.
       "Resource": "arn:aws:s3:::pcm-*/*"
     },
     {
+      "Sid": "PcmS3IncomingUpload",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:AbortMultipartUpload"],
+      "Resource": "arn:aws:s3:::pcm-*/incoming/*"
+    },
+    {
       "Sid": "PcmRoute53Zones",
       "Effect": "Allow",
       "Action": ["route53:ListHostedZones"],
@@ -196,7 +202,11 @@ El user va a referenciarlo con `iam:PassRole`, así que conviene crearlo antes.
 > **lee** la config de lifecycle antes de escribirla (mergea su regla sin pisar reglas
 > ajenas). `DeleteObject` es para la limpieza (`delete_object`).
 >
-> **`ssm:DescribeInstanceInformation` (F2, importación de servidores, 2026-09-19)** — lectura pura: PCM la usa para saber si un servidor importado es alcanzable por SSM **antes** de mandarle el discovery, en vez de esperar el timeout de un `send_command`. No tiene resource-level (va con `Resource: *`, como el resto del bloque `SsmRun`). Sin este permiso la importación igual termina, pero marca todos los servidores como «Sin acceso SSM». **Pendiente de verificar en Policy Simulator** en la primera cuenta real.
+> **`SsmGetPublicAmi` — verificado con una llamada real el 2026-09-19** (cuenta `603011031378`): el parámetro de Canonical devuelve `ami-00adec9774170bad2`, la MISMA AMI gp3 que resuelve la vía de respaldo `DescribeImages`. Hasta ese día la política real de la cuenta no tenía este statement aunque el runbook lo listaba: PCM caía solo a `DescribeImages` (tolerado por diseño). **Lección: el runbook describe la política que DEBERÍA estar; en cada cuenta nueva hay que verificarla con llamadas reales.**
+>
+> **`PcmS3IncomingUpload` (F1, restore desde dump externo, 2026-09-19)** — el operador sube el dump a restaurar con esta misma identidad, así que necesita escribir en S3. Está **acotado al prefijo `incoming/`** a propósito: `pcm-operator` puede subir dumps a restaurar pero **no** puede pisar backups ni pre-backups, que viven en otros prefijos. `AbortMultipartUpload` es para que un upload grande que se corta no deje partes cobrando. Antes de esto el user sólo tenía `GetObject`/`DeleteObject`; el `PutObject` lo tenía únicamente el instance profile `pcm-ssm-role`. **Aplicado por Daryl en la cuenta `603011031378` el 2026-09-19.**
+>
+> **`ssm:DescribeInstanceInformation` (F2, importación de servidores, 2026-09-19)** — lectura pura: PCM la usa para saber si un servidor importado es alcanzable por SSM **antes** de mandarle el discovery, en vez de esperar el timeout de un `send_command`. No tiene resource-level (va con `Resource: *`, como el resto del bloque `SsmRun`). Sin este permiso la importación igual termina, pero marca todos los servidores como «Sin acceso SSM». **Verificado con una llamada real el 2026-09-19** (cuenta `603011031378`): `bj-ensayo` devuelve `Online`. Hasta ese día la política real de la cuenta NO tenía el permiso aunque este runbook ya lo listaba — se agregó como `SsmDescribeInstances`.
 >
 > **Route 53 (Fase 8.5, CRUD de DNS)** — verificado contra el *Service Authorization
 > Reference* de AWS. Route 53 es **global**: los ARN no llevan región ni cuenta (`route53:::`)
