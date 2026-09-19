@@ -1477,7 +1477,10 @@ class TestStagingInstanceAware(TransactionCase):
         sql = self.Env._render_neutralization_sql("https://stg.forum")
         self.assertIn("UPDATE mail_mail SET state = 'cancel'", sql)
         self.assertIn("DELETE FROM res_users_apikeys", sql)
-        self.assertIn("UPDATE website SET domain = 'https://stg.forum'", sql)
+        # Todos los websites sin dominio: con varios, un valor comun choca
+        # contra website_domain_unique y revierte la neutralizacion entera.
+        self.assertIn("UPDATE website SET domain = NULL", sql)
+        self.assertNotIn("UPDATE website SET domain = 'https://stg.forum'", sql)
         # Lo de D5 sigue intacto.
         self.assertIn("UPDATE ir_cron SET active = false", sql)
         self.assertNotIn("mail.catchall.alias", sql)

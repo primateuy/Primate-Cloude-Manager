@@ -92,11 +92,17 @@ DO $$ BEGIN
     END IF;
 END $$;
 
--- 9. Reapuntar el dominio de website al staging (Fase 8): evita que el sitio
+-- 9. Quitar el dominio de TODOS los websites (Fase 8): evita que el sitio
 --    del staging redirija a produccion.
+--    NULL y no la URL del staging: `website.domain` es UNIQUE, y con mas de
+--    un website el UPDATE a un mismo valor choca contra `website_domain_unique`
+--    en la segunda fila. Como todo el script corre en UNA transaccion con
+--    ON_ERROR_STOP, ese choque revertia la neutralizacion ENTERA (correo,
+--    crons, pagos...). Paso con Barraca Julia (3 websites) el 2026-09-19.
+--    UNIQUE admite varios NULL; sin dominio, Odoo sirve el website por defecto.
 DO $$ BEGIN
     IF to_regclass('public.website') IS NOT NULL THEN
-        UPDATE website SET domain = '%%STAGING_URL%%';
+        UPDATE website SET domain = NULL;
     END IF;
 END $$;
 
