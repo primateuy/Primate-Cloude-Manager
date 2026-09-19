@@ -127,6 +127,30 @@ base (p. ej. 1,5 × `dump.sql`), y chequear `df` del volumen de PG, no sólo el 
   `ec2:DeleteTags` a la policy/runbook, y que el job saltee con gracia los recursos inexistentes/terminados
   y registre «omitido», no «Fallido».
 
+- **«Agregar instancia»/staging fallidos no tienen reintento y el slug queda bloqueado incluso archivando**
+  (octavo hallazgo, grabación del 2026-09-19: la instancia de staging fallida por la región retuvo
+  `barraca-julia-staging` —`UNIQUE(environment_id, slug)` cuenta las archivadas— y hubo que borrar el
+  registro). **Solución principal:** un reintento que REUSA el mismo registro, simétrico al «Reintentar
+  instalación» del cuarto hallazgo (mismo patrón). **Complemento:** al archivar, una instancia que NUNCA
+  tocó el servidor libera su slug; una que sí lo tocó lo retiene (es dueña de carpetas y unit). El dato a
+  persistir para decidirlo es «tocó el servidor / nunca llegó». Es la recuperación sin trucos del operador.
+
+- 🔴 **La copia de staging deja las tablas a nombre del rol de PRODUCCIÓN: el Odoo del staging no arranca**
+  (noveno hallazgo, 2026-09-19). El camino del CATÁLOGO restaura con `pg_restore -d` sin `--no-owner --role`, así que
+  las 950 tablas quedan del rol del origen (`odoo_barraca_julia`) y el usuario del staging
+  (`odoo_barraca_julia_staging`) **no ve ninguna tabla**: `information_schema` sólo lista lo que el usuario puede ver,
+  Odoo cree que falta `orm_signaling_registry`, intenta crearla y PostgreSQL responde «already exists» → *Failed to
+  load registry* y toda URL redirige a sí misma. Es la MISMA clase del fix de F1 (`7193740`), en el camino que se dejó
+  byte-idéntico. Sólo se nota cuando origen y destino tienen usuarios PG distintos: **el caso multi-Odoo** (producción
+  y su staging en el mismo servidor), que es el default de «Crear staging». **Arreglo:** `--no-owner --role=<pg_user>`
+  (o `REASSIGN OWNED` post-restore) en el camino del catálogo, con test de dueños. **Complemento:** el chequeo de
+  sanidad post-restore (`SELECT count(*) FROM ir_module_module`) corre como `postgres` y por eso pasó: debería correr
+  **como el usuario de la instancia destino**, que es quien después tiene que leer la base.
+- **No hay forma documentada de entrar por navegador al staging** (noveno hallazgo, parte 2): nginx lo sirve en el 80
+  por `server_name` (`staging.<dominio>`) y su puerto propio (8079) está cerrado en `pcm-managed` (sólo 80/443). Sin
+  DNS, el staging es inalcanzable salvo forzando el `Host`. Opciones en la KB; la decisión depende del gate de
+  dominio/HTTPS.
+
 ## IAM
 
 - **El user `pcm` no tiene `iam:GetInstanceProfile`** — no bloquea el provisioning (PassRole
