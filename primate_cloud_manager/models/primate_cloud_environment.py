@@ -3213,6 +3213,8 @@ class PrimateCloudEnvironment(models.Model):
                          % marcas["cleaned"])
         if marcas.get("format"):
             notas.append(_("Formato detectado: %s.") % marcas["format"])
+        if marcas.get("warning_role"):
+            notas.append(_("ATENCIÓN: %s") % marcas["warning_role"])
         if origen:
             # El borrado de la key de origen va SÓLO con el restore exitoso: si
             # falló, la key se conserva para reintentar sin volver a subir
@@ -3461,6 +3463,8 @@ class PrimateCloudEnvironment(models.Model):
                 datos["filestore"] = linea[len("PCM_FILESTORE_OK "):]
             elif linea == "PCM_FILESTORE_SKIP":
                 datos["filestore"] = ""
+            elif linea.startswith("PCM_WARNING_ROLE"):
+                datos["warning_role"] = linea[len("PCM_WARNING_ROLE"):].strip()
         return datos
 
     def _restore_borrar_origen(self, origen, account, region):
@@ -3681,6 +3685,13 @@ class PrimateCloudEnvironment(models.Model):
     def _build_restore_script_externo(self, db_name, origin, origin_size_mb,
                                       service, pg_user, data_dir, db):
         """Script del restore desde un dump externo (F1)."""
+        # El dueño de la base destino, en crudo. Un dump externo suele venir
+        # `--no-owner`: si se carga como `postgres`, TODAS las tablas quedan a
+        # nombre de `postgres` y Odoo —que se conecta como `pg_user`, dueño de
+        # la base pero no de sus tablas— no puede leerlas ("permission
+        # denied"). Por eso la carga corre con el rol del dueño.
+        rol = shlex.split(pg_user)[0] if pg_user else "odoo"
+        set_role = shlex.quote('SET ROLE "%s"' % rol.replace('"', '""'))
         uri = origin.get("uri") or ""
         fmt = origin.get("format") or "auto"
         es_s3 = origin.get("type") == "s3_uri"
@@ -3755,6 +3766,10 @@ class PrimateCloudEnvironment(models.Model):
             'if [ "$FMT" = "odoo_zip" ]; then',
             "  command -v unzip >/dev/null 2>&1 || { "
             'say "PCM_ERROR: falta unzip en la instancia"; exit 1; }',
+            # rsync se usa DESPUÉS del dropdb (filestore): si falta, el
+            # restore moriría con la base ya borrada. Se chequea acá.
+            "  command -v rsync >/dev/null 2>&1 || { "
+            'say "PCM_ERROR: falta rsync en la instancia"; exit 1; }',
             # unzip -l: la última línea trae el total de bytes descomprimidos.
             '  UNZ=$(unzip -l "$FNAME" | tail -1 | awk \'{print $1}\')',
             '  NEED2=$(( ${UNZ:-0} / 1048576 * 12 / 10 + 1 ))',
@@ -3791,6 +3806,19 @@ class PrimateCloudEnvironment(models.Model):
             'if [ -n "$SRC_VER" ] && [ "$SRC_VER" -gt "$DST_VER" ]; then '
             'say "PCM_ERROR_PG_MISMATCH origen=$SRC_VER destino=$DST_VER"; '
             "exit 1; fi",
+            # La carga SQL corre con `SET ROLE <dueño>`. Si el dump trae sus
+            # propios cambios de rol (algunos modos de pg_dump los emiten), el
+            # SET ROLE inicial se pierde a mitad de camino y las tablas vuelven
+            # a quedar a nombre de postgres. No se aborta —puede ser un dump
+            # válido—, pero se avisa ANTES del stop y llega a la bitácora.
+            'SQLF=""',
+            '[ "$FMT" = "odoo_zip" ] && SQLF="$WORK/x/dump.sql"',
+            '[ "$FMT" = "plain" ] && SQLF="$FNAME"',
+            'if [ -n "$SQLF" ] && grep -qE "^(RESET ROLE|SET ROLE|SET SESSION '
+            'AUTHORIZATION|RESET SESSION AUTHORIZATION)" "$SQLF"; then '
+            'say "PCM_WARNING_ROLE el dump trae sentencias que cambian de rol: '
+            'el SET ROLE inicial puede no alcanzar y parte de las tablas quedar '
+            'a nombre de postgres. Revisar el dueño de las tablas."; fi',
         ]
 
         # --- Punto de no retorno: mismo orden aprobado que el camino histórico
@@ -3812,12 +3840,18 @@ class PrimateCloudEnvironment(models.Model):
             # --- Restore según formato ---
             'if [ "$FMT" = "custom" ]; then',
             # pg_restore devuelve != 0 por avisos ignorables (owners, etc.).
-            '  sudo -u postgres pg_restore -d %s "$FNAME" || true' % db,
+            # --no-owner --role: los objetos quedan a nombre del dueño de la
+            # base, no de roles del origen que no existen acá (ni de postgres).
+            '  sudo -u postgres pg_restore --no-owner --role=%s -d %s '
+            '"$FNAME" || true' % (shlex.quote(rol), db),
             'elif [ "$FMT" = "odoo_zip" ]; then',
-            # Ya extraído y verificado antes del stop: acá sólo se carga.
-            '  sudo -u postgres psql -q -d %s -f "$WORK/x/dump.sql"' % db,
+            # Ya extraído y verificado antes del stop: acá sólo se carga. El
+            # SET ROLE va en la MISMA sesión que el -f (psql ejecuta -c y -f en
+            # orden, en una sola conexión).
+            '  sudo -u postgres psql -q -d %s -c %s -f "$WORK/x/dump.sql"'
+            % (db, set_role),
             "else",
-            '  sudo -u postgres psql -q -d %s -f "$FNAME"' % db,
+            '  sudo -u postgres psql -q -d %s -c %s -f "$FNAME"' % (db, set_role),
             "fi",
             # La sanidad real: que lo restaurado sea un Odoo.
             'sudo -u postgres psql -d %s -tAc "SELECT count(*) FROM '

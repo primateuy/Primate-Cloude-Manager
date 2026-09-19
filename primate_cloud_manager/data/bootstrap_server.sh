@@ -39,6 +39,7 @@ apt-get update -y >>"${DETALLE}" 2>&1
 apt-get install -y git python3-pip python3-venv build-essential \
     libxml2-dev libxslt1-dev libldap2-dev libsasl2-dev libpq-dev \
     libjpeg-dev nginx certbot python3-certbot-nginx wkhtmltopdf \
+    unzip rsync \
     >>"${DETALLE}" 2>&1
 
 # AWS CLI: lo usan backup/staging/restore (aws s3 cp en streaming). En Ubuntu

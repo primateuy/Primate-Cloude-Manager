@@ -19,6 +19,9 @@ from odoo.exceptions import UserError
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
 
+# Cómo aparece en el script la carga con el rol del dueño (pg_user = odoo_bj).
+ROL = """-c 'SET ROLE "odoo_bj"'"""
+
 
 @tagged("post_install", "-at_install", "primate_cloud")
 class TestF1RestoreExterno(TransactionCase):
@@ -243,7 +246,7 @@ class TestF1RestoreExterno(TransactionCase):
         post_drop = script[drop:]
         self.assertNotIn("unzip -q -o", post_drop)
         self.assertNotIn('if [ ! -f "$WORK/x/dump.sql" ]', post_drop)
-        self.assertIn('psql -q -d barraca_julia -f "$WORK/x/dump.sql"',
+        self.assertIn('psql -q -d barraca_julia ' + ROL + ' -f "$WORK/x/dump.sql"',
                       post_drop)
 
     def test_version_de_origen_sale_del_dump_ya_extraido(self):
@@ -256,15 +259,74 @@ class TestF1RestoreExterno(TransactionCase):
         """Sólo el zip se reordenó: custom/plain cargan después del drop."""
         script = self._script_externo(format="custom")
         self.assertLess(script.index("dropdb --if-exists"),
-                        script.index("pg_restore -d barraca_julia"))
+                        script.index("pg_restore --no-owner --role=odoo_bj "
+                                     "-d barraca_julia"))
         script = self._script_externo(format="plain")
         self.assertLess(script.index("dropdb --if-exists"),
-                        script.index('psql -q -d barraca_julia -f "$FNAME"'))
+                        script.index('psql -q -d barraca_julia ' + ROL + ' -f "$FNAME"'))
+
+    # ------------------------------------------------------------------
+    # [FIX] dueño de las tablas, rsync y bootstrap (ensayo BJ, 2026-09-19)
+    # ------------------------------------------------------------------
+    def test_carga_sql_con_el_rol_del_dueno_en_la_misma_sesion(self):
+        """Un dump --no-owner cargado como postgres deja TODAS las tablas a
+        nombre de postgres, y Odoo (que se conecta como pg_user) no las puede
+        leer. El SET ROLE va en la MISMA invocación de psql que el -f."""
+        for fmt, archivo in (("odoo_zip", '"$WORK/x/dump.sql"'),
+                             ("plain", '"$FNAME"')):
+            script = self._script_externo(format=fmt)
+            self.assertIn("psql -q -d barraca_julia " + ROL + " -f " + archivo,
+                          script, fmt)
+
+    def test_custom_externo_sin_duenos_del_origen(self):
+        script = self._script_externo(format="custom")
+        self.assertIn("pg_restore --no-owner --role=odoo_bj -d barraca_julia",
+                      script)
+
+    def test_rsync_se_chequea_antes_del_stop(self):
+        """rsync se usa DESPUÉS del dropdb: si falta, tiene que fallar antes."""
+        script = self._script_externo()
+        self.assertLess(script.index("command -v rsync"),
+                        script.index("systemctl stop"))
+        self.assertLess(script.index("command -v rsync"),
+                        script.index("PCM_DROP_STARTED"))
+
+    def test_aviso_de_cambio_de_rol_antes_del_stop(self):
+        """Si el dump trae RESET ROLE / SET SESSION AUTHORIZATION, el SET ROLE
+        inicial se degrada: se avisa antes del punto de no retorno."""
+        script = self._script_externo()
+        aviso = script.index("PCM_WARNING_ROLE")
+        self.assertLess(aviso, script.index("systemctl stop"))
+        for sentencia in ("RESET ROLE", "SET SESSION AUTHORIZATION"):
+            self.assertIn(sentencia, script)
+
+    def test_el_aviso_de_rol_llega_a_la_bitacora(self):
+        d = self.Env._restore_marcadores(
+            "PCM_FORMAT=plain\nPCM_WARNING_ROLE el dump trae sentencias\n")
+        self.assertIn("el dump trae sentencias", d["warning_role"])
+
+    def test_camino_historico_sin_cambios_de_rol(self):
+        """El camino del catálogo NO se toca: sus dumps los hace PCM."""
+        script = self.Env._build_backup_restore_script(
+            "barraca_julia", self.backup, True, self.odoo_inst)
+        self.assertNotIn("SET ROLE", script)
+        self.assertNotIn("--no-owner", script)
+
+    def test_bootstrap_instala_unzip_y_rsync(self):
+        """F1 los necesita (rama odoo_zip): el bootstrap no los traía."""
+        from odoo.tools import file_open
+        with file_open("primate_cloud_manager/data/bootstrap_server.sh") as fh:
+            bootstrap = fh.read()
+        # El bloque del apt-get de dependencias, hasta su redirección al log.
+        bloque = bootstrap.split("apt-get install -y git", 1)[1].split(">>", 1)[0]
+        for paquete in ("unzip", "rsync"):
+            self.assertIn(paquete, bloque.split(), paquete)
 
     def test_las_tres_ramas_de_restore(self):
         script = self._script_externo()
-        self.assertIn("pg_restore -d barraca_julia", script)
-        self.assertIn("psql -q -d barraca_julia -f", script)
+        self.assertIn("pg_restore --no-owner --role=odoo_bj -d barraca_julia",
+                      script)
+        self.assertIn("psql -q -d barraca_julia " + ROL + " -f", script)
         self.assertIn("dump.sql", script)
 
     # ------------------------------------------------------------------
