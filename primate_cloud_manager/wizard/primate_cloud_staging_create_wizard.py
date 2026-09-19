@@ -146,7 +146,7 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
         if origin.main_url and not self.domain:
             self.domain = "staging.%s" % origin.main_url
         if not self.db_name:
-            self.db_name = ("%s_staging" % (origin.name or "")).lower().replace(" ", "_")
+            self.db_name = origin._staging_db_name_default()
         # Default D-R4.6: montar el staging en el MISMO servidor del origen si
         # es multi-Odoo (no legacy) — el caso barato que R3 habilitó.
         if not self.target_server_id and origin.state == "active" \

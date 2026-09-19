@@ -346,7 +346,7 @@ class TestEnvironmentProvision(TransactionCase):
         # tras reiniciar el server reusa el mismo token y NO duplica la EC2.
         fake_delay = mock.Mock()
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
-            self.env_rec._enqueue_provision({"region": "us-east-1"})
+            self.env_rec._enqueue_provision({"region": "us-east-1", "db_name": "forum"})
         params = fake_delay.job_provision_server.call_args[0][0]
         self.assertIn("client_token", params)
         self.assertTrue(params["client_token"].startswith("pcm-"))
@@ -358,7 +358,8 @@ class TestEnvironmentProvision(TransactionCase):
         fake_delay = mock.Mock()
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
             self.env_rec._enqueue_provision(
-                {"region": "us-east-1", "db_mode": "local_pg", "db_password": ""})
+                {"region": "us-east-1", "db_mode": "local_pg", "db_password": "",
+                 "db_name": "forum"})
         params = fake_delay.job_provision_server.call_args[0][0]
         self.assertTrue(params["db_password"])
         self.assertGreaterEqual(len(params["db_password"]), 20)
@@ -369,12 +370,14 @@ class TestEnvironmentProvision(TransactionCase):
         fake_delay = mock.Mock()
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
             self.env_rec._enqueue_provision(
-                {"region": "us-east-1", "db_mode": "local_pg", "db_password": "explicita"})
+                {"region": "us-east-1", "db_mode": "local_pg", "db_password": "explicita",
+                 "db_name": "forum"})
         self.assertEqual(
             fake_delay.job_provision_server.call_args[0][0]["db_password"], "explicita")
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
             self.env_rec.state = "draft"
-            self.env_rec._enqueue_provision({"region": "us-east-1", "db_mode": "none"})
+            self.env_rec._enqueue_provision(
+                {"region": "us-east-1", "db_mode": "none", "db_name": "forum"})
         self.assertFalse(
             fake_delay.job_provision_server.call_args[0][0].get("db_password"))
 
@@ -392,7 +395,7 @@ class TestEnvironmentProvision(TransactionCase):
         wiz = self.env["primate.cloud.provision.wizard"].create({
             "environment_id": self.env_rec.id, "region": "us-east-1",
             "domain": "forum.primate.cloud", "image_id": "ami-1",
-            "instance_type": "t3.medium", "db_mode": "local_pg",
+            "instance_type": "t3.medium", "db_mode": "local_pg", "db_name": "forum",
             # Red explícita → salta el chequeo de región (override del admin).
             "security_group_ids": "sg-1", "subnet_id": "subnet-1",
             "create_dns": False,
@@ -411,6 +414,7 @@ class TestEnvironmentProvision(TransactionCase):
             "security_group_ids": "sg-1,sg-2", "subnet_id": "subnet-1",
             "instance_profile": "pcm-ssm-role",
             "db_mode": "local_pg", "db_password": "secret", "create_dns": False,
+            "db_name": "forum",
         })
         with mock.patch.object(type(self.env_rec), "with_delay"):
             wiz.action_provision()
@@ -560,6 +564,12 @@ class TestEnvironmentProvision(TransactionCase):
         # El retry REUSA el job fallido (mismos args persistidos por queue_job)
         # y no crea otra EC2: solo re-encola la 2ª mitad de la cadena.
         params = self._params()
+        # El reintento es sobre el servidor YA creado: sin máquina viva no
+        # hay qué reintentar (guía al wizard). Mismo criterio que el botón.
+        self.env["primate.cloud.ec2.instance"].create({
+            "name": "forum-prod", "account_id": self.account.id,
+            "environment_id": self.env_rec.id, "aws_instance_id": "i-forum",
+            "instance_state": "running", "region": "us-east-1"})
         job = self.env_rec.with_delay().job_install_instance(params)
         job.db_record().write({"state": "failed"})
         self.env_rec.state = "error"

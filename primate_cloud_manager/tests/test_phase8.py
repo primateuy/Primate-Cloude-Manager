@@ -1420,6 +1420,7 @@ class TestStagingInstanceAware(TransactionCase):
                 "name": "Stg", "domain": "stg.forum.primate.cloud",
                 "origin_instance_id": instance_2.id,
                 "origin_database_id": db_2.id,
+                "transfer_bucket": "pcm-transfer",
             })
         self.assertEqual(staging.staging_origin_instance_id, instance_2)
         self.assertEqual(staging.staging_origin_database_id, db_2)

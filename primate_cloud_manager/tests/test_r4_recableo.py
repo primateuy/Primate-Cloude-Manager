@@ -1022,7 +1022,8 @@ class TestR4B5Staging(TransactionCase):
         params = {"name": "Stg Nuevo", "domain": "stg2.pcm.test",
                   "origin_instance_id": self.machine.id,
                   "origin_database_id": self.origin_db.id,
-                  "region": "us-east-1", "db_mode": "local_pg"}
+                  "region": "us-east-1", "db_mode": "local_pg",
+                  "transfer_bucket": "pcm-bucket"}
         with mock.patch.object(type(self.origin), "with_delay",
                                return_value=fake_delay):
             staging = self.origin._enqueue_staging(params)

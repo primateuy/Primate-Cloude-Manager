@@ -96,12 +96,17 @@ class PrimateCloudInstance(models.Model):
         string="Tipo", required=True, default="production",
         help="Propósito del Odoo (era del entorno; D6 lo muda a la instancia).",
     )
+    # Obligatorias EN EL MODELO (2026-09-19): sin versión la instalación falla
+    # recién sobre la EC2 ya creada. Ningún camino —UI, wizard o programático—
+    # crea una instancia sin ellas; las existentes en NULL toman el default al
+    # volverse required (Odoo inicializa la columna antes del NOT NULL).
     odoo_version = fields.Selection(
         [("17", "17"), ("18", "18"), ("19", "19")], string="Versión Odoo",
+        required=True, default="19",
     )
     odoo_edition = fields.Selection(
         [("community", "Community"), ("enterprise", "Enterprise")],
-        string="Edición Odoo",
+        string="Edición Odoo", required=True, default="community",
     )
     main_url = fields.Char(string="URL principal", help="Ej.: forum.primate.cloud")
 

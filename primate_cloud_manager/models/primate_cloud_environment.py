@@ -154,13 +154,15 @@ class PrimateCloudEnvironment(models.Model):
         required=True,
         tracking=True,
     )
+    # Mismos defaults que la instancia: el formulario del entorno los muestra
+    # ya completos (19 / Community) en vez de vacíos.
     odoo_version = fields.Selection(
         related="primary_instance_id.odoo_version", string="Versión Odoo",
-        store=True, readonly=False,
+        store=True, readonly=False, default="19",
     )
     odoo_edition = fields.Selection(
         related="primary_instance_id.odoo_edition", string="Edición Odoo",
-        store=True, readonly=False,
+        store=True, readonly=False, default="community",
     )
     main_url = fields.Char(
         related="primary_instance_id.main_url", string="URL principal",
@@ -546,10 +548,16 @@ class PrimateCloudEnvironment(models.Model):
         for vals in vals_list:
             if not vals.get("pcm_ref"):
                 vals["pcm_ref"] = self._new_pcm_ref()
-            delegated_list.append({
+            delegated = {
                 key: vals.pop(key)
                 for key in list(vals) if key in self.INSTANCE_DELEGATED_FIELDS
-            })
+            }
+            # Un False explícito no pisa el default de la instancia: versión y
+            # edición son obligatorias y tienen default (19 / Community).
+            for key in ("odoo_version", "odoo_edition"):
+                if key in delegated and not delegated[key]:
+                    delegated.pop(key)
+            delegated_list.append(delegated)
         records = super().create(vals_list)
         Instance = self.env["primate.cloud.instance"]
         for record, delegated in zip(records, delegated_list):
@@ -692,6 +700,9 @@ class PrimateCloudEnvironment(models.Model):
         self.ensure_one()
         if not self.account_id:
             raise UserError(_("El entorno necesita una cuenta AWS para aprovisionar."))
+        # Cadena COMPLETA antes de tocar AWS (la instalación que viene después
+        # de la EC2 no puede fallar por configuración que se sabía de antemano).
+        self._exigir_cadena_de_instalacion(params)
         self.state = "provisioning"
         # Token de idempotencia: viaja en los args del job (queue_job los persiste),
         # así un requeue tras reiniciar el server NO crea una EC2 duplicada.
@@ -828,6 +839,7 @@ class PrimateCloudEnvironment(models.Model):
                 "Agregar instancia soporta PostgreSQL local del servidor en "
                 "v1 (una RDS propia por instancia queda anotada en backlog)."))
         params = dict(params, db_mode="local_pg")
+        self._exigir_cadena_de_instalacion(params, instance=instance)
         params = self._ensure_transient_db_password(params)
         instance.state = "draft"
         self.with_delay(
@@ -962,6 +974,10 @@ class PrimateCloudEnvironment(models.Model):
             region = params.get("region") or account.default_region
             domain = params.get("domain") or self.main_url or self.name
 
+            # Defensa: la misma validación del encolado, por si el job llegó por
+            # otro camino (o con params viejos). Falla ACÁ, antes de la EC2.
+            self._exigir_cadena_de_instalacion(params)
+
             # 0. Completar la red desde el descubrimiento (auto-discovery): SG/
             #    subnet/profile vacíos se resuelven de la región; override gana.
             params = self._fill_network_from_discovery(params, account, region)
@@ -1089,12 +1105,22 @@ class PrimateCloudEnvironment(models.Model):
         (que recuerda la configuración).
         """
         self.ensure_one()
-        failed_job = self.env["queue.job"].search([
-            ("model_name", "=", self._name),
-            ("method_name", "=", "job_install_instance"),
-            ("state", "=", "failed"),
-        ], order="id desc").filtered(
-            lambda j: self.id in j.records.ids)[:1]
+        # El job de instalación NO termina en `failed` cuando falla: captura el
+        # error, deja entorno e instancia en 'error' y devuelve False, así que
+        # queue_job lo marca `done`. Buscar sólo `failed` dejaba el reintento
+        # sin nada que reintentar (ensayo de Barraca Julia, 2026-09-19). Con el
+        # entorno en 'error' y la máquina viva, el último install del entorno
+        # —done o failed— es el que falló.
+        machine = self.ec2_instance_id or self.ec2_instance_ids.filtered(
+            lambda m: m.instance_state != "terminated")[:1]
+        failed_job = self.env["queue.job"]
+        if self.state == "error" and machine and machine.instance_state != "terminated":
+            failed_job = self.env["queue.job"].search([
+                ("model_name", "=", self._name),
+                ("method_name", "=", "job_install_instance"),
+                ("state", "in", ("failed", "done")),
+            ], order="id desc").filtered(
+                lambda j: self.id in j.records.ids)[:1]
         if not failed_job:
             raise UserError(_(
                 "No hay una instalación fallida para reintentar acá: usá "
@@ -1861,6 +1887,15 @@ class PrimateCloudEnvironment(models.Model):
         # no un servidor nuevo. Sin target → comportamiento actual (EC2 nueva).
         target_server = self.env["primate.cloud.environment"].browse(
             params.get("target_server_id") or []).exists()
+        # Cadena completa del staging ANTES de crear nada (servidor nuevo =
+        # EC2 facturable; mismo servidor = instancia + copia de la base).
+        from .primate_cloud_instance import slugify
+        self._exigir_cadena_de_instalacion(
+            dict(params, db_mode="local_pg",
+                 db_name=params.get("db_name") or self._staging_db_name_default()),
+            version=self.odoo_version, edition=self.odoo_edition,
+            slug=slugify(params.get("name")),
+            bucket=params.get("transfer_bucket"), exigir_bucket=True)
         if target_server:
             return self._enqueue_staging_instance(
                 target_server, params, origin_instance, origin_database)
@@ -1891,6 +1926,81 @@ class PrimateCloudEnvironment(models.Model):
         ).job_create_staging(params)
         return staging
 
+    def _staging_db_name_default(self):
+        """Nombre de base del staging por default, con el charset de DB_NAME_RE.
+
+        Antes era ``"<nombre>_staging".lower()``: con un nombre con espacios
+        ("Barraca Julia") daba una base inválida que fallaba recién al montar.
+        """
+        self.ensure_one()
+        base = re.sub(r"[^a-z0-9_]+", "_", (self.name or "").lower()).strip("_")
+        return "%s_staging" % (base or "base")
+
+    def _exigir_cadena_de_instalacion(self, params, instance=None, version=None,
+                                      edition=None, slug=None, bucket=None,
+                                      exigir_bucket=False):
+        """Valida TODO lo que la instalación va a exigir, ANTES de tocar AWS.
+
+        Mismo principio que el semáforo de red («cadena completa verde antes de
+        aprovisionar»), aplicado a la configuración: la versión y la edición de
+        Odoo, el slug, el nombre de la base, la contraseña PG y el bucket de
+        transferencia se validaban recién al usarse —con la EC2 ya creada y
+        facturando (ensayo de Barraca Julia, 2026-09-19). Junta todos los
+        problemas en un solo error, para corregirlos de una vez.
+
+        Args:
+            params (dict): parámetros de la cadena (db_name, db_mode, db_password…).
+            instance (recordset, optional): la instancia a montar; por default,
+                la primaria del entorno.
+            version, edition, slug (str, optional): para cuando la instancia
+                todavía no existe (staging): se validan los valores que va a tener.
+            bucket (str, optional): bucket de transferencia (staging).
+            exigir_bucket (bool): si el bucket es obligatorio en este camino.
+
+        Raises:
+            UserError: con la lista de lo que falta o es inválido.
+        """
+        self.ensure_one()
+        errores = []
+        if instance is None and version is None:
+            instance = self.primary_instance_id
+            if not instance:
+                errores.append(_(
+                    "el entorno no tiene su Odoo (instancia primaria): asignale un "
+                    "proyecto (cliente) al entorno"))
+        if instance:
+            version = instance.odoo_version
+            edition = instance.odoo_edition
+            slug = instance.slug
+        if instance is not None or version is not None:
+            if not version:
+                errores.append(_("falta la versión de Odoo"))
+            if not edition:
+                errores.append(_("falta la edición de Odoo (Community o Enterprise)"))
+            if not SLUG_RE.match(slug or ""):
+                errores.append(_("el nombre técnico (slug) %r no es válido: usá letras, "
+                                 "números y guiones") % (slug or ""))
+        db_name = (params.get("db_name") or "").strip()
+        if not DB_NAME_RE.match(db_name):
+            errores.append(_("el nombre de la base %r no es válido: solo letras, números, "
+                             "guion y guion bajo, sin espacios") % db_name)
+        pg_password = params.get("db_password")
+        if (params.get("db_mode", "local_pg") == "local_pg" and pg_password
+                and not PG_PASSWORD_RE.match(pg_password)):
+            errores.append(_("la contraseña de PostgreSQL tiene caracteres no admitidos "
+                             "(usá letras, números, guion y guion bajo)"))
+        if exigir_bucket:
+            bucket = (bucket or "").strip()
+            if not bucket:
+                errores.append(_("falta el bucket S3 de transferencia"))
+            elif not bucket.startswith("pcm-"):
+                errores.append(_("el bucket de transferencia %r no es un bucket pcm-*: los "
+                                 "permisos de S3 de PCM están acotados a esos buckets") % bucket)
+        if errores:
+            raise UserError(_(
+                "No se puede continuar: la configuración está incompleta. No se creó "
+                "nada en AWS.\n- %s") % "\n- ".join(errores))
+
     def _enqueue_staging_instance(self, target_server, params,
                                   origin_instance, origin_database):
         """Staging = una INSTANCIA nueva en un servidor EXISTENTE (R4-B5).
@@ -1910,8 +2020,7 @@ class PrimateCloudEnvironment(models.Model):
                 "El servidor destino tiene layout legacy: no se le puede "
                 "montar un staging como instancia (requiere multi-Odoo)."))
         from .primate_cloud_instance import slugify
-        db_name = (params.get("db_name")
-                   or ("%s_staging" % (self.name or "")).lower())
+        db_name = params.get("db_name") or self._staging_db_name_default()
         # El origen del staging es la INSTANCIA Odoo dueña de la base que se
         # copia (inequívoco por B4: origin_database.instance_id), NO
         # máquina→servidor→primaria (eso era el "[:1]" de Fase 8: stageando la

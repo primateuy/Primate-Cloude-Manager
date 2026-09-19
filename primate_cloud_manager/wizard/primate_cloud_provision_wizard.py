@@ -5,6 +5,8 @@ Captura los parámetros de cómputo (EC2), base de datos (RDS / PostgreSQL local
 ninguna) y DNS, y encola el flujo completo en el entorno. La contraseña maestra
 de la base se usa solo para la creación: no se persiste en la base de Odoo.
 """
+import re
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
@@ -160,7 +162,9 @@ class PrimateCloudProvisionWizard(models.TransientModel):
         if not self.instance_name:
             self.instance_name = env.main_url or env.name
         if not self.db_name:
-            self.db_name = (env.name or "").lower().replace(" ", "_")
+            # Con el charset de DB_NAME_RE ("SMOKE UI (borrar)" daba
+            # "smoke_ui_(borrar)", que la instalación rechazaba tarde).
+            self.db_name = re.sub(r"[^a-z0-9_]+", "_", (env.name or "").lower()).strip("_")
         if not self.rds_identifier:
             self.rds_identifier = (
                 (env.name or "db").lower().replace(" ", "-").replace("_", "-")
