@@ -35,6 +35,36 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- 2b. Blanquear las CREDENCIALES de todos los servidores de correo, saliente
+--     y entrante (2026-09-19). Desactivar no alcanza: un servidor apagado con
+--     el usuario y la contrasena reales adentro se prende con un clic, y la
+--     copia viaja con el secreto. Paso con Barraca Julia: el SMTP de DreamHost
+--     quedo inactivo pero con sus credenciales.
+--     Las columnas cambian segun la version y los modulos (OAuth de Gmail y
+--     Outlook solo existen si estan instalados): se blanquean las que EXISTAN,
+--     leidas de information_schema. Todas admiten NULL.
+DO $$
+DECLARE
+    fila record;
+BEGIN
+    FOR fila IN
+        SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND (
+            (table_name = 'ir_mail_server' AND column_name IN (
+                'smtp_user', 'smtp_pass',
+                'smtp_ssl_certificate', 'smtp_ssl_private_key'))
+            OR (table_name = 'fetchmail_server' AND column_name IN (
+                'user', 'password'))
+            OR (table_name IN ('ir_mail_server', 'fetchmail_server')
+                AND (column_name LIKE 'google_gmail_%'
+                     OR column_name LIKE 'microsoft_outlook_%'))
+          )
+    LOOP
+        EXECUTE format('UPDATE %I SET %I = NULL', fila.table_name, fila.column_name);
+    END LOOP;
+END $$;
+
 -- 3. Desactivar TODOS los crons (evita procesos automáticos del staging).
 DO $$ BEGIN
     IF to_regclass('public.ir_cron') IS NOT NULL THEN

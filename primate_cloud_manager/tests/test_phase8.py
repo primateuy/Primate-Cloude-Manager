@@ -1490,6 +1490,32 @@ class TestStagingInstanceAware(TransactionCase):
         self.assertIn("UPDATE ir_cron SET active = false", sql)
         self.assertNotIn("mail.catchall.alias", sql)
 
+    def test_neutralizacion_blanquea_credenciales_de_correo(self):
+        """El paso 2b, EJECUTADO sobre la base: apagar el servidor no
+        alcanza, las credenciales se van (Barraca Julia, 2026-09-19)."""
+        sql = self.Env._render_neutralization_sql("https://stg.forum")
+        bloque = sql[sql.index("-- 2b."):sql.index("-- 3.")]
+        server = self.env["ir.mail_server"].create({
+            "name": "SMTP real", "smtp_host": "smtp.ejemplo.test",
+            "smtp_user": "usuario@ejemplo.test", "smtp_pass": "secreto",
+        })
+        entrantes = self.env["fetchmail.server"] if (
+            "fetchmail.server" in self.env) else None
+        entrante = entrantes.create({
+            "name": "IMAP real", "server": "imap.ejemplo.test",
+            "server_type": "imap", "user": "u@ejemplo.test",
+            "password": "secreto",
+        }) if entrantes is not None else None
+        self.env.flush_all()
+        self.env.cr.execute(bloque)
+        self.env.invalidate_all()
+        self.assertFalse(server.smtp_user)
+        self.assertFalse(server.smtp_pass)
+        self.assertEqual(server.smtp_host, "smtp.ejemplo.test")  # sólo credenciales
+        if entrante is not None:
+            self.assertFalse(entrante.user)
+            self.assertFalse(entrante.password)
+
     # --- Restore con neutralize opcional (lo usa el refresh) ---
     def test_restore_neutralize_false_saltea(self):
         staging = self.env["primate.cloud.environment"].create({
