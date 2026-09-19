@@ -205,7 +205,13 @@ El user va a referenciarlo con `iam:PassRole`, así que conviene crearlo antes.
 > **`ec2:DeleteTags` (agregado 2026-09-19).** El re-etiquetado de cliente (`client_id`) de un servidor
 > que pasa a compartido o sin cliente **retira** tags, y eso es `DeleteTags`, no `CreateTags`. Sin él,
 > el re-tag falla con `UnauthorizedOperation` (visto al archivar el entorno de ensayo de Barraca Julia).
-> Mismo `Resource: "*"` que `CreateTags`. Verificarlo con una llamada real en la próxima operación de tags.
+> Mismo `Resource: "*"` que `CreateTags`. **Verificado con una llamada real el 2026-09-19** (cuenta
+> `603011031378`): `aws ec2 delete-tags --dry-run` → `DryRunOperation` («Request would have succeeded»);
+> antes de sumarlo daba `UnauthorizedOperation`. El `--dry-run` comprueba el permiso sin tocar nada: es la
+> forma de verificar un permiso de ESCRITURA sin efectos. (Ojo: el re-tag de PCM saltea las EC2 ya
+> `terminated`, así que archivar un entorno con su servidor terminado NO ejercita el permiso.)
+> **Pendiente:** la verificación sobre un recurso VIVO (un `DeleteTags` real de PCM, p. ej. al pasar un
+> servidor de dedicado a compartido) queda para la primera operación real de tags; registrarla acá.
 >
 > **`SsmGetPublicAmi` — verificado con una llamada real el 2026-09-19** (cuenta `603011031378`): el parámetro de Canonical devuelve `ami-00adec9774170bad2`, la MISMA AMI gp3 que resuelve la vía de respaldo `DescribeImages`. Hasta ese día la política real de la cuenta no tenía este statement aunque el runbook lo listaba: PCM caía solo a `DescribeImages` (tolerado por diseño). **Lección: el runbook describe la política que DEBERÍA estar; en cada cuenta nueva hay que verificarla con llamadas reales.**
 >
