@@ -566,6 +566,13 @@ export class PcmApp extends Component {
         return {
             type: "list",
             resModel: model,
+            // Vista de búsqueda SIEMPRE (2026-09-19). Sin `searchViewId`, el View
+            // de Odoo 19 no la pide (web/views/view.js: sólo agrega
+            // [searchViewId, "search"] si NO es undefined) y la lista montaba sin
+            // campos de búsqueda: sólo "Custom Filter…", que además explotaba con
+            // "No field found". `false` = la vista de búsqueda default del modelo.
+            // Punto único de montaje: toda lista nativa del shell la hereda.
+            searchViewId: false,
             selectRecord: (resId) => hasDetail
                 ? this.openRecord(model, resId, "")
                 : this.openNativeForm(resId),

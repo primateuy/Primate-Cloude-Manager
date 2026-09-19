@@ -164,3 +164,25 @@ class TestBundleScss(TransactionCase):
         # Y lo compilado trae las reglas de la app (no un bundle vacío o viejo).
         self.assertIn("o_pcm_drawer.modal", css)
         self.assertIn("o_pcm_native", css)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestListasNativasConBusqueda(TransactionCase):
+    """Las listas nativas embebidas montan CON su vista de búsqueda (2026-09-19).
+
+    Sin ``searchViewId`` el View de Odoo 19 no pide la vista de búsqueda: la
+    lista quedaba sin campos ("Custom Filter…" y un "No field found" al usarlo).
+    El punto único de montaje del shell tiene que pasarla siempre.
+    """
+
+    def test_montaje_de_listas_pasa_la_vista_de_busqueda(self):
+        with file_open("primate_cloud_manager/static/src/app/pcm_app.js") as fh:
+            js = fh.read()
+        bloque = js[js.index("get nativeListProps()"):]
+        bloque = bloque[:bloque.index("\n    }\n")]
+        self.assertIn("searchViewId: false", bloque)
+
+    def test_la_bitacora_tiene_campos_de_busqueda(self):
+        vista = self.env.ref("primate_cloud_manager.view_operation_log_search")
+        for campo in ("name", "resource_name", "user_id"):
+            self.assertIn('name="%s"' % campo, vista.arch)
