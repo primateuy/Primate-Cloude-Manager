@@ -41,6 +41,13 @@ export class Proyectos extends Component {
         this.state.search = ev.target.value;
     }
 
+    // Alta de proyecto: el mismo camino que "Nuevo entorno" (formulario nativo
+    // apilado en la app). Antes no había forma de crear un proyecto sin salir
+    // de la app a los menús de Odoo.
+    newProject() {
+        this.env.pcm.newRecord("primate.cloud.project", {});
+    }
+
     open(id, name) {
         if (this.props.onOpenProject) {
             this.props.onOpenProject(id, name);

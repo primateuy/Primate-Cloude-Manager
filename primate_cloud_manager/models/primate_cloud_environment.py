@@ -2682,6 +2682,32 @@ class PrimateCloudEnvironment(models.Model):
             enqueued, len(environments),
         )
 
+    def action_restore_external_dump(self):
+        """Botón: abre el asistente de restore desde un dump EXTERNO (F1).
+
+        Hasta acá el asistente sólo se abría desde "Restaurar…" de un backup del
+        catálogo, siempre con ``backup_id``: el camino del dump externo existía
+        en el job pero no tenía ningún click que llegara a él. Este entorno va
+        precargado como destino, sin backup, y con la base destino si el
+        entorno tiene una sola. Toda la validación sigue en el asistente y en el
+        job; acá no se decide nada.
+        """
+        self.ensure_one()
+        ctx = {"default_target_environment_id": self.id,
+               "default_origin_type": "s3_uri"}
+        bases = self.env["primate.cloud.database"].search(
+            [("environment_id", "=", self.id)])
+        if len(bases) == 1:
+            ctx["default_target_db_name"] = bases.name
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Restaurar desde un dump"),
+            "res_model": "primate.cloud.backup.restore.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": ctx,
+        }
+
     def action_run_backup(self):
         """Botón: encola un backup gestionado inmediato de este entorno."""
         self.ensure_one()

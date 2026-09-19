@@ -209,6 +209,13 @@
                 <div class="o_pcm_section_head o_pcm_section_bar">
                     <h2>Respaldos</h2>
                     <div class="o_pcm_actions">
+                        <!-- F1: restaurar un dump que NO está en el catálogo (key de
+                             S3 o ruta del servidor). El otro camino es "Restaurar…"
+                             en cada backup de la lista. -->
+                        <button t-if="d.state === 'active' or d.state === 'error'" class="o_pcm_btn"
+                                t-on-click="() => this.runEnvMethod('action_restore_external_dump')">
+                            <i class="fa fa-upload"/> Restaurar desde un dump…
+                        </button>
                         <button t-if="d.backup.policy" class="o_pcm_btn"
                                 t-on-click="() => this.runEnvMethod('action_check_backup_compliance')">
                             <i class="fa fa-check-circle-o"/> Verificar ahora

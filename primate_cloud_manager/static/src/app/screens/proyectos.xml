@@ -9,6 +9,10 @@
                     <input type="text" placeholder="Buscar proyecto o cliente…"
                            t-on-input="onSearch"/>
                 </div>
+                <span class="o_pcm_spacer"/>
+                <button class="o_pcm_btn o_pcm_btn_accent" t-on-click="() => this.newProject()">
+                    <i class="fa fa-plus"/> Nuevo proyecto
+                </button>
             </div>
 
             <div t-if="state.loading" class="o_pcm_muted">Cargando…</div>
