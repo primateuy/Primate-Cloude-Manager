@@ -3823,12 +3823,28 @@ class PrimateCloudEnvironment(models.Model):
         verificados en real. Cualquier mejora del camino nuevo que quiera
         aplicarse acá es un cambio aparte, con su propia prueba.
 
+        Dos cambios INTENCIONALES (2026-09-19), que modifican este script:
+
+        - ``pg_restore --no-owner --role``: sin esto las tablas quedaban a
+          nombre del rol del ORIGEN. Con origen y destino en el MISMO servidor
+          y usuarios PG distintos —el caso del staging, que es el default de
+          «Crear staging»— el Odoo del destino no veía ninguna tabla y no podía
+          ni cargar el registry. Es el mismo remedio que F1 aplicó a los dumps
+          externos. Cuando los usuarios coinciden, es inocuo.
+        - El chequeo de sanidad corre **como el usuario de la instancia
+          destino** (``SET ROLE``), no como ``postgres``: un chequeo con otra
+          identidad que la de la aplicación no prueba lo que dice probar (como
+          se vio: pasó con las tablas de otro dueño).
+
         Excepción (2026-09-19): con ``neutralize_sql`` se agrega la
         neutralización antes del arranque (el staging es justamente quien más
         la necesita). Sin él, el script sigue igual byte por byte.
         """
         neu = (self._restore_lineas_neutralizacion(
             db, service, neutralize_sql, "echo") if neutralize_sql else None)
+        # El dueño de las tablas del destino, en crudo (ver el docstring).
+        rol = shlex.split(pg_user)[0] if pg_user else "odoo"
+        set_role = shlex.quote('SET ROLE "%s"' % rol.replace('"', '""'))
         bkt = shlex.quote(backup._resolve_bucket())
         dump_key = shlex.quote(backup.s3_key)
         # El nombre del directorio dentro del tar es el de la BD de ORIGEN.
@@ -3882,11 +3898,12 @@ class PrimateCloudEnvironment(models.Model):
         lines += [
             "sudo -u postgres dropdb --if-exists %s" % db,
             "sudo -u postgres createdb -O %s %s" % (pg_user, db),
-            'sudo -u postgres pg_restore -d %s "$FNAME" || true' % db,
+            'sudo -u postgres pg_restore --no-owner --role=%s -d %s "$FNAME" '
+            "|| true" % (shlex.quote(rol), db),
             # pg_restore devuelve != 0 por avisos ignorables (owners, etc.):
             # la sanidad real es que la base restaurada sea un Odoo.
-            'sudo -u postgres psql -d %s -tAc "SELECT count(*) FROM '
-            'ir_module_module" >/dev/null' % db,
+            'sudo -u postgres psql -d %s -c %s -tAc "SELECT count(*) FROM '
+            'ir_module_module" >/dev/null' % (db, set_role),
         ]
         if has_filestore:
             filestore_key = shlex.quote(backup.s3_filestore_key)
@@ -4130,9 +4147,11 @@ class PrimateCloudEnvironment(models.Model):
             "else",
             '  sudo -u postgres psql -q -d %s -c %s -f "$FNAME"' % (db, set_role),
             "fi",
-            # La sanidad real: que lo restaurado sea un Odoo.
-            'sudo -u postgres psql -d %s -tAc "SELECT count(*) FROM '
-            'ir_module_module" >/dev/null' % db,
+            # La sanidad real: que lo restaurado sea un Odoo, y visto CON LOS
+            # OJOS DE LA APLICACIÓN (el usuario de la instancia), no con los de
+            # postgres — que ve todo aunque los permisos estén mal.
+            'sudo -u postgres psql -d %s -c %s -tAc "SELECT count(*) FROM '
+            'ir_module_module" >/dev/null' % (db, set_role),
         ]
 
         # --- Filestore del zip: al nombre de la base DESTINO, no la del zip ---

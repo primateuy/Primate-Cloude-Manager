@@ -86,7 +86,9 @@ class TestF1RestoreExterno(TransactionCase):
         # Marcas del camino histórico
         self.assertIn('FNAME="/var/tmp/pcm_restore_$$.dump"', script)
         self.assertIn("aws s3 cp s3://pcm-backups-test/", script)
-        self.assertIn("pg_restore -d barraca_julia", script)
+        # 2026-09-19: el camino del catálogo cambió A PROPÓSITO (dueño de las
+        # tablas y sanity con el usuario destino); el resto sigue igual.
+        self.assertIn("pg_restore --no-owner --role=odoo_bj -d barraca_julia", script)
         self.assertIn("tar -xzf", script)
         # Y NADA del camino nuevo
         for nuevo in ("PCM_LOG_PATH", "unzip", "rsync", "PCM_FORMAT",
@@ -305,12 +307,20 @@ class TestF1RestoreExterno(TransactionCase):
             "PCM_FORMAT=plain\nPCM_WARNING_ROLE el dump trae sentencias\n")
         self.assertIn("el dump trae sentencias", d["warning_role"])
 
-    def test_camino_historico_sin_cambios_de_rol(self):
-        """El camino del catálogo NO se toca: sus dumps los hace PCM."""
+    def test_camino_historico_tambien_asigna_el_rol_del_destino(self):
+        """REVERTIDO A PROPÓSITO el 2026-09-19 (antes se exigía lo contrario).
+
+        La mañana de ese día el camino del catálogo se dejó sin tocar: sus
+        dumps los hace PCM y estaba verificado en real. A la noche apareció el
+        bug que eso tapaba: con origen y destino en el MISMO servidor y
+        usuarios PG distintos —el staging, que es el default de «Crear
+        staging»— las tablas quedaban del rol del origen y el Odoo del destino
+        no veía ninguna. Así que el remedio de F1 se aplica también acá.
+        """
         script = self.Env._build_backup_restore_script(
             "barraca_julia", self.backup, True, self.odoo_inst)
-        self.assertNotIn("SET ROLE", script)
-        self.assertNotIn("--no-owner", script)
+        self.assertIn("pg_restore --no-owner --role=odoo_bj", script)
+        self.assertIn('SET ROLE "odoo_bj"', script)
 
     def test_bootstrap_instala_unzip_y_rsync(self):
         """F1 los necesita (rama odoo_zip): el bootstrap no los traía."""

@@ -98,7 +98,7 @@ class TestRestoreNeutralizaAntesDeArrancar(TransactionCase):
         for script in self._scripts():
             # La línea de CARGA (el `[ ! -f .../dump.sql ]` de la
             # verificación previa también contiene "-f": se busca la última).
-            carga = max(script.rfind("pg_restore -d"),
+            carga = max(script.rfind("pg_restore --no-owner"),
                         script.rfind('-f "$WORK/x/dump.sql"'))
             self.assertGreater(carga, 0)
             orden = [script.index("systemctl stop odoo-bj"),
