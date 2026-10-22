@@ -56,6 +56,10 @@
                         tanto; el reintento automático corre cada 10 minutos.
                         <span t-if="d.ssl.last_error" class="o_pcm_muted">
                             (<t t-out="d.ssl.last_error"/>)</span>
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_enable_ssl')">
+                            <i class="fa fa-refresh"/> Reintentar ahora
+                        </button>
                     </div>
                     <div t-if="d.main_url and d.ssl and (d.ssl.state === 'failed' or d.ssl.state === 'none')"
                          class="o_pcm_note o_pcm_ssl_note">

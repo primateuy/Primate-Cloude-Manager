@@ -340,6 +340,61 @@ class TestHttpsSsl(TransactionCase):
         self.assertIn("dnsutils", bootstrap_sh)
         self.assertIn("certbot.timer", bootstrap_sh)
 
+    # ------------------------------------------- guardia temprana de la zona
+    def test_zone_id_inexistente_corta_claro(self):
+        """NoSuchHostedZone del wizard: mensaje con zona y cuenta, nada creado
+        (lección de la corrida real 2026-10-22: cortaba con la EC2 ya
+        facturando)."""
+        fake_r53 = mock.Mock()
+        fake_r53.zone_exists.return_value = False
+        with mock.patch.object(type(self.account), "_get_aws_service",
+                               return_value=mock.Mock()), \
+                mock.patch.object(aws_route53, "AwsRoute53Service",
+                                  return_value=fake_r53):
+            with self.assertRaises(UserError) as caught:
+                self.server._check_hosted_zone(self.account, "ZNOPE123")
+        self.assertIn("ZNOPE123", str(caught.exception))
+        self.assertIn("no existe en la cuenta", str(caught.exception))
+        self.assertIn(self.account.display_name, str(caught.exception))
+
+    def test_wizard_provision_corta_antes_de_gastar(self):
+        """action_provision con zona inexistente: UserError y NO se encola."""
+        wizard = self.env["primate.cloud.provision.wizard"].create({
+            "environment_id": self.server.id, "account_id": self.account.id,
+            "region": "us-east-1", "domain": "x.primate.cloud",
+            "instance_type": "t3.small", "create_dns": True,
+            "hosted_zone_id": "ZNOPE123", "db_mode": "none",
+        })
+        fake_r53 = mock.Mock()
+        fake_r53.zone_exists.return_value = False
+        setup_ok = mock.Mock(status="ok")
+        with mock.patch.object(type(self.account), "_get_aws_service",
+                               return_value=mock.Mock()), \
+                mock.patch.object(aws_route53, "AwsRoute53Service",
+                                  return_value=fake_r53), \
+                mock.patch.object(
+                    type(self.env["primate.cloud.region.setup"]),
+                    "get_or_discover", return_value=setup_ok), \
+                mock.patch.object(type(self.server),
+                                  "_enqueue_provision") as enqueue:
+            with self.assertRaises(UserError) as caught:
+                wizard.action_provision()
+        self.assertIn("no existe en la cuenta", str(caught.exception))
+        self.assertFalse(enqueue.called, "con zona inexistente NO se encola")
+        # Con la zona válida, el mismo wizard sigue de largo.
+        fake_r53.zone_exists.return_value = True
+        with mock.patch.object(type(self.account), "_get_aws_service",
+                               return_value=mock.Mock()), \
+                mock.patch.object(aws_route53, "AwsRoute53Service",
+                                  return_value=fake_r53), \
+                mock.patch.object(
+                    type(self.env["primate.cloud.region.setup"]),
+                    "get_or_discover", return_value=setup_ok), \
+                mock.patch.object(type(self.server),
+                                  "_enqueue_provision") as enqueue:
+            wizard.action_provision()
+        self.assertTrue(enqueue.called)
+
     # ------------------------------------------------- orden en la cadena R2
     def test_cadena_principal_dns_antes_del_install(self):
         """job_install_instance: DNS primero, install después, SSL al final

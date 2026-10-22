@@ -164,6 +164,11 @@ class PrimateCloudInstanceCreateWizard(models.TransientModel):
         self.ensure_one()
         self._validate()
         server = self.environment_id
+        # Guardia temprana de DNS (2026-10-22): zone id inexistente corta acá,
+        # antes de tocar el servidor (mismo criterio que el wizard de entorno).
+        if self.create_dns and (self.hosted_zone_id or "").strip():
+            server._check_hosted_zone(
+                server.account_id, self.hosted_zone_id.strip())
         instance = server._create_instance_with_ports({
             "name": self.name,
             "project_id": self.project_id.id,

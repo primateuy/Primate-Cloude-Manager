@@ -252,6 +252,14 @@ class PrimateCloudProvisionWizard(models.TransientModel):
                 raise UserError(setup.detail or _(
                     "La región no está lista para aprovisionar. Verificá la "
                     "región y resolvé lo que falte."))
+        # Guardia temprana de DNS (2026-10-22): un zone id inexistente corta
+        # ACÁ, con nombre y apellido, antes de crear la EC2 (lección de la
+        # corrida real: el NoSuchHostedZone aparecía con la máquina ya
+        # facturando). Lectura corta y read-only: entra en la política de
+        # lecturas síncronas.
+        if self.create_dns and (self.hosted_zone_id or "").strip():
+            self.environment_id._check_hosted_zone(
+                self.account_id, self.hosted_zone_id.strip())
         # Se guarda ANTES de encolar: si el job falla, la config queda igual.
         self.environment_id._save_provision_config(self._raw_values())
         self.environment_id._enqueue_provision(self._prepare_params())

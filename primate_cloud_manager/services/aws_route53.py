@@ -152,6 +152,24 @@ class AwsRoute53Service:
         response = client.get_change(Id=change_id)
         return response.get("ChangeInfo", {}).get("Status")
 
+    def zone_exists(self, hosted_zone_id):
+        """¿La zona existe EN ESTA cuenta? True/False sin excepción.
+
+        La guardia temprana del wizard (2026-10-22): un Hosted Zone ID
+        inexistente tiene que cortar ANTES de crear la EC2, no a mitad del
+        montaje con un NoSuchHostedZone críptico. Cualquier otro error de
+        AWS (permisos, red) sí se propaga: no es "la zona no existe".
+        """
+        from botocore.exceptions import ClientError
+        client = self._base.get_client("route53")
+        try:
+            client.get_hosted_zone(Id=hosted_zone_id)
+            return True
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") == "NoSuchHostedZone":
+                return False
+            raise
+
     def get_zone_nameservers(self, hosted_zone_id):
         """Los NS autoritativos de la zona (su DelegationSet).
 

@@ -1898,6 +1898,22 @@ class PrimateCloudEnvironment(models.Model):
         # El paso SSL usa el ChangeId para esperar INSYNC antes de certbot.
         return change_id
 
+    @api.model
+    def _check_hosted_zone(self, account, hosted_zone_id):
+        """Guardia temprana: la zona DEBE existir en la cuenta ANTES de gastar.
+
+        La llaman los wizards (aprovisionar / agregar instancia) al confirmar:
+        un id inexistente cortaba recién en el job, con la EC2 ya creada y un
+        NoSuchHostedZone críptico (corrida real 2026-10-22, data de demo)."""
+        route53 = aws_route53.AwsRoute53Service(account._get_aws_service())
+        if not route53.zone_exists(hosted_zone_id):
+            raise UserError(_(
+                "La zona Route53 «%(zone)s» no existe en la cuenta "
+                "«%(account)s»: revisá el Hosted Zone ID (Registros DNS → "
+                "zonas de la cuenta). No se creó ningún recurso.",
+                zone=hosted_zone_id, account=account.display_name))
+        return True
+
     # ==================================================================
     # HTTPS (D-R3.9 endurecida, 2026-10-22): el certificado es un paso
     # VERIFICADO del modelo, no la cola best-effort del install. Orden:
