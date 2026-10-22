@@ -39,8 +39,14 @@ apt-get update -y >>"${DETALLE}" 2>&1
 apt-get install -y git python3-pip python3-venv build-essential \
     libxml2-dev libxslt1-dev libldap2-dev libsasl2-dev libpq-dev \
     libjpeg-dev nginx certbot python3-certbot-nginx wkhtmltopdf \
-    unzip rsync \
+    unzip rsync dnsutils \
     >>"${DETALLE}" 2>&1
+
+# Renovación automática de certificados: el timer viene con el paquete, pero
+# acá se ASEGURA (si quedara apagado, los certs vencen a los 90 días en
+# silencio). dnsutils (dig) lo usa el chequeo de propagación de _provision_ssl.
+systemctl enable --now certbot.timer >>"${DETALLE}" 2>&1 || \
+    log "ADVERTENCIA: no pude habilitar certbot.timer (renovación automática)."
 
 # AWS CLI: lo usan backup/staging/restore (aws s3 cp en streaming). En Ubuntu
 # 24.04 el paquete apt no tiene candidato -> snap (hallazgo real de Fase 8).

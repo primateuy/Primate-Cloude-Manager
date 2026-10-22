@@ -129,6 +129,7 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
 }
 NGINX
@@ -137,10 +138,8 @@ rm -f /etc/nginx/sites-enabled/default
 ln -sf "/etc/nginx/sites-available/${DOMAIN}" "/etc/nginx/sites-enabled/${DOMAIN}"
 nginx -t && systemctl reload nginx
 
-# 8. Certificado SSL (certbot) ------------------------------------------------
-log "Solicitando certificado SSL para ${DOMAIN}…"
-certbot --nginx -n --agree-tos --redirect \
-    -m "ops@primate.uy" -d "${DOMAIN}" || \
-    log "ADVERTENCIA: certbot falló (¿DNS aún no propagado?). Reintentar luego."
+# 8. Certificado SSL: ya NO corre acá (D-R3.9 endurecida). Lo emite el paso
+#    _provision_ssl del modelo DESPUÉS de confirmar la propagación del DNS;
+#    acá corría a ciegas antes del registro y fallaba siempre.
 
 log "Aprovisionamiento completado para ${DOMAIN}."

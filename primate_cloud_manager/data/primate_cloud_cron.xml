@@ -95,4 +95,17 @@
         <field name="active" eval="True"/>
     </record>
 
+    <!-- HTTPS (D-R3.9 endurecida): trabaja los ssl_state=pending — primero
+         re-chequea propagación y SOLO entonces corre certbot (tope 6
+         intentos reales) — y vigila vencimientos (<15 días → aviso). -->
+    <record id="cron_ssl_retry" model="ir.cron">
+        <field name="name">Primate Cloud: HTTPS pendiente y vencimientos</field>
+        <field name="model_id" ref="model_primate_cloud_instance"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_ssl()</field>
+        <field name="interval_number">10</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="True"/>
+    </record>
+
 </odoo>

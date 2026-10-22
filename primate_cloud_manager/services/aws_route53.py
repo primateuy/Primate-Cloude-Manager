@@ -152,6 +152,21 @@ class AwsRoute53Service:
         response = client.get_change(Id=change_id)
         return response.get("ChangeInfo", {}).get("Status")
 
+    def get_zone_nameservers(self, hosted_zone_id):
+        """Los NS autoritativos de la zona (su DelegationSet).
+
+        Los usa el chequeo de propagación del paso SSL: ``dig`` contra estos
+        servidores (no contra un resolver público, que puede tener caché
+        negativa) es la verdad de si el registro ya está servido.
+
+        Returns:
+            list[str]: nombres de los NS (sin punto final), [] si no se pudo.
+        """
+        client = self._base.get_client("route53")
+        response = client.get_hosted_zone(Id=hosted_zone_id)
+        servers = response.get("DelegationSet", {}).get("NameServers") or []
+        return [s.rstrip(".") for s in servers]
+
     @staticmethod
     def _normalize_record(record_set, hosted_zone_id):
         """Normaliza un ResourceRecordSet (incluye registros de tipo alias)."""

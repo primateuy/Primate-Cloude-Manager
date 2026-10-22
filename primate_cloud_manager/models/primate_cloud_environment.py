@@ -12,9 +12,10 @@ import logging
 import re
 import secrets
 import shlex
+import time
 import uuid
 import zlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import requests
 
@@ -53,6 +54,12 @@ PORT_SLOT_STRIDE = 10
 # Timeout del health-probe HTTP a una instancia viva (segundos): corto, es
 # lectura pura dentro de un job.
 HEALTH_PROBE_TIMEOUT = 10
+
+# --- HTTPS (D-R3.9 endurecida, 2026-10-22) ---
+SSL_LE_EMAIL = "ops@primate.uy"
+SSL_RETRY_MAX = 6              # ejecuciones REALES de certbot (rate limits LE)
+SSL_INSYNC_POLLS = 24          # GetChange hasta INSYNC: 24 × 5 s ≈ 2 min
+SSL_INSYNC_POLL_SECONDS = 5
 
 # Ventana máxima (horas) para dar por cumplida cada frecuencia esperada.
 # Todo se interpreta y compara en UTC (decisión de Fase 8: los Datetime de Odoo,
@@ -1049,7 +1056,17 @@ class PrimateCloudEnvironment(models.Model):
                 db_host = self._provision_database(
                     base, account, machine, params, region)
 
-            # 2. Layout multi-Odoo (R3, D-R3.1): los servidores NUEVOS nacen
+            # 2. Registro DNS (A -> IP pública) ANTES del install (D-R3.9
+            #    endurecida): el paso SSL necesita el dominio resolviendo, y
+            #    crearlo acá deja la propagación corriendo MIENTRAS el
+            #    install trabaja. El ChangeId alimenta la espera de INSYNC.
+            dns_change_id = None
+            if params.get("create_dns"):
+                bus.provision_step(self.env, self, _("Configurando DNS…"))
+                dns_change_id = self._provision_dns(
+                    base, account, machine, params, domain)
+
+            # 3. Layout multi-Odoo (R3, D-R3.1): los servidores NUEVOS nacen
             #    multi-Odoo desde su primera instancia — bootstrap del
             #    servidor + install POR SLUG (install_odoo.sh queda solo
             #    como camino legacy, hoy lo usa staging hasta R4).
@@ -1067,10 +1084,6 @@ class PrimateCloudEnvironment(models.Model):
             self._provision_run_instance_install(
                 ssm, machine, instance_rec, dict(params, db_host=db_host),
                 region, domain, is_default=True)
-
-            # 3. Registro DNS (A -> IP pública) -------------------------------
-            bus.provision_step(self.env, self, _("Configurando DNS…"))
-            self._provision_dns(base, account, machine, params, domain)
         except Exception as error:  # noqa: BLE001 - se normaliza y se audita
             self.state = "error"
             if instance_rec:
@@ -1091,8 +1104,25 @@ class PrimateCloudEnvironment(models.Model):
             instance_rec.write(vals)
         self.message_post(body=_("Entorno aprovisionado y activo en %s.") % domain)
         self._log("provision", name=_("Aprovisionar: %s") % self.name, result="success")
+
+        # 5. HTTPS verificado (decisión 1 del OK: warning + auto-retry, JAMÁS
+        #    bloquea — la instancia ya quedó activa sirviendo HTTP).
+        ssl_result = None
+        if instance_rec and params.get("create_dns"):
+            bus.provision_step(self.env, self,
+                               _("Emitiendo HTTPS (propagación + certbot)…"))
+            try:
+                ssl_result = self._provision_ssl(
+                    instance_rec, change_id=dns_change_id)
+            except Exception as error:  # noqa: BLE001 — el cron lo retoma
+                instance_rec._set_ssl_error("pending", str(error))
+                self.message_post(body=_(
+                    "El paso HTTPS falló (%s): la instancia quedó en HTTP y "
+                    "el reintento automático sigue.") % error)
         bus.provision_done(self.env, self, ok=True,
-                           message=_("Entorno activo en %s.") % domain)
+                           message=_("Entorno activo en %(url)s.", url=(
+                               "https://%s" % domain if ssl_result == "active"
+                               else domain)))
         return True
 
     def action_retry_install(self):
@@ -1340,6 +1370,24 @@ class PrimateCloudEnvironment(models.Model):
                 # de R4 (logs/config/backups por instancia) apuntaría mal.
                 self._materialize_multiodoo_layout(instance, params)
 
+                # 1b. DNS ANTES del install (D-R3.9 endurecida), best-effort
+                # como siempre (§8.1): si Route53 falla, el install sigue, el
+                # motivo queda en dns_pending y el paso SSL se saltea (sin
+                # dominio resolviendo no hay Let's Encrypt).
+                dns_change_id = None
+                if params.get("create_dns"):
+                    bus.provision_step(self.env, self, _("Configurando DNS…"))
+                    try:
+                        dns_change_id = self._provision_dns(
+                            base, self.account_id, machine, params,
+                            params.get("domain"), instance=instance)
+                        instance.sudo().dns_pending = False
+                    except Exception as error:  # noqa: BLE001 - best-effort
+                        instance._set_dns_pending(str(error), params)
+                        self.message_post(body=_(
+                            "ADVERTENCIA: el DNS falló (%s). El install sigue; "
+                            "reintentar luego con «Crear DNS ahora».") % error)
+
                 # 2. Bootstrap fresco (no-op barato si el marker ya está).
                 bus.provision_step(self.env, self,
                                    _("Verificando el bootstrap multi-Odoo…"))
@@ -1407,23 +1455,19 @@ class PrimateCloudEnvironment(models.Model):
                 "main_url": params.get("domain") or instance.main_url,
                 "database_id": database.id,
             })
-            # DNS best-effort (§8.1): el Odoo ya está montado y sano; un fallo
-            # de Route53 no debe dejar la instancia en error (un retry completo
-            # chocaría con PCM_ERR_DIRTY_SLUG). Se persiste el motivo + params
-            # en instance.dns_pending → la pantalla de instancia lo avisa
-            # (badge), muestra el acceso por IP+Host mientras tanto, y ofrece
-            # "Crear DNS ahora" (action_retry_dns, sin re-instalar).
-            if params.get("create_dns"):
+            # HTTPS verificado (D-R3.9 endurecida): el DNS ya se intentó ANTES
+            # del install; con DNS sano se emite el certificado. Warning +
+            # auto-retry, jamás bloquea (decisión 1 del OK).
+            if params.get("create_dns") and not instance.dns_pending:
+                bus.provision_step(self.env, self,
+                                   _("Emitiendo HTTPS (propagación + certbot)…"))
                 try:
-                    self._provision_dns(base, self.account_id, machine, params,
-                                        params.get("domain"), instance=instance)
-                    instance.sudo().dns_pending = False
-                except Exception as error:  # noqa: BLE001 - best-effort
-                    instance._set_dns_pending(str(error), params)
+                    self._provision_ssl(instance, change_id=dns_change_id)
+                except Exception as error:  # noqa: BLE001 — el cron lo retoma
+                    instance._set_ssl_error("pending", str(error))
                     self.message_post(body=_(
-                        "ADVERTENCIA: la instancia quedó activa pero el DNS "
-                        "falló: %s. Reintentar desde la pantalla de la "
-                        "instancia («Crear DNS ahora»).") % error)
+                        "El paso HTTPS falló (%s): la instancia quedó en HTTP "
+                        "y el reintento automático sigue.") % error)
             self._log("instance_install", name=title, result="success",
                       record=instance)
             bus.provision_done(self.env, self, ok=True,
@@ -1504,6 +1548,18 @@ class PrimateCloudEnvironment(models.Model):
         fallback por SSM con curl al puerto propio en localhost.
         """
         if machine.public_ip and instance.main_url:
+            # Con HTTPS activo el probe va DIRECTO por https (verificando el
+            # cert: un cert roto es salud rota); si https no responde se cae
+            # al probe http por IP para distinguir "TLS roto" de "Odoo muerto".
+            if instance.ssl_state == "active":
+                try:
+                    response = requests.get(
+                        "https://%s/web/login" % instance.main_url,
+                        timeout=HEALTH_PROBE_TIMEOUT, allow_redirects=True)
+                    if response.status_code < 500:
+                        return True
+                except requests.RequestException:
+                    pass
             try:
                 response = requests.get(
                     "http://%s/web/login" % machine.public_ip,
@@ -1564,6 +1620,11 @@ class PrimateCloudEnvironment(models.Model):
             '"/etc/nginx/sites-available/pcm-%s.conf"' % (slug, slug),
             "nginx -t && systemctl reload nginx || true",
         ]
+        if instance.main_url:
+            # Punto F del OK de HTTPS: el certificado muere con la instancia
+            # (best-effort: un cert huérfano no debe frenar el teardown).
+            lines.append("certbot delete --cert-name %s -n 2>/dev/null || true"
+                         % shlex.quote(instance.main_url))
         if drop_db:
             lines.append('sudo -u postgres dropdb --if-exists "%s"' % db_name)
         if drop_user:
@@ -1834,6 +1895,395 @@ class PrimateCloudEnvironment(models.Model):
                           % (domain, machine.public_ip))
         self._log("dns_create", name=_("Crear DNS: %s") % domain,
                   result="success", aws_request_id=change_id, record=record)
+        # El paso SSL usa el ChangeId para esperar INSYNC antes de certbot.
+        return change_id
+
+    # ==================================================================
+    # HTTPS (D-R3.9 endurecida, 2026-10-22): el certificado es un paso
+    # VERIFICADO del modelo, no la cola best-effort del install. Orden:
+    # Route53 INSYNC → dig contra los NS autoritativos (+ guarda AAAA) →
+    # certbot --nginx → expiry por openssl → GET https real + redirect →
+    # web.base.url. certbot SOLO corre con la propagación confirmada
+    # (ajuste C: los rate limits de Let's Encrypt no se queman esperando).
+    # ==================================================================
+    def _ssl_use_le_staging(self):
+        """``pcm.ssl_use_le_staging`` (default False): agrega ``--staging`` a
+        certbot para iterar sin consumir límites de producción de LE. Los
+        certs de staging NO validan en el navegador: la verificación real
+        baja a verify=False mientras está prendido."""
+        value = self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.ssl_use_le_staging", "False")
+        return str(value).strip().lower() in ("1", "true", "yes")
+
+    def _provision_ssl(self, instance, change_id=None):
+        """Un ciclo completo de emisión HTTPS para ``instance.main_url``.
+
+        NUNCA rompe el montaje (decisión 1 del OK): toda falla deja la
+        instancia sirviendo HTTP con ``ssl_state`` pending/failed y motivo.
+
+        Returns:
+            str: ``"active"`` / ``"not_propagated"`` (no consumió intento) /
+            ``"certbot_failed"`` / ``"verify_failed"`` / ``"aaaa_conflict"`` /
+            ``"no_domain"`` / ``"no_machine"``.
+        """
+        self.ensure_one()
+        domain = (instance.main_url or "").strip().rstrip("/")
+        if not domain:
+            instance.sudo().ssl_state = "none"
+            return "no_domain"
+        machine = self._active_machine()
+        if not machine or not machine.public_ip:
+            instance._set_ssl_error("pending", _(
+                "El servidor no tiene máquina activa con IP pública."))
+            return "no_machine"
+        base = self.account_id._get_aws_service()
+        ssm = aws_ssm.AwsSsmService(base)
+        region = machine.region or self.account_id.default_region
+        if instance.ssl_state != "pending":
+            instance.sudo().write({
+                "ssl_state": "pending",
+                "ssl_pending_since": fields.Datetime.now()})
+        if not instance.ssl_pending_since:
+            instance.sudo().ssl_pending_since = fields.Datetime.now()
+
+        # 1. Route53 INSYNC (solo con ChangeId fresco del provisioning).
+        if change_id:
+            route53 = aws_route53.AwsRoute53Service(base)
+            for _attempt in range(SSL_INSYNC_POLLS):
+                if route53.get_change_status(change_id) == "INSYNC":
+                    break
+                time.sleep(SSL_INSYNC_POLL_SECONDS)
+
+        # 2. Propagación contra los NS autoritativos + guarda AAAA (ajuste D).
+        propagation = self._ssl_check_propagation(
+            ssm, machine, region, instance, domain)
+        if propagation == "aaaa_conflict":
+            reason = _(
+                "El dominio %(d)s tiene un registro AAAA (IPv6) que no apunta "
+                "a esta instancia: Let's Encrypt validaría contra esa IPv6 "
+                "ajena y fallaría. Borrá el AAAA (o apuntalo a la máquina) y "
+                "reintentá con «Activar HTTPS ahora».", d=domain)
+            instance._set_ssl_error("failed", reason)
+            instance.message_post(body=reason)
+            self._log("ssl_enable", name=_("HTTPS: %s") % domain,
+                      result="failed", error_message=reason, record=instance)
+            return "aaaa_conflict"
+        if propagation != "ok":
+            # NO consume intento de certbot: el cron re-chequea y recién
+            # cuando el dominio resuelva a la IP corre certbot.
+            instance._set_ssl_error("pending", _(
+                "DNS aún sin propagar (%(detail)s): certbot NO se ejecutó; "
+                "el reintento automático sigue.", detail=propagation))
+            return "not_propagated"
+
+        # 3. certbot (ÚNICO punto que consume intento).
+        use_staging = self._ssl_use_le_staging()
+        ok, detail = self._ssl_run_certbot(
+            ssm, machine, region, instance, domain, use_staging)
+        if not ok:
+            attempts = instance.ssl_retry_count + 1
+            exhausted = attempts >= SSL_RETRY_MAX
+            instance.sudo().write({
+                "ssl_retry_count": attempts,
+                "ssl_state": "failed" if exhausted else "pending",
+                "ssl_last_error": (detail or "")[:400],
+            })
+            instance.message_post(body=_(
+                "certbot falló (intento %(n)s/%(max)s): %(why)s%(end)s",
+                n=attempts, max=SSL_RETRY_MAX, why=detail,
+                end=_(" — reintentos agotados: queda en HTTP con el botón "
+                      "«Activar HTTPS ahora».") if exhausted else ""))
+            self._log("ssl_enable", name=_("HTTPS: %s") % domain,
+                      result="failed", error_message=(detail or "")[:400],
+                      record=instance)
+            return "certbot_failed"
+
+        # 4. Vencimiento real del certificado (openssl en el servidor).
+        expiry = self._ssl_read_cert_expiry(ssm, machine, region, domain)
+
+        # 5. Verificación REAL: https responde y http redirige.
+        verified, why = self._ssl_verify_https(domain, verify=not use_staging)
+        if not verified:
+            attempts = instance.ssl_retry_count + 1
+            exhausted = attempts >= SSL_RETRY_MAX
+            instance.sudo().write({
+                "ssl_retry_count": attempts,
+                "ssl_state": "failed" if exhausted else "pending",
+                "ssl_last_error": (why or "")[:400],
+            })
+            instance.message_post(body=_(
+                "certbot emitió pero la verificación HTTPS real falló: "
+                "%(why)s (¿puerto 443 cerrado en el camino?).", why=why))
+            self._log("ssl_enable", name=_("HTTPS: %s") % domain,
+                      result="failed", error_message=(why or "")[:400],
+                      record=instance)
+            return "verify_failed"
+
+        # 6. web.base.url de la instancia a https (ajuste B, best-effort).
+        self._ssl_update_web_base_url(ssm, machine, region, instance, domain)
+
+        instance.sudo().write({
+            "ssl_state": "active",
+            "ssl_cert_expiry": expiry,
+            "ssl_last_error": False,
+            "ssl_expiry_warned": False,
+        })
+        instance.message_post(body=_(
+            "✅ HTTPS activo y verificado en https://%(d)s%(stg)s (el "
+            "certificado vence el %(exp)s).", d=domain,
+            stg=_(" [LE STAGING: certificado de prueba]") if use_staging else "",
+            exp=expiry or "?"))
+        self._log("ssl_enable", name=_("HTTPS: %s") % domain,
+                  result="success", record=instance)
+        return "active"
+
+    def _ssl_check_propagation(self, ssm, machine, region, instance, domain):
+        """``dig`` desde el servidor: A contra CADA NS autoritativo de la zona
+        (Route53, vía el registro DNS de PCM) y AAAA del resolver público.
+
+        Returns:
+            str: ``"ok"`` / ``"aaaa_conflict"`` / detalle humano de qué falta.
+        """
+        nameservers = []
+        record = self.env["primate.cloud.dns.record"].sudo().search(
+            [("name", "=", domain), ("hosted_zone_id", "!=", False)], limit=1)
+        if record:
+            try:
+                route53 = aws_route53.AwsRoute53Service(
+                    self.account_id._get_aws_service())
+                nameservers = route53.get_zone_nameservers(record.hosted_zone_id)
+            except Exception:  # noqa: BLE001 — sin NS, cae al resolver local
+                nameservers = []
+        lines = []
+        for server in (nameservers or ["system"])[:4]:
+            at = "" if server == "system" else " @%s" % shlex.quote(server)
+            lines.append(
+                'echo "A[%s]=$(dig +short +time=3 +tries=1 A %s%s '
+                '| tr \'\\n\' \',\')"' % (server, shlex.quote(domain), at))
+        lines.append(
+            'echo "AAAA=$(dig +short +time=3 +tries=1 AAAA %s '
+            '| tr \'\\n\' \',\')"' % shlex.quote(domain))
+        output = ssm.run_script(
+            machine.aws_instance_id, "\n".join(lines), region=region,
+            comment="pcm ssl propagation: %s" % domain,
+            timeout=90, agent_timeout=60, check=False)
+        stdout = output.get("stdout") or ""
+        answers = {}
+        for line in stdout.splitlines():
+            if "=" in line and (line.startswith("A[") or line.startswith("AAAA")):
+                key, _sep, value = line.partition("=")
+                answers[key] = [v for v in value.strip().split(",") if v]
+        aaaa = answers.pop("AAAA", [])
+        if aaaa:
+            return "aaaa_conflict"
+        if not answers:
+            return _("dig no respondió desde el servidor")
+        missing = [key for key, ips in answers.items()
+                   if machine.public_ip not in ips]
+        if missing:
+            return _("%(who)s aún no devuelve %(ip)s",
+                     who=", ".join(missing), ip=machine.public_ip)
+        return "ok"
+
+    def _ssl_run_certbot(self, ssm, machine, region, instance, domain,
+                         use_staging):
+        """Ejecuta certbot --nginx por SSM. Returns (ok, detalle)."""
+        staging_flag = " --staging" if use_staging else ""
+        script = (
+            "set -e\n"
+            "certbot --nginx -n --agree-tos --redirect -m %(mail)s "
+            "-d %(domain)s%(staging)s\n"
+            "nginx -t && systemctl reload nginx\n"
+            'echo "PCM_SSL_OK"' % {
+                "mail": shlex.quote(SSL_LE_EMAIL),
+                "domain": shlex.quote(domain),
+                "staging": staging_flag,
+            })
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm ssl certbot: %s" % domain,
+            timeout=420, check=False)
+        stdout = output.get("stdout") or ""
+        ok = output.get("status") == "Success" and "PCM_SSL_OK" in stdout
+        if ok:
+            return True, ""
+        tail = "\n".join((stdout + "\n" + (output.get("stderr") or ""))
+                         .strip().splitlines()[-4:])
+        return False, tail or (output.get("status") or "sin salida")
+
+    def _ssl_read_cert_expiry(self, ssm, machine, region, domain):
+        """``notAfter`` del cert vivo (openssl), como Datetime (o False)."""
+        output = ssm.run_script(
+            machine.aws_instance_id,
+            "openssl x509 -enddate -noout -in "
+            "/etc/letsencrypt/live/%s/cert.pem || true" % shlex.quote(domain),
+            region=region, comment="pcm ssl expiry: %s" % domain,
+            timeout=60, agent_timeout=30, check=False)
+        for line in (output.get("stdout") or "").splitlines():
+            if line.startswith("notAfter="):
+                raw = line.split("=", 1)[1].strip()
+                try:
+                    return datetime.strptime(raw, "%b %d %H:%M:%S %Y %Z")
+                except ValueError:
+                    return False
+        return False
+
+    def _ssl_refresh_cert_expiry(self, instance):
+        """Re-lee el vencimiento del cert (lo usa la vigilancia del cron)."""
+        self.ensure_one()
+        machine = self._active_machine()
+        if not machine or not instance.main_url:
+            return False
+        ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+        region = machine.region or self.account_id.default_region
+        expiry = self._ssl_read_cert_expiry(
+            ssm, machine, region, instance.main_url)
+        if expiry:
+            instance.sudo().ssl_cert_expiry = expiry
+        return expiry
+
+    @staticmethod
+    def _ssl_verify_https(domain, verify=True):
+        """GET https real + redirect de http. Returns (ok, motivo)."""
+        try:
+            response = requests.get(
+                "https://%s/web/login" % domain, timeout=15, verify=verify)
+            if response.status_code >= 500:
+                return False, "https respondió %s" % response.status_code
+        except requests.RequestException as error:
+            return False, "https no respondió: %s" % error
+        try:
+            redirect = requests.get(
+                "http://%s/web/login" % domain, timeout=15,
+                allow_redirects=False)
+            if redirect.status_code not in (301, 302, 308):
+                return False, ("http no redirige a https (respondió %s)"
+                               % redirect.status_code)
+        except requests.RequestException as error:
+            return False, "http no respondió: %s" % error
+        return True, ""
+
+    def _ssl_update_web_base_url(self, ssm, machine, region, instance, domain):
+        """``web.base.url`` → https en la BD de la instancia (ajuste B).
+
+        Idempotente (upsert por SQL) y best-effort: un fallo acá se avisa
+        pero no tumba el estado active — el próximo login de admin por https
+        lo corrige solo. Corre en el SERVIDOR con las credenciales del
+        odoo.conf de la instancia (sirve para BD local y RDS por igual)."""
+        conf_path = instance.conf_path or "/etc/odoo/%s.conf" % instance.slug
+        url = "https://%s" % domain
+        script = (
+            "python3 - <<'PCM_PY'\n"
+            "import configparser, os, subprocess\n"
+            "conf = configparser.ConfigParser()\n"
+            "conf.read(%(conf)r)\n"
+            "opts = conf['options']\n"
+            "host = opts.get('db_host', 'localhost')\n"
+            "host = 'localhost' if host in ('', 'False') else host\n"
+            "port = opts.get('db_port', '5432')\n"
+            "port = '5432' if port in ('', 'False') else port\n"
+            "sql = (\"INSERT INTO ir_config_parameter(key, value, create_date,\"\n"
+            "       \" write_date, create_uid, write_uid) SELECT\"\n"
+            "       \" 'web.base.url', %(url)r, now(), now(), 1, 1 WHERE NOT\"\n"
+            "       \" EXISTS (SELECT 1 FROM ir_config_parameter WHERE\"\n"
+            "       \" key='web.base.url'); UPDATE ir_config_parameter SET\"\n"
+            "       \" value=%(url)r, write_date=now() WHERE\"\n"
+            "       \" key='web.base.url' AND value IS DISTINCT FROM %(url)r;\")\n"
+            "env = dict(os.environ, PGPASSWORD=opts.get('db_password', ''))\n"
+            "subprocess.run(['psql', '-h', host, '-p', port, '-U',\n"
+            "                opts.get('db_user', 'odoo'), '-d',\n"
+            "                opts.get('db_name', ''), '-v', 'ON_ERROR_STOP=1',\n"
+            "                '-c', sql], env=env, check=True)\n"
+            "print('PCM_BASEURL_OK')\n"
+            "PCM_PY" % {"conf": conf_path, "url": url})
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm ssl web.base.url: %s" % domain,
+            timeout=90, agent_timeout=60, check=False)
+        ok = "PCM_BASEURL_OK" in (output.get("stdout") or "")
+        if not ok:
+            instance.message_post(body=_(
+                "ADVERTENCIA: no pude fijar web.base.url=%(url)s en la BD de "
+                "la instancia (se corrige solo con el próximo login de admin "
+                "por https). Detalle: %(why)s", url=url,
+                why=(output.get("stderr") or output.get("status") or "?")[:200]))
+        return ok
+
+    def _ssl_delete_certificate(self, ssm, machine, region, domain,
+                                record=None):
+        """``certbot delete`` best-effort + logueado (punto F / teardown)."""
+        output = ssm.run_script(
+            machine.aws_instance_id,
+            "certbot delete --cert-name %s -n 2>&1 || true"
+            % shlex.quote(domain),
+            region=region, comment="pcm ssl delete: %s" % domain,
+            timeout=90, agent_timeout=60, check=False)
+        self._log("ssl_delete", name=_("Borrar certificado: %s") % domain,
+                  result="success" if output.get("status") == "Success"
+                  else "failed", record=record)
+        return output
+
+    def _apply_instance_domain_change(self, instance, old_domain):
+        """Punto F: vhost reescrito al dominio nuevo (limpio, en 80), cert
+        viejo borrado, y reemisión por el ciclo normal de _provision_ssl.
+
+        El template del vhost es el MISMO de install_instance.sh (si se toca
+        allá, tocarlo acá): regenerarlo limpio evita heredar los bloques 443
+        que certbot inyectó para el dominio viejo."""
+        self.ensure_one()
+        machine = self._active_machine()
+        if not machine:
+            instance.message_post(body=_(
+                "Cambio de dominio: el servidor no tiene máquina activa; el "
+                "vhost quedará para el próximo ciclo (Activar HTTPS ahora)."))
+            return False
+        ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+        region = machine.region or self.account_id.default_region
+        slug = instance.slug
+        new_domain = (instance.main_url or "").strip()
+        vhost = (
+            "server {\n"
+            "    listen 80;\n"
+            "    server_name %(domain)s;\n"
+            "    location /websocket {\n"
+            "        proxy_pass http://127.0.0.1:%(gevent)s;\n"
+            "        proxy_set_header Upgrade $http_upgrade;\n"
+            '        proxy_set_header Connection "Upgrade";\n'
+            "        proxy_set_header Host $host;\n"
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            "    }\n"
+            "    location / {\n"
+            "        proxy_pass http://127.0.0.1:%(http)s;\n"
+            "        proxy_set_header Host $host;\n"
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            "        proxy_set_header X-Forwarded-Proto $scheme;\n"
+            "        proxy_set_header X-Forwarded-Host $host;\n"
+            "    }\n"
+            "}\n" % {"domain": new_domain, "gevent": instance.gevent_port,
+                     "http": instance.http_port})
+        script = (
+            "set -e\n"
+            "cat > /etc/nginx/sites-available/pcm-%(slug)s.conf <<'PCM_NGINX'\n"
+            "%(vhost)s"
+            "PCM_NGINX\n"
+            "ln -sf /etc/nginx/sites-available/pcm-%(slug)s.conf "
+            "/etc/nginx/sites-enabled/pcm-%(slug)s.conf\n"
+            "nginx -t && systemctl reload nginx\n"
+            'echo "PCM_VHOST_OK"' % {"slug": slug, "vhost": vhost})
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm domain change: %s" % slug,
+            timeout=120, check=False)
+        if "PCM_VHOST_OK" not in (output.get("stdout") or ""):
+            instance._set_ssl_error("failed", _(
+                "No pude reescribir el vhost al dominio nuevo: %s")
+                % (output.get("stderr") or output.get("status") or "?")[:200])
+            instance.message_post(body=instance.ssl_last_error)
+            return False
+        if old_domain:
+            self._ssl_delete_certificate(
+                ssm, machine, region, old_domain, record=instance)
+        return self._provision_ssl(instance) == "active"
 
     @staticmethod
     def _pg_engine_version(pg_version):
@@ -2211,6 +2661,13 @@ class PrimateCloudEnvironment(models.Model):
             instance = self._provision_ec2(base, account, params, region, domain)
             bus.provision_step(self.env, self, _("Configurando la base de datos…"))
             db_host = self._provision_database(base, account, instance, params, region)
+            # DNS ANTES del install (D-R3.9 endurecida): la propagación corre
+            # mientras el install trabaja; el paso SSL del final la espera.
+            dns_change_id = None
+            if params.get("create_dns"):
+                bus.provision_step(self.env, self, _("Configurando DNS…"))
+                dns_change_id = self._provision_dns(
+                    base, account, instance, params, domain)
             bus.provision_step(self.env, self, _("Instalando Odoo por SSM…"))
             self._provision_run_install(base, instance, params, region, db_host, domain)
             bus.provision_step(self.env, self,
@@ -2223,8 +2680,6 @@ class PrimateCloudEnvironment(models.Model):
             dump_key = source_backup.s3_key
             bus.provision_step(self.env, self, _("Clonando repositorios…"))
             self._staging_clone_repos(account, origin, instance, params, region)
-            bus.provision_step(self.env, self, _("Configurando DNS…"))
-            self._provision_dns(base, account, instance, params, domain)
             bus.provision_step(self.env, self, _("Reiniciando servicios…"))
             self._staging_restart(instance, region)
         except Exception as error:  # noqa: BLE001 - se normaliza y se audita
@@ -2244,6 +2699,18 @@ class PrimateCloudEnvironment(models.Model):
         })
         self.message_post(body=_("Staging creado y activo en %s.") % domain)
         self._log("staging_create", name=_("Crear staging: %s") % self.name, result="success")
+        # HTTPS verificado también para el staging (warning, nunca bloquea).
+        if params.get("create_dns") and self.primary_instance_id:
+            bus.provision_step(self.env, self,
+                               _("Emitiendo HTTPS (propagación + certbot)…"))
+            try:
+                self._provision_ssl(self.primary_instance_id,
+                                    change_id=dns_change_id)
+            except Exception as error:  # noqa: BLE001 — el cron lo retoma
+                self.primary_instance_id._set_ssl_error("pending", str(error))
+                self.message_post(body=_(
+                    "El paso HTTPS del staging falló (%s): queda en HTTP con "
+                    "reintento automático.") % error)
         bus.provision_done(self.env, self, ok=True,
                            message=_("Staging activo en %s.") % domain)
         return True

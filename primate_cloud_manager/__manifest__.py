@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "Primate Cloud Manager",
-    "version": "19.0.1.4.0",
+    "version": "19.0.1.5.0",
     "author": "PrimateUY",
     "website": "https://primate.uy",
     "category": "Technical",

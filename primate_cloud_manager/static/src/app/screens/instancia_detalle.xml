@@ -26,8 +26,13 @@
                               t-on-click="() => this.openRecord('primate.cloud.ec2.instance', d.server_machine_id, d.environment_name)">
                             · <i class="fa fa-server"/> <t t-out="d.environment_name"/>
                         </span>
-                        <a t-if="d.main_url" class="o_pcm_link" t-att-href="'https://' + d.main_url"
-                           target="_blank" rel="noopener"> · <i class="fa fa-link"/> <t t-out="d.main_url"/></a>
+                        <!-- El scheme lo decide el servidor según ssl_state
+                             (ajuste A de HTTPS): nunca un https inventado. -->
+                        <a t-if="d.main_url" class="o_pcm_link" t-att-href="d.url"
+                           target="_blank" rel="noopener"> ·
+                            <i t-att-class="d.ssl and d.ssl.state === 'active'
+                                ? 'fa fa-lock' : 'fa fa-link'"/>
+                            <t t-out="d.main_url"/></a>
                     </div>
                     <!-- DNS pendiente (R4-B6.4): aviso + acceso por IP + reintento -->
                     <div t-if="d.dns_pending" class="o_pcm_note o_pcm_dns_pending">
@@ -39,6 +44,28 @@
                         <button class="o_pcm_btn o_pcm_btn_mini"
                                 t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_retry_dns')">
                             <i class="fa fa-refresh"/> Crear DNS ahora
+                        </button>
+                    </div>
+                    <!-- HTTPS (D-R3.9 endurecida): estado del certificado.
+                         failed/none con dominio → botón; pending → se avisa
+                         que el reintento automático corre solo. -->
+                    <div t-if="d.main_url and d.ssl and d.ssl.state === 'pending'"
+                         class="o_pcm_note o_pcm_ssl_note">
+                        <i class="fa fa-clock-o"/>
+                        <b>HTTPS en emisión:</b> sirviendo por http mientras
+                        tanto; el reintento automático corre cada 10 minutos.
+                        <span t-if="d.ssl.last_error" class="o_pcm_muted">
+                            (<t t-out="d.ssl.last_error"/>)</span>
+                    </div>
+                    <div t-if="d.main_url and d.ssl and (d.ssl.state === 'failed' or d.ssl.state === 'none')"
+                         class="o_pcm_note o_pcm_ssl_note">
+                        <i class="fa fa-exclamation-triangle o_pcm_err"/>
+                        <b>Sin HTTPS:</b>
+                        <t t-if="d.ssl.state === 'failed'" t-out="d.ssl.last_error"/>
+                        <t t-else="">el certificado nunca se emitió.</t>
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_enable_ssl')">
+                            <i class="fa fa-lock"/> Activar HTTPS ahora
                         </button>
                     </div>
                 </div>

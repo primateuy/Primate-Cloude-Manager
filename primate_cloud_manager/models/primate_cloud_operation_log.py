@@ -27,6 +27,8 @@ ACTION_TYPES = [
     ("dns_create", "Crear registro DNS"),
     ("dns_update", "Actualizar registro DNS"),
     ("dns_delete", "Eliminar registro DNS"),
+    ("ssl_enable", "Activar HTTPS (certbot)"),
+    ("ssl_delete", "Borrar certificado HTTPS"),
     ("provision", "Aprovisionar entorno"),
     ("server_bootstrap", "Bootstrap multi-Odoo del servidor"),
     ("instance_install", "Instalar instancia (multi-Odoo)"),

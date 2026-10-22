@@ -18,6 +18,7 @@ import json
 import re
 import time
 import uuid
+from datetime import timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -217,6 +218,31 @@ class PrimateCloudInstance(models.Model):
              "para reintentarlo sin re-instalar.",
     )
 
+    # --- HTTPS (D-R3.9 endurecida, 2026-10-22) ---
+    # El certificado es un PASO verificado del modelo (_provision_ssl), no la
+    # cola best-effort del install. Estados: none (sin dominio / no aplica),
+    # pending (esperando propagación o reintento del cron), active (emitido Y
+    # verificado con un GET https real), failed (agotó reintentos o error duro
+    # — p. ej. AAAA ajeno). failed NUNCA bloquea: la instancia sirve por HTTP
+    # y el botón «Activar HTTPS ahora» rearma el ciclo.
+    ssl_state = fields.Selection(
+        [("none", "Sin HTTPS"), ("pending", "HTTPS pendiente"),
+         ("active", "HTTPS activo"), ("failed", "HTTPS fallido")],
+        string="Estado SSL", default="none", copy=False, tracking=True)
+    ssl_cert_expiry = fields.Datetime(
+        string="Vencimiento del certificado", copy=False, readonly=True)
+    ssl_retry_count = fields.Integer(
+        string="Intentos de certbot", copy=False, readonly=True,
+        help="Solo cuentan ejecuciones REALES de certbot (rate limits de "
+             "Let's Encrypt): esperar propagación no consume intento.")
+    ssl_last_error = fields.Char(
+        string="Último error SSL", copy=False, readonly=True)
+    ssl_pending_since = fields.Datetime(
+        string="SSL pendiente desde", copy=False, readonly=True)
+    ssl_expiry_warned = fields.Boolean(
+        string="Vencimiento avisado", copy=False,
+        help="Evita repetir el aviso de certificado por vencer.")
+
     active = fields.Boolean(string="Activo", default=True)
     notes = fields.Text(string="Notas")
 
@@ -271,6 +297,18 @@ class PrimateCloudInstance(models.Model):
             vals["state"] == "archived"
             or any(rec.state == "archived" for rec in self))
         envs = self.environment_id
+        # Cambio de dominio sobre una instancia VIVA (punto F de HTTPS): el
+        # vhost y el certificado quedaron atados al dominio viejo → después
+        # del write se reescribe el vhost, se borra el cert viejo y se reemite
+        # para el nuevo. Solo instancias activas con slug (multi-Odoo); los
+        # writes del propio provisioning no disparan (prev vacío o estado no
+        # activo todavía).
+        domain_changed = {}
+        if "main_url" in vals and not self.env.context.get("pcm_skip_ssl_hooks"):
+            domain_changed = {
+                rec.id: rec.main_url for rec in self
+                if rec.main_url and rec.state == "active" and rec.slug
+                and (vals["main_url"] or "") != rec.main_url}
         if vals.get("state") == "archived" and "hosted_until" not in vals:
             now = fields.Datetime.now()
             sin_sello = self.filtered(lambda r: not r.hosted_until)
@@ -290,6 +328,9 @@ class PrimateCloudInstance(models.Model):
         if retag:
             for env in envs:
                 env._enqueue_client_tag_sync()
+        for rec in self:
+            if rec.id in domain_changed:
+                rec._on_domain_changed(domain_changed[rec.id])
         return res
 
     def _hosted_days_in_period(self, period_start, period_end):
@@ -392,6 +433,130 @@ class PrimateCloudInstance(models.Model):
             self.message_post(body=_(
                 "El reintento de DNS falló otra vez: %s.") % error)
             return False
+
+    # --- HTTPS (D-R3.9 endurecida) ------------------------------------
+    def _public_url(self):
+        """La URL real de ESTA instancia según su estado SSL (ajuste A del
+        OK de HTTPS): https SOLO con certificado activo y verificado; con
+        dominio sin cert, http por dominio; sin dominio, http por IP.
+
+        OJO con el nombre: ``public_url`` (sin guion) ya existe en la API
+        pública del bundle y delega en ``_impersonate_base_url`` — que ahora
+        delega acá, así que TODOS los links salen de esta única verdad."""
+        self.ensure_one()
+        if self.main_url:
+            scheme = "https" if self.ssl_state == "active" else "http"
+            return "%s://%s" % (scheme, self.main_url.rstrip("/"))
+        machine = self._machine()
+        return "http://%s" % (machine.public_ip or "")
+
+    def _set_ssl_error(self, state, reason):
+        """Deja el estado + motivo SSL (recortado) sin romper nada más."""
+        self.ensure_one()
+        self.sudo().write({
+            "ssl_state": state,
+            "ssl_last_error": (reason or "")[:400],
+        })
+
+    def action_enable_ssl(self):
+        """Botón «Activar HTTPS ahora»: rearma el ciclo completo (propagación
+        → certbot → verificación real) vía queue_job. Sirve para montajes
+        viejos que quedaron en HTTP y para reintentar un ``failed``."""
+        self.ensure_one()
+        if not self.main_url:
+            raise UserError(_(
+                "La instancia no tiene dominio (URL principal): sin dominio "
+                "no hay Let's Encrypt."))
+        self._machine_required()
+        self.sudo().write({
+            "ssl_state": "pending",
+            "ssl_retry_count": 0,
+            "ssl_last_error": False,
+            "ssl_pending_since": fields.Datetime.now(),
+        })
+        self.with_delay(
+            description=_("Activar HTTPS: %s") % self.display_name
+        ).job_enable_ssl()
+        return True
+
+    def job_enable_ssl(self):
+        """Job: un ciclo de _provision_ssl para ESTA instancia."""
+        self.ensure_one()
+        return self.environment_id._provision_ssl(self)
+
+    def _on_domain_changed(self, old_domain):
+        """Punto F: al cambiar el dominio, el cert viejo se borra, el vhost se
+        reescribe con el server_name nuevo y se reemite para el nuevo."""
+        self.ensure_one()
+        self.message_post(body=_(
+            "Dominio cambiado: %(old)s → %(new)s. Se reescribe el vhost, se "
+            "borra el certificado viejo y se reemite HTTPS para el nuevo.",
+            old=old_domain, new=self.main_url))
+        self.sudo().write({
+            "ssl_state": "pending" if self.main_url else "none",
+            "ssl_retry_count": 0,
+            "ssl_cert_expiry": False,
+            "ssl_last_error": False,
+            "ssl_expiry_warned": False,
+            "ssl_pending_since": fields.Datetime.now(),
+        })
+        self.with_delay(
+            description=_("Cambio de dominio: %s") % self.display_name
+        ).job_apply_domain_change(old_domain)
+
+    def job_apply_domain_change(self, old_domain):
+        """Job: aplica el cambio de dominio en el servidor + reemite SSL."""
+        self.ensure_one()
+        return self.environment_id._apply_instance_domain_change(
+            self, old_domain)
+
+    @api.model
+    def _cron_ssl(self):
+        """Cron (cada 10 min): (1) trabaja los ``pending`` — PRIMERO re-chequea
+        propagación y solo si está confirma corre certbot (ajuste C: esperar
+        no consume intento); (2) vigila vencimientos de los ``active``
+        (<%(d)s días → aviso una sola vez)."""
+        Param = self.env["ir.config_parameter"].sudo()
+        max_hours = int(Param.get_param("pcm.ssl_pending_max_hours", "24"))
+        for inst in self.search([("ssl_state", "=", "pending"),
+                                 ("state", "=", "active")]):
+            try:
+                result = inst.environment_id._provision_ssl(inst)
+            except Exception as error:  # noqa: BLE001 — un fallo no corta el cron
+                inst._set_ssl_error("pending", str(error))
+                continue
+            if (result == "not_propagated" and inst.ssl_pending_since
+                    and fields.Datetime.now() - inst.ssl_pending_since
+                    > timedelta(hours=max_hours)):
+                inst._set_ssl_error("failed", _(
+                    "El dominio no propagó en %(h)s horas: revisá el registro "
+                    "DNS y reintentá con «Activar HTTPS ahora».", h=max_hours))
+                inst.message_post(body=inst.ssl_last_error)
+        self._cron_ssl_expiry_watch()
+
+    @api.model
+    def _cron_ssl_expiry_watch(self):
+        """Certificados activos por vencer (<15 días): re-lee el vencimiento
+        del servidor (la renovación pudo haber pasado) y, si sigue corto,
+        avisa UNA vez — un cert que se acerca al vencimiento con el timer de
+        certbot sano no debería existir."""
+        limit = fields.Datetime.now() + timedelta(days=15)
+        for inst in self.search([("ssl_state", "=", "active"),
+                                 ("ssl_cert_expiry", "!=", False),
+                                 ("ssl_cert_expiry", "<", limit)]):
+            try:
+                inst.environment_id._ssl_refresh_cert_expiry(inst)
+            except Exception:  # noqa: BLE001 — sin lectura, vale el dato viejo
+                pass
+            if inst.ssl_cert_expiry and inst.ssl_cert_expiry < limit:
+                if not inst.ssl_expiry_warned:
+                    inst.message_post(body=_(
+                        "⚠ El certificado HTTPS vence el %(d)s y certbot no lo "
+                        "renovó todavía: revisar certbot.timer en el servidor.",
+                        d=inst.ssl_cert_expiry))
+                    inst.sudo().ssl_expiry_warned = True
+            elif inst.ssl_expiry_warned:
+                inst.sudo().ssl_expiry_warned = False
 
     def _machine_required(self):
         """Como :meth:`_machine`, pero exige que exista (operaciones SSM)."""
@@ -498,12 +663,9 @@ class PrimateCloudInstance(models.Model):
         return "%s.%s" % (b64url(payload_bytes), b64url(signature))
 
     def _impersonate_base_url(self):
-        """URL base de ESTE Odoo (su dominio https, o la IP pública http)."""
-        self.ensure_one()
-        if self.main_url:
-            return "https://%s" % self.main_url.rstrip("/")
-        machine = self._machine()
-        return "http://%s" % (machine.public_ip or "")
+        """URL base de ESTE Odoo. https SOLO con ssl_state=active (ajuste A):
+        antes asumía https por tener dominio y el link nacía roto sin cert."""
+        return self._public_url()
 
     # --- Refresh de staging POR INSTANCIA (R4-B6.4 / D-B6.6) ---
     def _resolve_refresh_origin(self):

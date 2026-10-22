@@ -617,6 +617,18 @@ class PrimateCloudDashboard(models.AbstractModel):
             "odoo_version": inst.odoo_version or "",
             "odoo_edition": edition_labels.get(inst.odoo_edition, ""),
             "main_url": inst.main_url or "",
+            # URL real según ssl_state (ajuste A de HTTPS): https SOLO con
+            # certificado activo y verificado — la pantalla no la inventa.
+            "url": inst._public_url(),
+            "ssl": {
+                "state": inst.ssl_state,
+                "state_label": dict(
+                    inst._fields["ssl_state"].selection).get(inst.ssl_state, ""),
+                "cert_expiry": fields.Datetime.to_string(
+                    inst.ssl_cert_expiry) if inst.ssl_cert_expiry else "",
+                "last_error": inst.ssl_last_error or "",
+                "retry_count": inst.ssl_retry_count,
+            },
             "slug": inst.slug or "",
             # Cliente (project) e infraestructura (servidor + máquina).
             "project_id": inst.project_id.id,
