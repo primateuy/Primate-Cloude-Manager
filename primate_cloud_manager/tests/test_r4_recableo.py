@@ -456,10 +456,15 @@ class TestR4B3Impersonate(TransactionCase):
         self.assertNotEqual(payload["instance_ref"], self.inst_b.pcm_ref)
 
     def test_base_url_por_instancia(self):
+        # Ajuste A de HTTPS (2026-10-22): https SOLO con ssl_state=active —
+        # antes se asumía https por tener dominio y el link nacía roto.
+        self.assertEqual(self.inst_a._impersonate_base_url(),
+                         "http://a.pcm.test")
+        self.inst_a.sudo().ssl_state = "active"
         self.assertEqual(self.inst_a._impersonate_base_url(),
                          "https://a.pcm.test")
         self.assertEqual(self.inst_b._impersonate_base_url(),
-                         "https://b.pcm.test")
+                         "http://b.pcm.test")
 
     # --- guard levantado (inverso del patrón) --------------------------
     def test_guard_impersonate_levantado(self):
@@ -661,6 +666,7 @@ class TestR4B3Impersonate(TransactionCase):
         # prod exige nombre exacto (fricción intacta).
         with self.assertRaises(UserError):
             self.inst_b.action_login_as("db_b", 5, "ana", typed_name="mal")
+        self.inst_b.sudo().ssl_state = "active"   # ajuste A: https = cert activo
         res = self.inst_b.action_login_as("db_b", 5, "ana",
                                           typed_name=self.server.name)
         self.assertIn("https://b.pcm.test/pcm/impersonate?token=", res["url"])
