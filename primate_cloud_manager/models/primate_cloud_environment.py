@@ -1029,6 +1029,7 @@ class PrimateCloudEnvironment(models.Model):
             bool: True si la instancia quedó activa; False si falló.
         """
         self.ensure_one()
+        self._pcm_assert_env_not_imported("instance_install")
         account = self.account_id
         machine = self.ec2_instance_id or self.ec2_instance_ids.filtered(
             lambda m: m.instance_state != "terminated")[:1]
@@ -1135,6 +1136,7 @@ class PrimateCloudEnvironment(models.Model):
         (que recuerda la configuración).
         """
         self.ensure_one()
+        self._pcm_assert_env_not_imported("instance_install")
         # El job de instalación NO termina en `failed` cuando falla: captura el
         # error, deja entorno e instancia en 'error' y devuelve False, así que
         # queue_job lo marca `done`. Buscar sólo `failed` dejaba el reintento
@@ -1338,6 +1340,7 @@ class PrimateCloudEnvironment(models.Model):
            apellido en la bitácora.
         """
         self.ensure_one()
+        self._pcm_assert_env_not_imported("instance_install")
         instance = self.env["primate.cloud.instance"].browse(instance_id).exists()
         if not instance or instance.environment_id != self:
             self._log("instance_install", result="failed",
@@ -1898,6 +1901,15 @@ class PrimateCloudEnvironment(models.Model):
         # El paso SSL usa el ChangeId para esperar INSYNC antes de certbot.
         return change_id
 
+    def _pcm_assert_env_not_imported(self, accion):
+        """Regla dura 2026-10-22: un entorno con servidor IMPORTADO no se
+        toca — corte temprano y con mensaje (y el cerrojo de frontera igual
+        bloquearía la llamada a AWS si algo se escapara)."""
+        for env_rec in self:
+            for machine in env_rec.ec2_instance_ids:
+                if machine.management_state == "adopted_readonly":
+                    machine._exigir_gestion_habilitada(accion)
+
     @api.model
     def _check_hosted_zone(self, account, hosted_zone_id):
         """Guardia temprana: la zona DEBE existir en la cuenta ANTES de gastar.
@@ -1952,6 +1964,8 @@ class PrimateCloudEnvironment(models.Model):
             instance._set_ssl_error("pending", _(
                 "El servidor no tiene máquina activa con IP pública."))
             return "no_machine"
+        # Regla dura 2026-10-22: certbot JAMÁS corre sobre un importado.
+        machine._exigir_gestion_habilitada("ssl_enable")
         base = self.account_id._get_aws_service()
         ssm = aws_ssm.AwsSsmService(base)
         region = machine.region or self.account_id.default_region
@@ -2324,6 +2338,7 @@ class PrimateCloudEnvironment(models.Model):
     def action_create_staging(self):
         """Abre el wizard de creación de staging a partir de este entorno."""
         self.ensure_one()
+        self._pcm_assert_env_not_imported("staging_origin")
         if self.state != "active":
             raise UserError(_("Solo se puede crear un staging desde un entorno activo."))
         return {
@@ -2536,6 +2551,12 @@ class PrimateCloudEnvironment(models.Model):
             return False
         origin = self.env["primate.cloud.environment"].browse(
             params.get("origin_environment_id") or []).exists()
+        # Regla dura 2026-10-22: un staging cuyo ORIGEN es importado correría
+        # pg_dump en un productivo ajeno — prohibido sin excepción.
+        origin._pcm_assert_env_not_imported("staging_origin")
+        origin_machine = self.env["primate.cloud.ec2.instance"].browse(
+            params.get("origin_instance_id") or []).exists()
+        origin_machine._exigir_gestion_habilitada("staging_origin")
         # 1. Montar el Odoo (R3): bootstrap + install por slug, health de vecinos.
         if not self.job_add_instance(instance_id, params):
             return False   # job_add_instance ya auditó y dejó la instancia en error
@@ -2558,7 +2579,8 @@ class PrimateCloudEnvironment(models.Model):
             ok = self.job_restore_backup({
                 "backup_id": source.id, "db_name": params["db_name"],
                 "instance_id": machine.id, "odoo_instance_id": instance.id,
-                "pre_backup": False, "neutralize": True})
+                "pre_backup": False, "neutralize": True,
+                "pcm_fresh_clone": True})  # la BD nació en ESTE flujo
             if not ok:
                 raise UserError(_("Falló la copia de la base al staging."))
             # 3. Repos del origen → addons_dir del slug del staging.
@@ -2665,6 +2687,7 @@ class PrimateCloudEnvironment(models.Model):
         """
         self.ensure_one()
         origin = self.origin_environment_id
+        origin._pcm_assert_env_not_imported("staging_origin")
         account = self.account_id
         bus.provision_start(self.env, self, title=_("Creando staging: %s") % self.name)
         try:
@@ -2741,6 +2764,7 @@ class PrimateCloudEnvironment(models.Model):
         su backup registrado.
         """
         self.ensure_one()
+        self._pcm_assert_env_not_imported("restore")
         params = params or {}
         origin = self.origin_environment_id
         if not origin:
@@ -2768,6 +2792,8 @@ class PrimateCloudEnvironment(models.Model):
                 "instance_id": target_instance.id,
                 "pre_backup": False,
                 "neutralize": params.get("neutralize", True),
+                # Destino staging (descartable): exento de la triple
+                # confirmación (regla 2026-10-22, excepción documentada).
             })
             if not ok:
                 raise UserError(_("Falló la restauración en el staging "
@@ -2854,6 +2880,7 @@ class PrimateCloudEnvironment(models.Model):
             # El destino es nuevo/descartable; el origen ya quedó respaldado.
             "pre_backup": False,
             "neutralize": True,
+            "pcm_fresh_clone": True,
         })
         if not ok:
             raise UserError(_("Falló la restauración en el staging (ver bitácora)."))
@@ -3294,6 +3321,7 @@ class PrimateCloudEnvironment(models.Model):
         job; acá no se decide nada.
         """
         self.ensure_one()
+        self._pcm_assert_env_not_imported("restore")
         ctx = {"default_target_environment_id": self.id,
                "default_origin_type": "s3_uri"}
         bases = self.env["primate.cloud.database"].search(
@@ -3312,6 +3340,7 @@ class PrimateCloudEnvironment(models.Model):
     def action_run_backup(self):
         """Botón: encola un backup gestionado inmediato de este entorno."""
         self.ensure_one()
+        self._pcm_assert_env_not_imported("backup_run")
         policy = self.backup_policy_id
         if not policy or not policy.managed_by_pcm or not policy.s3_bucket:
             raise UserError(_(
@@ -3339,6 +3368,7 @@ class PrimateCloudEnvironment(models.Model):
         fallidos: son la evidencia del validador y la traza de reintentos.
         """
         self.ensure_one()
+        self._pcm_assert_env_not_imported("backup_run")
         policy = self.backup_policy_id
         if not policy or not policy.managed_by_pcm or not policy.s3_bucket:
             raise UserError(_("La política del entorno no está gestionada por PCM."))
@@ -3654,6 +3684,29 @@ class PrimateCloudEnvironment(models.Model):
             params.get("backup_id") or []
         ).exists()
         db_name = params["db_name"]
+        # Regla dura 2026-10-22: restaurar PISANDO una base registrada exige
+        # la triple confirmación (el job NO arranca sin el job_token). Quedan
+        # exentos, documentado: (a) el clon fresco del staging (la base nació
+        # en ESTE flujo, flag interno pcm_fresh_clone), (b) pisar un STAGING
+        # (descartable por definición: el refresh diario no pide ceremonia).
+        machine_target = self._active_machine()
+        if machine_target and machine_target.management_state == \
+                "adopted_readonly":
+            raise UserError(_(
+                "El entorno destino es IMPORTADO (solo lectura): un restore "
+                "acá está prohibido sin excepción."))
+        existing_db = self.env["primate.cloud.database"].search([
+            ("environment_id", "=", self.id), ("name", "=", db_name)], limit=1)
+        owner = self.env["primate.cloud.instance"].search(
+            [("database_id", "=", existing_db.id)], limit=1) if existing_db \
+            else self.env["primate.cloud.instance"]
+        pisa = (existing_db and not params.get("pcm_fresh_clone")
+                and (owner.env_type or self.env_type) != "staging")
+        if pisa:
+            destruction = params.get("destruction") or {}
+            self.env["primate.cloud.destruction.ticket"].burn_job_token(
+                existing_db, "restore_overwrite",
+                destruction.get("ticket_id"), destruction.get("job_token"))
         instance = self.env["primate.cloud.ec2.instance"].browse(
             params["instance_id"]
         ).exists()

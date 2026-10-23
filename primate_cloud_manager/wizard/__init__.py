@@ -11,3 +11,4 @@ from . import primate_cloud_dns_delete_wizard
 from . import primate_cloud_instance_create_wizard
 from . import primate_cloud_server_manage_wizard
 from . import primate_cloud_server_import_wizard
+from . import primate_cloud_destruction_wizard

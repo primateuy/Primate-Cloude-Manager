@@ -127,6 +127,12 @@ class AwsBaseService:
             region_name=region,
         )
 
+    # Guarda de solo lectura (regla dura 2026-10-22). La inyecta el lado Odoo
+    # (cuenta) con los recursos IMPORTADOS; el servicio sigue puro: solo sabe
+    # que, si hay guarda, toda operación NO de lectura pasa por
+    # ``guard.check(servicio, operación, params)`` ANTES de salir a AWS.
+    guard = None
+
     def get_client(self, service_name, region=None):
         """Retorna un cliente boto3 para el servicio indicado.
 
@@ -140,7 +146,10 @@ class AwsBaseService:
         kwargs = {}
         if region:
             kwargs["region_name"] = region
-        return self._session.client(service_name, **kwargs)
+        client = self._session.client(service_name, **kwargs)
+        if self.guard is not None:
+            return GuardedClient(client, service_name, self.guard)
+        return client
 
     def test_connection(self):
         """Verifica que las credenciales sean válidas contra ``sts:GetCallerIdentity``.
@@ -154,3 +163,35 @@ class AwsBaseService:
             return {"success": True, "account_id": identity["Account"], "error": None}
         except Exception as error:  # noqa: BLE001 - se normaliza el error al modelo
             return {"success": False, "account_id": None, "error": str(error)}
+
+# Prefijos de operaciones boto3 que NO modifican nada (lectura pura).
+READ_ONLY_PREFIXES = (
+    "describe_", "list_", "get_", "head_", "check_", "lookup_", "search_",
+    "test_", "generate_presigned", "can_paginate", "get_paginator",
+    "get_waiter", "close",
+)
+
+
+class GuardedClient:
+    """Envuelve un cliente boto3: lecturas libres, mutaciones validadas.
+
+    ``guard.check(service, operation, params)`` levanta si la operación toca
+    un recurso protegido; si no levanta, la llamada sigue normal.
+    """
+
+    def __init__(self, client, service_name, guard):
+        self._client = client
+        self._service_name = service_name
+        self._guard = guard
+
+    def __getattr__(self, name):
+        attr = getattr(self._client, name)
+        if (name.startswith("_") or not callable(attr)
+                or name.startswith(READ_ONLY_PREFIXES)):
+            return attr
+
+        def guarded(*args, **kwargs):
+            self._guard.check(self._service_name, name, kwargs)
+            return attr(*args, **kwargs)
+
+        return guarded

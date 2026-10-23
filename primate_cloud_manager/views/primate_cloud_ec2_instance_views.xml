@@ -47,16 +47,19 @@
                     <button name="action_execute_command" type="object" string="Ejecutar comando"
                             invisible="instance_state != 'running' or management_state == 'adopted_readonly'"
                             groups="primate_cloud_manager.group_cloud_operator"/>
-                    <button name="action_habilitar_gestion" type="object"
-                            string="Habilitar la gestión" class="btn-warning"
-                            invisible="management_state != 'adopted_readonly'"
-                            groups="primate_cloud_manager.group_cloud_admin"/>
+                    <!-- Regla dura 2026-10-22: importado = solo lectura
+                         PERMANENTE. «Habilitar la gestión» ya no existe; lo
+                         único que se ofrece sobre un importado es mirarlo. -->
+                    <button name="action_capture_twin" type="object"
+                            string="Capturar gemelo" class="btn-primary"
+                            invisible="instance_state != 'running'"
+                            groups="primate_cloud_manager.group_cloud_viewer"/>
                     <button name="action_sync_from_aws" type="object" string="Sincronizar"
                             groups="primate_cloud_manager.group_cloud_operator"/>
-                    <button name="action_open_terminate_wizard" type="object" string="Terminar"
+                    <button name="action_open_terminate_wizard" type="object" string="Terminar…"
                             class="btn-danger"
                             invisible="instance_state == 'terminated' or management_state == 'adopted_readonly'"
-                            groups="primate_cloud_manager.group_cloud_admin"/>
+                            groups="primate_cloud_manager.group_cloud_destructive"/>
                     <field name="instance_state" widget="statusbar"
                            statusbar_visible="pending,running,stopping,stopped"/>
                 </header>

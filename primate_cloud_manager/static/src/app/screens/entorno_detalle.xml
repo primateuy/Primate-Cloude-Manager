@@ -46,7 +46,20 @@
                         </span>
                         <span t-if="d.main_url" class="o_pcm_mono"><i class="fa fa-link"/> <t t-out="d.main_url"/></span>
                     </div>
-                    <div class="o_pcm_actions">
+                    <!-- Regla dura 2026-10-22: IMPORTADO = solo lectura total.
+                         El banner reemplaza a TODAS las acciones; el muro real
+                         vive en el servidor (guardas en modelo/jobs). -->
+                    <div t-if="d.is_imported" class="o_pcm_note o_pcm_imported_note">
+                        <i class="fa fa-lock"/>
+                        <b>IMPORTADO — SOLO LECTURA.</b> Ambiente real
+                        funcionando: PCM lo observa (gemelo) y no lo modifica
+                        de ninguna forma. Sin acciones disponibles.
+                        <button t-if="d.servers.length" class="o_pcm_btn o_pcm_btn_mini"
+                                t-on-click="() => this.captureTwin(d.servers[0].id)">
+                            <i class="fa fa-clone"/> Capturar gemelo (solo lectura)
+                        </button>
+                    </div>
+                    <div class="o_pcm_actions" t-if="!d.is_imported">
                         <button t-if="d.state === 'draft' or d.state === 'error'"
                                 class="o_pcm_btn o_pcm_btn_accent"
                                 t-on-click="() => this.provisionEnv()">
@@ -76,7 +89,7 @@
                 <!-- Instancias: servidor + sus bases -->
                 <div class="o_pcm_section_head o_pcm_section_bar">
                     <h2>Instancias</h2>
-                    <button class="o_pcm_btn o_pcm_btn_accent" t-on-click="() => this.newInstance()">
+                    <button t-if="!d.is_imported" class="o_pcm_btn o_pcm_btn_accent" t-on-click="() => this.newInstance()">
                         <i class="fa fa-plus"/> Nueva instancia
                     </button>
                 </div>
@@ -142,7 +155,7 @@
                 <!-- DNS -->
                 <div class="o_pcm_section_head o_pcm_section_bar">
                     <h2>Registros DNS</h2>
-                    <button class="o_pcm_btn" t-on-click="() => this.addDns()">
+                    <button t-if="!d.is_imported" class="o_pcm_btn" t-on-click="() => this.addDns()">
                         <i class="fa fa-plus"/> Agregar registro
                     </button>
                 </div>
@@ -198,7 +211,7 @@
                         </div>
                         <PcmStatusBadge value="dep.state" model="'primate.cloud.deployment'"
                                         field="'state'" label="dep.state_label"/>
-                        <button t-if="dep.state === 'draft'" class="o_pcm_btn"
+                        <button t-if="dep.state === 'draft' and !d.is_imported" class="o_pcm_btn"
                                 t-on-click="() => this.runDeploymentMethod(dep.id, 'action_run')">
                             <i class="fa fa-play"/> Ejecutar
                         </button>
@@ -212,7 +225,7 @@
                         <!-- F1: restaurar un dump que NO está en el catálogo (key de
                              S3 o ruta del servidor). El otro camino es "Restaurar…"
                              en cada backup de la lista. -->
-                        <button t-if="d.state === 'active' or d.state === 'error'" class="o_pcm_btn"
+                        <button t-if="(d.state === 'active' or d.state === 'error') and !d.is_imported" class="o_pcm_btn"
                                 t-on-click="() => this.runEnvMethod('action_restore_external_dump')">
                             <i class="fa fa-upload"/> Restaurar desde un dump…
                         </button>
@@ -220,7 +233,7 @@
                                 t-on-click="() => this.runEnvMethod('action_check_backup_compliance')">
                             <i class="fa fa-check-circle-o"/> Verificar ahora
                         </button>
-                        <button t-if="d.backup.managed" class="o_pcm_btn o_pcm_btn_accent"
+                        <button t-if="d.backup.managed and !d.is_imported" class="o_pcm_btn o_pcm_btn_accent"
                                 t-on-click="() => this.runEnvMethod('action_run_backup')">
                             <i class="fa fa-database"/> Respaldar ahora
                         </button>
@@ -269,7 +282,7 @@
                 <!-- Trazabilidad: repositorios -->
                 <div class="o_pcm_section_head o_pcm_section_bar">
                     <h2>Repositorios y trazabilidad</h2>
-                    <button class="o_pcm_btn" t-on-click="() => this.addRepo()">
+                    <button t-if="!d.is_imported" class="o_pcm_btn" t-on-click="() => this.addRepo()">
                         <i class="fa fa-plus"/> Agregar repositorio
                     </button>
                 </div>
@@ -289,13 +302,13 @@
                                         field="'sync_state'" label="repo.sync_state_label"/>
                     </div>
                     <div class="o_pcm_repo_actions">
-                        <button class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_check_sync_state')">
+                        <button t-if="!d.is_imported" class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_check_sync_state')">
                             <i class="fa fa-refresh"/> Verificar estado
                         </button>
                         <button class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_sync_commits')">
                             <i class="fa fa-download"/> Sincronizar commits
                         </button>
-                        <button class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_detect_modules')">
+                        <button t-if="!d.is_imported" class="o_pcm_btn" t-on-click="() => this.runRepoMethod(repo.id, 'action_detect_modules')">
                             <i class="fa fa-cubes"/> Detectar módulos
                         </button>
                     </div>

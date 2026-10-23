@@ -187,9 +187,7 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
             raise UserError(_(
                 "Para restaurar sobre PRODUCCIÓN escribí el nombre exacto "
                 "del entorno destino ('%s').") % target.name)
-        target.with_delay(
-            description=_("Restaurar backup en %s") % target.name
-        ).job_restore_backup({
+        restore_params = {
             "db_name": self.target_db_name,
             "instance_id": self.target_instance_id.id,
             "pre_backup": self.pre_backup,
@@ -200,7 +198,35 @@ class PrimateCloudBackupRestoreWizard(models.TransientModel):
                            "format": self.origin_format or "auto"},
                 "delete_source": self.delete_source,
             }),
-        })
+        }
+        # Regla dura 2026-10-22: si el destino PISA una base registrada (y no
+        # es un staging), el camino sigue por la TRIPLE confirmación — el job
+        # igual lo exige server-side, esto solo lleva al usuario al wizard.
+        existing_db = self.env["primate.cloud.database"].search([
+            ("environment_id", "=", target.id),
+            ("name", "=", self.target_db_name)], limit=1)
+        owner = self.env["primate.cloud.instance"].search(
+            [("database_id", "=", existing_db.id)], limit=1) if existing_db \
+            else self.env["primate.cloud.instance"]
+        if existing_db and (owner.env_type or target.env_type) != "staging":
+            import json as _json
+            return {
+                "type": "ir.actions.act_window",
+                "name": _("Restore que PISA datos — confirmación destructiva"),
+                "res_model": "primate.cloud.destruction.wizard",
+                "view_mode": "form", "target": "new",
+                "context": {
+                    "dest_model": "primate.cloud.database",
+                    "dest_res_id": existing_db.id,
+                    "dest_action": "restore_overwrite",
+                    "dest_callback": "_destruction_enqueue_restore",
+                    "dest_callback_params": _json.dumps(
+                        {"params": restore_params}),
+                },
+            }
+        target.with_delay(
+            description=_("Restaurar backup en %s") % target.name
+        ).job_restore_backup(restore_params)
         return {
             "type": "ir.actions.client",
             "tag": "display_notification",

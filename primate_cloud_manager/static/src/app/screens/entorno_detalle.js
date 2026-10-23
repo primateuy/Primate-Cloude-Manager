@@ -72,6 +72,18 @@ export class EntornoDetalle extends Component {
     }
 
     // --- Acciones sobre el entorno ---
+    // Gemelo (2026-10-22): lectura pura — la ÚNICA acción permitida
+    // también en servidores importados.
+    async captureTwin(serverId) {
+        const ran = await runPcmModelAction(
+            this.env, this.orm, "primate.cloud.ec2.instance",
+            "action_capture_twin", [serverId], {}
+        );
+        if (ran) {
+            await this.load(this.props.envId);
+        }
+    }
+
     async runEnvMethod(method, { confirm } = {}) {
         const ran = await runPcmModelAction(
             this.env, this.orm, this.model, method, [this.props.envId], { confirm }

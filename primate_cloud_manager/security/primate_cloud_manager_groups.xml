@@ -39,4 +39,16 @@
         <field name="user_ids" eval="[Command.link(ref('base.user_admin'))]"/>
     </record>
 
+    <!-- PCM: operaciones destructivas (regla dura 2026-10-22). VACÍO por
+         defecto: ni el admin lo tiene, NADIE lo implica, y no implica nada.
+         Lo asigna Daryl a mano, usuario por usuario. Sin este grupo las
+         acciones destructivas ni se ven ni se pueden ejecutar; con él,
+         igual exigen la triple confirmación con tokens de servidor. -->
+    <record id="group_cloud_destructive" model="res.groups">
+        <field name="name">PCM: operaciones destructivas</field>
+        <field name="privilege_id" ref="privilege_primate_cloud"/>
+        <field name="comment">Terminar EC2, desmontar instancias, borrar bases/DNS/backups,
+restores que pisan datos. Triple confirmación obligatoria. Asignación manual exclusivamente.</field>
+    </record>
+
 </odoo>

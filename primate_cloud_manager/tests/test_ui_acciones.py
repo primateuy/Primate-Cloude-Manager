@@ -100,9 +100,15 @@ class TestAccionesUI(TransactionCase):
         form.origin_uri = URI
         form.delete_source = False
         wizard = form.save()
+        # Regla dura 2026-10-22: pisar barraca_julia (registrada) abre la
+        # triple confirmación; los parámetros viajan intactos en el callback.
+        import json as _json
         with mock.patch.object(type(self.srv), "with_delay") as delay:
-            wizard.action_restore()
-        params = delay.return_value.job_restore_backup.call_args[0][0]
+            accion = wizard.action_restore()
+            delay.assert_not_called()
+        self.assertEqual(accion["res_model"], "primate.cloud.destruction.wizard")
+        params = _json.loads(
+            accion["context"]["dest_callback_params"])["params"]
         self.assertEqual(params["origin"],
                          {"type": "s3_uri", "uri": URI, "format": "auto"})
         self.assertFalse(params["delete_source"])

@@ -11,6 +11,7 @@ import uuid
 
 from odoo import _, SUPERUSER_ID, fields, models
 from odoo.exceptions import UserError
+from .primate_cloud_destruction import durable_log
 from odoo.tools import file_open
 
 from ..services import aws_ec2, aws_ssm
@@ -182,7 +183,50 @@ class PrimateCloudEc2Instance(models.Model):
         "impersonate": "desplegar la impersonación",
         "restore": "restaurar una base",
         "odoo_restart": "reiniciar el servicio Odoo",
+        # Regla dura 2026-10-22: lo importado es solo lectura SIN excepción.
+        "ssl_enable": "emitir o reintentar HTTPS (certbot)",
+        "domain_change": "cambiar el dominio / reescribir el vhost",
+        "dns_write": "crear o modificar registros DNS",
+        "backup_run": "ejecutar un backup",
+        "staging_origin": "usar su base como origen de staging",
+        "deploy": "desplegar código",
+        "run_shell": "ejecutar comandos",
+        "ensure_elastic_ip": "asociar una Elastic IP",
+        "ec2_resize": "redimensionar el servidor",
+        "instance_install": "instalar o reinstalar instancias",
     }
+
+    def pcm_is_imported(self):
+        """¿Este servidor entró por importación? (= solo lectura PERMANENTE,
+        regla dura 2026-10-22). Método y no campo: la verdad es
+        ``management_state`` y no hay segundo lugar que desincronizar."""
+        self.ensure_one()
+        return self.management_state == "adopted_readonly"
+
+    def write(self, vals):
+        """La marca de origen es INMUTABLE para un importado (regla dura
+        2026-10-22): ni la UI ni el código la cambian — el único camino que
+        existía (habilitar gestión) quedó deshabilitado."""
+        if "management_state" in vals and not self.env.context.get(
+                "pcm_import_sync"):
+            for machine in self:
+                if machine.management_state == "adopted_readonly":
+                    raise UserError(_(
+                        "«%s» es un servidor IMPORTADO: su modo de solo "
+                        "lectura es permanente y no se puede cambiar.",
+                        machine.name))
+        return super().write(vals)
+
+    def unlink(self):
+        """Un servidor importado no se borra de PCM: es el espejo de una
+        máquina real (y borrarlo escondería el gemelo)."""
+        for machine in self:
+            if machine.management_state == "adopted_readonly":
+                raise UserError(_(
+                    "«%s» es un servidor IMPORTADO (solo lectura): no se "
+                    "elimina de PCM. Si dejó de existir en AWS, el sync lo "
+                    "va a reflejar.", machine.name))
+        return super().unlink()
 
     def _exigir_gestion_habilitada(self, accion):
         """Levanta si el servidor está adoptado en solo lectura.
@@ -202,16 +246,22 @@ class PrimateCloudEc2Instance(models.Model):
         for maquina in self:
             if maquina.management_state != "adopted_readonly":
                 continue
+            durable_log(self.env, {
+                "action_type": "readonly_block", "result": "failed",
+                "name": _("Bloqueado (importado): %(a)s sobre %(n)s",
+                          a=que, n=maquina.name),
+                "user_id": self.env.uid,
+                "resource_model": maquina._name, "resource_id": maquina.id,
+                "error_message": _("Servidor importado: solo lectura."),
+            })
             raise UserError(_(
-                "Servidor adoptado en solo lectura — habilitá la gestión "
-                "primero.\n\n"
+                "Servidor IMPORTADO — solo lectura permanente.\n\n"
                 "«%(nombre)s» (cuenta %(cuenta)s) se importó de AWS y PCM no "
                 "lo creó, así que no se puede %(que)s. Es deliberado: la "
                 "importación trae servidores productivos de clientes y un "
                 "click de más sería catastrófico.\n\n"
-                "Para habilitarlo: clasificá sus instancias Odoo (asignales su "
-                "proyecto) y usá «Habilitar la gestión» en la ficha del "
-                "servidor. Queda registrado en la bitácora.",
+                "Regla 2026-10-22: lo importado se observa (gemelo) y no se "
+                "modifica de ninguna forma. El intento quedó en la bitácora.",
                 nombre=maquina.name, cuenta=maquina.account_id.name, que=que))
 
     def _instancias_sin_clasificar(self):
@@ -235,16 +285,24 @@ class PrimateCloudEc2Instance(models.Model):
             lambda i: not i.project_id or i.project_id.id == centinela)
 
     def action_habilitar_gestion(self):
-        """Pasa el servidor de ``adopted_readonly`` a ``managed``. Admin-only.
+        """DESHABILITADA (regla dura 2026-10-22): lo importado es solo lectura
+        PERMANENTE — sin excepción, sin override, sin importar el grupo.
 
-        Exige que cada instancia Odoo detectada tenga proyecto real: si el
-        servidor no tiene ninguna instancia detectada, exige el proyecto del
-        entorno (no hay otra forma de saber de quién es).
-
-        Returns:
-            dict: acción del wizard de confirmación, que muestra el servidor,
-                la cuenta y las instancias detectadas antes de liberar.
+        La progresión adoptado→gestionado de F2 queda cerrada: los ambientes
+        productivos importados se OBSERVAN (gemelo, punto 3) y los montajes
+        nuevos se hacen con PCM desde cero. Si algún día esta regla cambia,
+        la decide Daryl y se reabre con su propio diseño.
         """
+        self.ensure_one()
+        raise UserError(_(
+            "«%s» es un servidor IMPORTADO: solo lectura permanente (regla "
+            "2026-10-22). Habilitar la gestión de importados está "
+            "deshabilitado sin excepción; los montajes nuevos se hacen con "
+            "PCM desde cero.", self.name))
+
+    def _action_habilitar_gestion_f2(self):
+        """El cuerpo original de F2, conservado SOLO como referencia histórica
+        (inalcanzable desde la UI y desde la API: nada lo llama)."""
         self.ensure_one()
         if self.env.uid != SUPERUSER_ID and not self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_admin"):
@@ -280,7 +338,15 @@ class PrimateCloudEc2Instance(models.Model):
         }
 
     def _habilitar_gestion_confirmado(self):
-        """Efectúa el pase a ``managed``. Lo llama el wizard tras confirmar."""
+        """Efectúa el pase a ``managed``. DESHABILITADO (regla dura
+        2026-10-22): ni el wizard ni nadie puede liberar un importado."""
+        self.ensure_one()
+        raise UserError(_(
+            "La gestión de servidores importados no se puede habilitar: "
+            "solo lectura permanente (regla 2026-10-22)."))
+
+    def _habilitar_gestion_confirmado_f2(self):
+        """Cuerpo original de F2 (referencia histórica, inalcanzable)."""
         self.ensure_one()
         anterior = self.management_state
         self.management_state = "managed"
@@ -317,16 +383,29 @@ class PrimateCloudEc2Instance(models.Model):
             UserError: si el comando no corre o no devuelve el marcador.
         """
         self.ensure_one()
-        script = self._python_heredoc(
-            self._render_config_script(DISCOVERY_SCRIPT_PATH, {}))
-        output = self._get_ssm_service().run_script(
-            self.aws_instance_id, script, region=self.region,
-            comment="pcm discovery (solo lectura): %s" % self.name,
-            timeout=90, agent_timeout=20, check=False)
+        if self.management_state == "adopted_readonly":
+            # Regla dura 2026-10-22: sobre un importado NO corre un shell
+            # arbitrario — corre el documento SSM fijo de solo lectura (que
+            # trae el inventario de F2 Y el gemelo en la misma llamada).
+            output = self._run_readonly_document(
+                self._get_ssm_service(), self.region, "pcm discovery")
+        else:
+            script = self._python_heredoc(
+                self._render_config_script(DISCOVERY_SCRIPT_PATH, {}))
+            output = self._get_ssm_service().run_script(
+                self.aws_instance_id, script, region=self.region,
+                comment="pcm discovery (solo lectura): %s" % self.name,
+                timeout=90, agent_timeout=20, check=False)
         stdout = output.get("stdout") or ""
         for linea in stdout.splitlines():
             if linea.startswith("PCM_DISCOVERY_JSON:"):
-                return json.loads(linea[len("PCM_DISCOVERY_JSON:"):])
+                datos = json.loads(linea[len("PCM_DISCOVERY_JSON:"):])
+                if "PCM_TWIN_OK" in stdout:
+                    try:
+                        datos["_twin"] = self._twin_parse(stdout)
+                    except Exception:  # noqa: BLE001 — el gemelo es extra
+                        datos["_twin"] = None
+                return datos
         raise UserError(_(
             "El discovery no devolvió resultado (estado SSM: %(st)s). "
             "%(err)s", st=output.get("status"),
@@ -614,7 +693,11 @@ class PrimateCloudEc2Instance(models.Model):
             limit=1,
         )
         if existing:
-            existing.write(vals)
+            # La carrera de F2: PCM CREÓ esta máquina y el importador la vio
+            # primero (adopted_readonly). Pasarla a provisioned es legítimo
+            # — es el único write de la marca de origen permitido fuera del
+            # sync, porque la máquina es de PCM.
+            existing.with_context(pcm_import_sync=True).write(vals)
             record = existing
         else:
             vals.update(
@@ -1681,9 +1764,20 @@ class PrimateCloudEc2Instance(models.Model):
         confirmación del wizard igual muestra el radio de daño (a quiénes se
         lleva puestos + producción) — eso es útil también para el admin.
         """
+        # Regla dura 2026-10-22: un importado se corta ANTES que todo (ni el
+        # grupo destructivo ni un ticket válido lo habilitan).
+        self._exigir_gestion_habilitada("ec2_terminate")
         if self.env.uid != SUPERUSER_ID and not self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_admin"):
             raise UserError(_("Solo un Cloud Admin puede terminar servidores."))
+        # Regla dura 2026-10-22: triple confirmación server-side SIEMPRE —
+        # también para el superusuario, también por RPC/shell/job. El token
+        # llega por contexto desde el wizard de destrucción y se consume acá.
+        ctx = self.env.context
+        for machine in self:
+            self.env["primate.cloud.destruction.ticket"].consume(
+                machine, "ec2_terminate",
+                ctx.get("destruction_ticket_id"), ctx.get("destruction_token"))
         return self._enqueue_lifecycle("ec2_terminate")
 
     def _enqueue_lifecycle(self, action_type):
@@ -1729,16 +1823,54 @@ class PrimateCloudEc2Instance(models.Model):
         }
 
     def action_open_terminate_wizard(self):
-        """Abre el wizard de terminación (doble confirmación)."""
+        """Abre la TRIPLE confirmación destructiva (regla dura 2026-10-22):
+        impacto → nombre exacto → re-autenticación, con tokens de servidor.
+        (Reemplaza la doble confirmación de R4-B6.3; el wizard viejo queda
+        sin puerta de entrada.)"""
         self.ensure_one()
+        self._exigir_gestion_habilitada("ec2_terminate")
         return {
             "type": "ir.actions.act_window",
-            "name": _("Terminar instancia"),
-            "res_model": "primate.cloud.ec2.terminate.wizard",
+            "name": _("Terminar servidor — confirmación destructiva"),
+            "res_model": "primate.cloud.destruction.wizard",
             "view_mode": "form",
             "target": "new",
-            "context": {"default_instance_id": self.id},
+            "context": {
+                "dest_model": self._name, "dest_res_id": self.id,
+                "dest_action": "ec2_terminate",
+                "dest_callback": "action_terminate",
+            },
         }
+
+    def _destruction_impact(self, action):
+        """El diálogo de impacto del paso 1 (server-side): qué se destruye,
+        dónde, a quiénes se lleva puestos y qué respaldo reciente hay."""
+        self.ensure_one()
+        env = self.environment_id
+        hosted = env.instance_ids.filtered(
+            lambda i: i.state != "archived") if env else self.env[
+            "primate.cloud.instance"].browse()
+        lines = [
+            _("Acción: %(a)s — IRREVERSIBLE.", a=action),
+            _("Servidor: %(n)s (%(aws)s)", n=self.name,
+              aws=self.aws_instance_id or "?"),
+            _("Cuenta AWS: %(c)s · Región: %(r)s",
+              c=self.account_id.display_name, r=self.region or "?"),
+        ]
+        if hosted:
+            lines.append(_("Instancias Odoo que SE PIERDEN con el servidor:"))
+            for inst in hosted:
+                lines.append("  • %s (%s)%s" % (
+                    inst.name, inst.project_id.display_name or _("sin cliente"),
+                    _(" ⚠ PRODUCCIÓN") if inst.env_type == "production" else ""))
+        backups = env.backup_ids.filtered(
+            lambda b: b.state == "completed") if env else []
+        if backups:
+            last = max(backups.mapped("backup_date"))
+            lines.append(_("Último backup completado: %s", last))
+        else:
+            lines.append(_("⚠ SIN backups completados registrados."))
+        return {"resource_name": self.name, "text": "\n".join(lines)}
 
     def action_create_staging_from_instance(self):
         """Abre el wizard de staging con esta instancia como origen (Bloque 5).
@@ -1747,6 +1879,7 @@ class PrimateCloudEc2Instance(models.Model):
         "staging desde la instancia" del hub.
         """
         self.ensure_one()
+        self._exigir_gestion_habilitada("staging_origin")
         environment = self.environment_id
         if not environment:
             raise UserError(_("La instancia no pertenece a ningún entorno."))

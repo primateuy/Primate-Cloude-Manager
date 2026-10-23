@@ -150,27 +150,28 @@ class TestF2AdopcionReadonly(TransactionCase):
         self.assertTrue(self.adoptado.aws_instance_id)
 
     # ------------------------------------------------------------------
-    # 3. La transición a managed
+    # 3. La transición a managed: CERRADA (regla dura 2026-10-22).
+    #    Lo importado es solo lectura PERMANENTE: ni el admin, ni el wizard,
+    #    ni un write directo lo liberan. (Antes de la regla, esta sección
+    #    probaba la transición admin-only de F2; ahora prueba que no existe.)
     # ------------------------------------------------------------------
-    def test_transicion_exige_admin(self):
+    def test_transicion_cerrada_para_operador(self):
         operador = new_test_user(
             self.env, login="pcm_operador_f2",
             groups="primate_cloud_manager.group_cloud_operator")
         with self.assertRaises(UserError) as e:
             self.adoptado.with_user(operador).action_habilitar_gestion()
-        self.assertIn("Cloud Admin", str(e.exception))
+        self.assertIn("IMPORTADO", str(e.exception))
 
-    def test_transicion_exige_instancias_clasificadas(self):
-        """La regla es por INSTANCIA: el centinela bloquea el pase."""
-        self.env_adoptado.instance_ids.write({"project_id": self.centinela.id})
+    def test_transicion_cerrada_aunque_este_clasificado(self):
+        """Antes: clasificado → abría el wizard. Ahora: no existe camino."""
         with self.assertRaises(UserError) as e:
             self.adoptado.action_habilitar_gestion()
-        self.assertIn("Clasificá primero", str(e.exception))
+        self.assertIn("solo lectura permanente", str(e.exception))
 
-    def test_transicion_abre_el_wizard_si_esta_clasificado(self):
-        accion = self.adoptado.action_habilitar_gestion()
-        self.assertEqual(accion["res_model"],
-                         "primate.cloud.server.manage.wizard")
+    def test_transicion_cerrada_para_el_admin_y_el_superusuario(self):
+        with self.assertRaises(UserError):
+            self.adoptado.sudo().action_habilitar_gestion()
 
     def test_wizard_exige_el_nombre_exacto(self):
         wizard = self.env["primate.cloud.server.manage.wizard"].create({
@@ -180,35 +181,26 @@ class TestF2AdopcionReadonly(TransactionCase):
             wizard.action_confirm()
         self.assertIn("nombre exacto", str(e.exception))
 
-    def test_wizard_habilita_y_deja_bitacora(self):
+    def test_wizard_ya_no_habilita(self):
+        """El wizard viejo, aun con el nombre exacto, NO libera nada."""
         wizard = self.env["primate.cloud.server.manage.wizard"].create({
             "instance_id": self.adoptado.id,
             "confirm_server_name": self.adoptado.name})
-        wizard.action_confirm()
-        self.assertEqual(self.adoptado.management_state, "managed")
-        log = self.env["primate.cloud.operation.log"].search(
-            [("action_type", "=", "server_manage_enable"),
-             ("resource_id", "=", self.adoptado.id)], limit=1)
-        self.assertTrue(log, "la transición tiene que quedar en la bitácora")
-        self.assertEqual(log.result, "success")
+        with self.assertRaises(UserError):
+            wizard.action_confirm()
+        self.assertEqual(self.adoptado.management_state, "adopted_readonly")
 
-    def test_tras_habilitar_las_acciones_funcionan(self):
-        """Habilitado el modo, el bloqueo desaparece."""
-        self.adoptado.management_state = "managed"
-        with mock.patch.object(type(self.adoptado), "with_delay") as delay:
-            self.adoptado.action_stop()
-            delay.assert_called_once()
+    def test_write_directo_de_la_marca_bloqueado(self):
+        with self.assertRaises(UserError):
+            self.adoptado.management_state = "managed"
+        with self.assertRaises(UserError):
+            self.adoptado.sudo().write({"management_state": "provisioned"})
+        self.assertEqual(self.adoptado.management_state, "adopted_readonly")
 
     def test_wizard_muestra_las_instancias_detectadas(self):
         wizard = self.env["primate.cloud.server.manage.wizard"].create({
             "instance_id": self.adoptado.id})
         self.assertIn("Cliente Real", wizard.detected_instances)
-
-    def test_no_se_puede_habilitar_dos_veces(self):
-        self.adoptado.management_state = "managed"
-        with self.assertRaises(UserError) as e:
-            self.adoptado.action_habilitar_gestion()
-        self.assertIn("no está adoptado", str(e.exception))
 
     # ------------------------------------------------------------------
     # 4. provisioned no se ve afectado

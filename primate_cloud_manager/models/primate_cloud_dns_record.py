@@ -5,7 +5,8 @@ import re
 import time
 
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
+from .primate_cloud_destruction import durable_log
 
 from ..services import aws_route53
 
@@ -323,6 +324,7 @@ class PrimateCloudDnsRecord(models.Model):
         ``divergent``) tras releer la realidad cuando el cambio está ``INSYNC``.
         """
         self.ensure_one()
+        self._pcm_assert_not_imported("dns_write")
         self._validate_dns_value(self.record_type, self._value_list())
         try:
             service = self._service()
@@ -342,13 +344,77 @@ class PrimateCloudDnsRecord(models.Model):
         self._poll_and_finalize(service, change_id)
         return True
 
-    def job_delete(self):
+    def pcm_is_imported(self):
+        self.ensure_one()
+        source = self.instance_id.environment_id or self.environment_id
+        machine = source._active_machine() if source else None
+        return bool(machine) and machine.management_state == "adopted_readonly"
+
+    def _pcm_assert_not_imported(self, accion):
+        """Regla dura 2026-10-22: el DNS de un ambiente IMPORTADO es real y
+        productivo — PCM no lo toca de ninguna forma."""
+        for record in self:
+            source = record.instance_id.environment_id or record.environment_id
+            machine = source._active_machine() if source else None
+            if machine and machine.management_state == "adopted_readonly":
+                durable_log(self.env, {
+                    "action_type": "readonly_block", "result": "failed",
+                    "name": _("Bloqueado (importado): %(a)s sobre %(n)s",
+                              a=accion, n=record.name),
+                    "user_id": self.env.uid,
+                    "resource_model": record._name, "resource_id": record.id,
+                    "error_message": _("Recurso importado: solo lectura."),
+                })
+                raise UserError(_(
+                    "«%s» pertenece a un ambiente IMPORTADO (solo lectura): "
+                    "los registros DNS reales no se tocan desde PCM, sin "
+                    "excepción.", record.name))
+
+    def _destruction_impact(self, action):
+        self.ensure_one()
+        return {"resource_name": self.name, "text": "\n".join([
+            _("Acción: borrar el registro DNS en Route 53 — puede tirar "
+              "abajo el dominio YA."),
+            _("Registro: %(n)s (%(t)s) → %(v)s",
+              n=self.name, t=self.record_type, v=self.record_value or "?"),
+            _("Zona: %(z)s · Cuenta: %(c)s", z=self.hosted_zone_id,
+              c=self.account_id.display_name),
+            _("Entorno: %s", self.environment_id.display_name or "—"),
+        ])}
+
+    def _destruction_enqueue_delete(self):
+        """Callback del wizard destructivo: consume el ticket, emite el
+        job_token y recién entonces encola el borrado real."""
+        self.ensure_one()
+        ctx = self.env.context
+        Ticket = self.env["primate.cloud.destruction.ticket"]
+        job_token = Ticket.consume_for_job(
+            self, "dns_delete",
+            ctx.get("destruction_ticket_id"), ctx.get("destruction_token"))
+        self.with_delay(
+            description=_("Eliminar DNS: %s") % self.name
+        ).job_delete(destruction_ticket_id=ctx.get("destruction_ticket_id"),
+                     destruction_job_token=job_token)
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info",
+                       "message": _("Borrado DNS confirmado y encolado."),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def job_delete(self, destruction_ticket_id=None,
+                   destruction_job_token=None):
         """Job: borra el registro en Route 53 y confirma su desaparición.
 
         El registro PCM se conserva con ``state='deleted'`` para auditoría
         (no se hace ``unlink``); ``sync_state`` refleja la confirmación.
+        Regla dura 2026-10-22: NO arranca sin el job_token de la triple
+        confirmación — un cron o un re-encolado no pueden fabricarlo.
         """
         self.ensure_one()
+        self._pcm_assert_not_imported("dns_delete")
+        self.env["primate.cloud.destruction.ticket"].burn_job_token(
+            self, "dns_delete", destruction_ticket_id, destruction_job_token)
         try:
             service = self._service()
             change_id = service.delete_record(
@@ -370,6 +436,7 @@ class PrimateCloudDnsRecord(models.Model):
     def action_open_edit(self):
         """Abre el wizard de edición de este registro (en el drawer)."""
         self.ensure_one()
+        self._pcm_assert_not_imported("dns_write")
         return {
             "type": "ir.actions.act_window",
             "name": _("Editar registro DNS"),
@@ -380,17 +447,23 @@ class PrimateCloudDnsRecord(models.Model):
         }
 
     def action_open_delete(self):
-        """Abre el wizard de borrado (confirmación fuerte) de este registro."""
+        """Abre la TRIPLE confirmación destructiva (regla dura 2026-10-22;
+        reemplaza al wizard de doble confirmación, que queda sin puerta)."""
         self.ensure_one()
         if self.state == "deleted":
             raise ValidationError(_("El registro ya está eliminado."))
+        self._pcm_assert_not_imported("dns_delete")
         return {
             "type": "ir.actions.act_window",
-            "name": _("Eliminar registro DNS"),
-            "res_model": "primate.cloud.dns.delete.wizard",
+            "name": _("Eliminar registro DNS — confirmación destructiva"),
+            "res_model": "primate.cloud.destruction.wizard",
             "view_mode": "form",
             "target": "new",
-            "context": {"default_record_id": self.id},
+            "context": {
+                "dest_model": self._name, "dest_res_id": self.id,
+                "dest_action": "dns_delete",
+                "dest_callback": "_destruction_enqueue_delete",
+            },
         }
 
     def action_check_sync_state(self):

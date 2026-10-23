@@ -262,7 +262,12 @@ class PrimateCloudServerImport(models.Model):
             try:
                 with self.env.cr.savepoint():
                     datos = maquina._run_discovery()
-                    res = maquina._aplicar_discovery(datos, centinela)
+                    # Es EL sync de lo importado: el único escritor admitido
+                    # de su infraestructura en PCM (regla 2026-10-22).
+                    sync = maquina.with_context(pcm_import_sync=True)
+                    res = sync._aplicar_discovery(datos, centinela)
+                    if datos.get("_twin"):
+                        sync._twin_apply(datos["_twin"])
                 vals.update({
                     "discovery_state": ("ok" if res["estado"] == "ok"
                                         else "unrecognized"),

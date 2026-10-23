@@ -24,7 +24,17 @@
                             · <i class="fa fa-exclamation-triangle"/> incluye PRODUCCIÓN
                         </span>
                     </div>
-                    <div class="o_pcm_actions">
+                    <!-- Regla dura 2026-10-22: IMPORTADO = solo lectura total. -->
+                    <div t-if="d.is_imported" class="o_pcm_note o_pcm_imported_note">
+                        <i class="fa fa-lock"/>
+                        <b>IMPORTADO — SOLO LECTURA.</b> Servidor real
+                        funcionando: PCM lo observa y no lo modifica.
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-on-click="() => this.runMethod('action_capture_twin')">
+                            <i class="fa fa-clone"/> Capturar gemelo (solo lectura)
+                        </button>
+                    </div>
+                    <div class="o_pcm_actions" t-if="!d.is_imported">
                         <button t-if="d.state === 'stopped'" class="o_pcm_btn o_pcm_btn_accent"
                                 t-on-click="() => this.runMethod('action_start')">
                             <i class="fa fa-play"/> Iniciar
@@ -45,7 +55,7 @@
                                 t-on-click="() => this.runMethod('action_execute_command')">
                             <i class="fa fa-terminal"/> Ejecutar comando
                         </button>
-                        <button t-if="d.state !== 'terminated'" class="o_pcm_btn o_pcm_btn_danger"
+                        <button t-if="d.state !== 'terminated' and d.can_destroy" class="o_pcm_btn o_pcm_btn_danger"
                                 t-on-click="() => this.runMethod('action_open_terminate_wizard')">
                             <i class="fa fa-trash"/> Terminar servidor
                         </button>

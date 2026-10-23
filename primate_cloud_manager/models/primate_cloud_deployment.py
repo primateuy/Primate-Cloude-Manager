@@ -103,6 +103,7 @@ class PrimateCloudDeployment(models.Model):
     def action_run(self):
         """Valida, marca pendiente y encola la ejecución del deploy."""
         self.ensure_one()
+        self.environment_id._pcm_assert_env_not_imported("deploy")
         self._validate()
         self.write({"state": "pending", "triggered_by": self.env.uid})
         self.with_delay(
@@ -139,6 +140,7 @@ class PrimateCloudDeployment(models.Model):
         Solo aplica a deploys git exitosos con commit origen conocido.
         """
         self.ensure_one()
+        self.environment_id._pcm_assert_env_not_imported("deploy")
         if self.state != "success" or self.deployment_type not in GIT_TYPES:
             raise UserError(_("Solo se pueden revertir deploys de git exitosos."))
         if not self.origin_commit:
@@ -162,6 +164,7 @@ class PrimateCloudDeployment(models.Model):
     def job_deploy(self):
         """Job: ejecuta el deploy por SSM, captura commits y log, fija el estado."""
         self.ensure_one()
+        self.environment_id._pcm_assert_env_not_imported("deploy")
         self.write({"state": "running", "execution_date": fields.Datetime.now()})
         instance = self._get_target_instance()
         script = self._build_deploy_script()

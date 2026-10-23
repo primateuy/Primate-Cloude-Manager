@@ -271,13 +271,20 @@ class TestEc2Wizards(TransactionCase):
         with self.assertRaises(UserError):
             wiz.action_confirm()
 
-    def test_terminate_wizard_ok_encola(self):
+    def test_terminate_wizard_viejo_ya_no_alcanza(self):
+        """Regla dura 2026-10-22: la doble confirmación del wizard viejo YA
+        NO termina nada — sin la triple confirmación con tokens de servidor
+        (y el grupo destructivo) no se encola. El flujo completo se prueba
+        en test_blindaje_readonly.TestTripleConfirmacion."""
+        from odoo.exceptions import AccessError
         wiz = self.env["primate.cloud.ec2.terminate.wizard"].create(
             {"instance_id": self.instance.id, "confirm_name": "prod-srv", "acknowledge": True}
         )
         with mock.patch.object(type(self.instance), "with_delay") as wd:
-            wiz.action_confirm()
-            wd.assert_called_once()
+            with self.assertRaises(AccessError):
+                wiz.action_confirm()
+            wd.assert_not_called()
+
 
 
 @tagged("post_install", "-at_install", "primate_cloud")

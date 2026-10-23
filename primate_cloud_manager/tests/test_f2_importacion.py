@@ -27,6 +27,8 @@ SVC = "odoo.addons.primate_cloud_manager.services"
 EC2_LIST = SVC + ".aws_ec2.AwsEc2Service.list_instances"
 SSM_PING = SVC + ".aws_ssm.AwsSsmService.describe_instance_information"
 SSM_RUN = SVC + ".aws_ssm.AwsSsmService.run_script"
+# 2026-10-22: sobre importados el discovery va por el documento SSM fijo.
+SSM_DOC = SVC + ".aws_ssm.AwsSsmService.run_document"
 
 
 def ec2(iid, name, state="running", region="us-east-1"):
@@ -80,12 +82,12 @@ class TestF2Importacion(TransactionCase):
             if isinstance(valor, Exception):
                 raise valor
             return valor
+        lectura = mock.Mock(side_effect=run or (lambda *a, **k: discovery()))
         with mock.patch(EC2_LIST, listar), \
                 mock.patch(SSM_PING, return_value=pings or {}), \
-                mock.patch(SSM_RUN, side_effect=run or (
-                    lambda *a, **k: discovery())) as run_script:
+                mock.patch(SSM_RUN, lectura), mock.patch(SSM_DOC, lectura):
             corrida.job_import_servers(commit=False)
-        return run_script
+        return lectura
 
     # ------------------------------------------------------------------
     # 1. Inofensiva por construcción

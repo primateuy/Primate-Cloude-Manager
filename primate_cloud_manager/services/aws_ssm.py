@@ -92,6 +92,62 @@ class AwsSsmService:
         )
         return response["Command"]["CommandId"]
 
+    def run_document(self, instance_id, document_name, region=None,
+                     comment=None, timeout=300, poll_interval=3,
+                     output_s3_bucket=None, output_s3_prefix=None,
+                     _sleep=time.sleep):
+        """Ejecuta un documento SSM PROPIO sin parámetros y espera la salida.
+
+        El camino de los ambientes IMPORTADOS (regla dura 2026-10-22): el
+        documento pcm-readonly-discovery tiene comandos fijos de consulta,
+        así que la credencial pcm-prod-readonly solo puede ejecutar ESO —
+        nada de shell arbitrario sobre servidores productivos.
+        """
+        client = self._base.get_client("ssm", region)
+        kwargs = {
+            "InstanceIds": [instance_id],
+            "DocumentName": document_name,
+            "Parameters": {},
+            "Comment": (comment or "pcm readonly discovery")[:100],
+        }
+        # get_command_invocation corta en 24.000 caracteres: con bucket, la
+        # salida COMPLETA queda en S3 y se lee con s3:GetObject (lectura).
+        if output_s3_bucket:
+            kwargs["OutputS3BucketName"] = output_s3_bucket
+            if output_s3_prefix:
+                kwargs["OutputS3KeyPrefix"] = output_s3_prefix
+        response = client.send_command(**kwargs)
+        command_id = response["Command"]["CommandId"]
+        waited = 0
+        while waited < timeout:
+            output = self.get_command_output(command_id, instance_id, region)
+            if output.get("status") in ("Success", "Failed", "Cancelled",
+                                        "TimedOut"):
+                output = dict(output, command_id=command_id)
+                if output_s3_bucket and output.get("status") == "Success":
+                    full = self._read_s3_stdout(
+                        output_s3_bucket, output_s3_prefix, command_id,
+                        instance_id, region)
+                    if full:
+                        output["stdout"] = full
+                return output
+            _sleep(poll_interval)
+            waited += poll_interval
+        return {"command_id": command_id, "status": "TimedOut"}
+
+    def _read_s3_stdout(self, bucket, prefix, command_id, instance_id,
+                        region=None):
+        """Lee el stdout completo que SSM escribió en S3 (solo lectura)."""
+        s3 = self._base.get_client("s3", region)
+        base = "/".join(p for p in ((prefix or "").strip("/"), command_id,
+                                    instance_id) if p)
+        listed = s3.list_objects_v2(Bucket=bucket, Prefix=base + "/")
+        for obj in listed.get("Contents") or []:
+            if obj["Key"].endswith("/stdout"):
+                body = s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"]
+                return body.read().decode("utf-8", errors="replace")
+        return ""
+
     def describe_instance_information(self, instance_ids, region=None):
         """Estado del agente SSM de un conjunto de instancias (sólo lectura).
 

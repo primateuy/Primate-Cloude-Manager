@@ -139,6 +139,58 @@ class PrimateCloudDatabase(models.Model):
                     )
                 )
 
+    def pcm_is_imported(self):
+        """¿La base vive en un servidor importado? (solo lectura)."""
+        self.ensure_one()
+        machine = self.ec2_instance_id or (
+            self.environment_id._active_machine()
+            if self.environment_id else None)
+        return bool(machine) and machine.management_state == "adopted_readonly"
+
+    # --- Destrucción con triple confirmación (regla dura 2026-10-22) ----
+    def _destruction_impact(self, action):
+        self.ensure_one()
+        owner = self.env["primate.cloud.instance"].search(
+            [("database_id", "=", self.id)], limit=1)
+        backups = self.env["primate.cloud.backup"].search(
+            [("database_id", "=", self.id), ("state", "=", "completed")],
+            order="backup_date desc", limit=1)
+        lines = [
+            _("Acción: RESTORE que PISA la base «%(db)s» — los datos actuales "
+              "se pierden.", db=self.name),
+            _("Entorno: %(e)s · Cuenta: %(c)s",
+              e=self.environment_id.display_name,
+              c=self.account_id.display_name if self.account_id else "?"),
+            _("Instancia Odoo dueña: %(i)s%(prod)s",
+              i=owner.display_name or "—",
+              prod=_(" ⚠ PRODUCCIÓN") if owner.env_type == "production" else ""),
+            _("Último backup completado de ESTA base: %(b)s",
+              b=backups.backup_date if backups else _("NINGUNO ⚠")),
+        ]
+        return {"resource_name": self.name, "text": "\n".join(lines)}
+
+    def _destruction_enqueue_restore(self, params):
+        """Callback del wizard destructivo: consume el ticket, emite el
+        job_token y encola el restore real (que lo quema al arrancar)."""
+        self.ensure_one()
+        ctx = self.env.context
+        Ticket = self.env["primate.cloud.destruction.ticket"]
+        job_token = Ticket.consume_for_job(
+            self, "restore_overwrite",
+            ctx.get("destruction_ticket_id"), ctx.get("destruction_token"))
+        target = self.environment_id
+        target.with_delay(
+            description=_("Restaurar backup en %s") % target.name
+        ).job_restore_backup(dict(params, destruction={
+            "ticket_id": ctx.get("destruction_ticket_id"),
+            "job_token": job_token}))
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info",
+                       "message": _("Restore confirmado y encolado."),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
     def action_assign_instance(self, instance_id):
         """Vincula esta base a una instancia EC2 (para bases sueltas, desde el hub).
 

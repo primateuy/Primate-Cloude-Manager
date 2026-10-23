@@ -387,6 +387,13 @@ class PrimateCloudDashboard(models.AbstractModel):
             "main_url": environment.main_url or "",
             "origin": environment.origin_environment_id.display_name or "",
             "origin_id": environment.origin_environment_id.id or False,
+            # Regla dura 2026-10-22: importado = solo lectura TOTAL en la UI;
+            # y lo destructivo solo existe para el grupo manual.
+            "is_imported": any(
+                m.management_state == "adopted_readonly"
+                for m in environment.ec2_instance_ids),
+            "can_destroy": self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_destructive"),
             "servers": [{
                 "id": inst.id, "name": inst.display_name,
                 "state": inst.instance_state,
@@ -491,6 +498,10 @@ class PrimateCloudDashboard(models.AbstractModel):
             "hosted_summary": hosted_summary,
             "hosts_production": bool(env_type_counts.get("production")),
             "name": inst.display_name,
+            # Regla dura 2026-10-22.
+            "is_imported": inst.management_state == "adopted_readonly",
+            "can_destroy": self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_destructive"),
             "state": inst.instance_state,
             "state_label": state_labels.get(inst.instance_state, inst.instance_state or ""),
             "aws_instance_id": inst.aws_instance_id or "",
@@ -620,6 +631,10 @@ class PrimateCloudDashboard(models.AbstractModel):
             # URL real según ssl_state (ajuste A de HTTPS): https SOLO con
             # certificado activo y verificado — la pantalla no la inventa.
             "url": inst._public_url(),
+            # Regla dura 2026-10-22: importado = sin acciones en la UI.
+            "is_imported": inst.pcm_is_imported(),
+            "can_destroy": self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_destructive"),
             "ssl": {
                 "state": inst.ssl_state,
                 "state_label": dict(
@@ -681,10 +696,62 @@ class PrimateCloudDashboard(models.AbstractModel):
             # DNS best-effort (R4-B6.4): motivo del DNS pendiente si lo hay.
             "dns_pending": inst._dns_pending_data() if hasattr(
                 inst, "_dns_pending_data") else False,
+            # Gemelo (punto 3, 2026-10-22): el último snapshot versionado.
+            "twin": self._instance_twin(inst),
             # Porción de costo de ESTA instancia (su share del mes, R6-B2), con
             # la misma honestidad que el proyecto: método + prorrateo + "datos
             # al" + si el servidor es compartido.
             "cost": self._instance_cost_portion(inst),
+        }
+
+    def _instance_twin(self, inst):
+        """Último snapshot del gemelo de la instancia (o False)."""
+        import json as _json
+        snap = self.env["primate.cloud.twin.snapshot"].sudo().search(
+            [("instance_id", "=", inst.id)], order="version desc", limit=1)
+        if not snap:
+            return False
+        payload = snap.payload()
+        data = payload.get("instance") or {}
+        try:
+            alerts = _json.loads(snap.alerts_json or "[]")
+        except ValueError:
+            alerts = []
+        total = self.env["primate.cloud.twin.snapshot"].sudo().search_count(
+            [("instance_id", "=", inst.id)])
+        return {
+            "id": snap.id, "version": snap.version, "total": total,
+            "taken_at": fields.Datetime.to_string(snap.taken_at),
+            "alerts": alerts,
+            "odoo_release": snap.odoo_release,
+            "core_commit": snap.core_commit,
+            "enterprise_commit": snap.enterprise_commit or "",
+            "python_version": snap.python_version,
+            "db_size_mb": round((snap.db_size_bytes or 0) / 1048576.0, 1),
+            "filestore_mb": round((snap.filestore_bytes or 0) / 1048576.0, 1),
+            "service": data.get("service") or {},
+            "workers": data.get("workers") or "",
+            "conf": data.get("conf_masked") or {},
+            "addons_path": data.get("addons_path") or [],
+            "repos": [{
+                "path": r.get("path"), "remote": r.get("remote_url") or "—",
+                "branch": r.get("branch") or "",
+                "sha": (r.get("commit_sha") or "")[:12],
+                "dirty": bool(r.get("alert_local_changes")),
+                "dirty_detail": _(
+                    "%(d)s sin commitear / %(u)s sin pushear",
+                    d=r.get("dirty_files") or 0,
+                    u=r.get("unpushed_commits") or 0)
+                if r.get("alert_local_changes") else "",
+                "submodules": len(r.get("submodules") or []),
+            } for r in data.get("repos") or []],
+            "database": data.get("database") or {},
+            "filestore": data.get("filestore") or {},
+            "nginx": payload.get("nginx") or [],
+            "system": payload.get("system") or {},
+            "pip_freeze": (data.get("python") or {}).get("pip_freeze") or "",
+            "cron_system": (payload.get("system") or {}).get(
+                "cron_system") or "",
         }
 
     def _instance_cost_portion(self, inst):

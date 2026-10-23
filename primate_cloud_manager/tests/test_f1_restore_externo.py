@@ -23,6 +23,17 @@ from odoo.tests.common import TransactionCase
 ROL = """-c 'SET ROLE "odoo_bj"'"""
 
 
+
+def _params_del_desvio(test, accion):
+    """El restore que pisa una base registrada abre la triple confirmación
+    (regla 2026-10-22) con los parámetros del job dentro del callback."""
+    import json as _json
+    test.assertEqual(accion["res_model"], "primate.cloud.destruction.wizard")
+    test.assertEqual(accion["context"]["dest_action"], "restore_overwrite")
+    test.assertEqual(accion["context"]["dest_callback"],
+                     "_destruction_enqueue_restore")
+    return _json.loads(accion["context"]["dest_callback_params"])["params"]
+
 @tagged("post_install", "-at_install", "primate_cloud")
 class TestF1RestoreExterno(TransactionCase):
     """Restore desde key de S3 o ruta del servidor (F1)."""
@@ -422,10 +433,11 @@ class TestF1RestoreExterno(TransactionCase):
             origin_type="s3_uri",
             origin_uri=" s3://pcm-backups-test/in/bj.zip ",
             origin_format="odoo_zip")
+        # Regla dura 2026-10-22: pisar una base registrada (no staging) va por la triple confirmación: el wizard desvía y los parámetros viajan intactos.
         with mock.patch.object(type(self.env_srv), "with_delay") as delay:
-            wizard.action_restore()
-            delay.assert_called_once()
-            params = delay.return_value.job_restore_backup.call_args[0][0]
+            accion = wizard.action_restore()
+            delay.assert_not_called()
+        params = _params_del_desvio(self, accion)
         self.assertNotIn("backup_id", params)
         # La URI llega sin espacios de más.
         self.assertEqual(params["origin"]["uri"],
@@ -437,7 +449,8 @@ class TestF1RestoreExterno(TransactionCase):
         """El botón "Restaurar" de un registro no cambió."""
         wizard = self._wizard(backup_id=self.backup.id)
         with mock.patch.object(type(self.env_srv), "with_delay") as delay:
-            wizard.action_restore()
-            params = delay.return_value.job_restore_backup.call_args[0][0]
+            accion = wizard.action_restore()
+            delay.assert_not_called()
+        params = _params_del_desvio(self, accion)
         self.assertEqual(params["backup_id"], self.backup.id)
         self.assertNotIn("origin", params)

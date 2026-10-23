@@ -12,6 +12,9 @@ from . import primate_cloud_project
 from . import primate_cloud_environment
 from . import primate_cloud_ec2_instance
 from . import primate_cloud_database
+from . import primate_cloud_destruction
+from . import primate_cloud_twin
+from . import primate_cloud_readonly_guard
 from . import primate_cloud_dns_record
 from . import primate_cloud_repository
 from . import primate_cloud_commit

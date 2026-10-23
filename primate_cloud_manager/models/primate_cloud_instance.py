@@ -22,6 +22,7 @@ from datetime import timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+from .primate_cloud_destruction import durable_log
 
 from ..tools import crypto
 
@@ -303,6 +304,16 @@ class PrimateCloudInstance(models.Model):
         # para el nuevo. Solo instancias activas con slug (multi-Odoo); los
         # writes del propio provisioning no disparan (prev vacío o estado no
         # activo todavía).
+        # Regla dura 2026-10-22: campos de infraestructura de una instancia
+        # IMPORTADA no se escriben (ni por UI ni por código), salvo el sync
+        # del gemelo que se identifica por contexto.
+        if not self.env.context.get("pcm_import_sync"):
+            infra = set(vals) & self._PCM_INFRA_FIELDS
+            if infra:
+                for rec in self:
+                    if rec.pcm_is_imported():
+                        rec._pcm_assert_not_imported(_(
+                            "modificar %s") % ", ".join(sorted(infra)))
         domain_changed = {}
         if "main_url" in vals and not self.env.context.get("pcm_skip_ssl_hooks"):
             domain_changed = {
@@ -332,6 +343,110 @@ class PrimateCloudInstance(models.Model):
             if rec.id in domain_changed:
                 rec._on_domain_changed(domain_changed[rec.id])
         return res
+
+    def unlink(self):
+        """Una instancia importada no se borra NUNCA (regla 2026-10-22):
+        es el reflejo de un Odoo real funcionando."""
+        self._pcm_assert_not_imported(_("eliminar la instancia"))
+        return super().unlink()
+
+    # --- Desmontar instancia (destructivo, triple confirmación) ---------
+    def action_open_destroy_wizard(self):
+        """Desmonta ESTE Odoo del servidor (unit, nginx, conf, filestore y su
+        base): triple confirmación obligatoria (regla dura 2026-10-22)."""
+        self.ensure_one()
+        self._pcm_assert_not_imported(_("desmontar la instancia"))
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Desmontar instancia — confirmación destructiva"),
+            "res_model": "primate.cloud.destruction.wizard",
+            "view_mode": "form", "target": "new",
+            "context": {
+                "dest_model": self._name, "dest_res_id": self.id,
+                "dest_action": "instance_destroy",
+                "dest_callback": "_destruction_enqueue_destroy",
+            },
+        }
+
+    def _destruction_impact(self, action):
+        self.ensure_one()
+        db = self.database_id
+        return {"resource_name": self.display_name, "text": "\n".join([
+            _("Acción: DESMONTAR la instancia Odoo (systemd, nginx, conf, "
+              "filestore) y BORRAR su base — irreversible."),
+            _("Instancia: %(n)s (slug %(s)s)%(prod)s",
+              n=self.display_name, s=self.slug or "?",
+              prod=_(" ⚠ PRODUCCIÓN") if self.env_type == "production" else ""),
+            _("Servidor: %(srv)s · Cuenta: %(acc)s",
+              srv=self.environment_id.display_name,
+              acc=self.account_id.display_name if hasattr(self, "account_id")
+              and self.account_id else self.environment_id.account_id
+              .display_name),
+            _("Base: %(db)s · Dominio: %(d)s",
+              db=db.display_name or "—", d=self.main_url or "—"),
+        ])}
+
+    def _destruction_enqueue_destroy(self):
+        self.ensure_one()
+        ctx = self.env.context
+        job_token = self.env["primate.cloud.destruction.ticket"]\
+            .consume_for_job(self, "instance_destroy",
+                             ctx.get("destruction_ticket_id"),
+                             ctx.get("destruction_token"))
+        self.with_delay(
+            description=_("Desmontar instancia: %s") % self.display_name
+        ).job_destroy(destruction_ticket_id=ctx.get("destruction_ticket_id"),
+                      destruction_job_token=job_token)
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info",
+                       "message": _("Desmontaje confirmado y encolado."),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def job_destroy(self, destruction_ticket_id=None,
+                    destruction_job_token=None):
+        """Job destructivo: corre el teardown por slug (D-R3.3) con drop de
+        SU base, y archiva los registros. NO arranca sin el job_token."""
+        self.ensure_one()
+        self._pcm_assert_not_imported(_("desmontar la instancia"))
+        self.env["primate.cloud.destruction.ticket"].burn_job_token(
+            self, "instance_destroy",
+            destruction_ticket_id, destruction_job_token)
+        env_rec = self.environment_id
+        machine = self._machine_required()
+        ssm = machine._get_ssm_service()
+        db_name = self.database_id.name if self.database_id else None
+        script = env_rec._build_instance_teardown_script(
+            self, db_name=db_name, drop_db=bool(db_name))
+        if isinstance(script, (list, tuple)):
+            script = "\n".join(script)
+        output = ssm.run_script(
+            machine.aws_instance_id, script,
+            region=machine.region or env_rec.account_id.default_region,
+            comment="pcm instance destroy: %s" % (self.slug or self.id),
+            timeout=600, check=False)
+        ok = "PCM_TEARDOWN_DONE" in (output.get("stdout") or "")
+        env_rec._log("instance_teardown",
+                     name=_("Desmontar instancia: %s") % self.display_name,
+                     result="success" if ok else "failed",
+                     error_message=None if ok else (
+                         output.get("stderr") or output.get("status")),
+                     record=self)
+        if ok:
+            if self.database_id:
+                self.database_id.sudo().state = "deleted" \
+                    if "deleted" in dict(self.database_id._fields["state"]
+                                         .selection) else self.database_id.state
+            self.write({"state": "archived"})
+            self.message_post(body=_(
+                "Instancia desmontada del servidor (teardown por slug) con "
+                "triple confirmación."))
+        else:
+            self.message_post(body=_(
+                "El desmontaje FALLÓ: %s") % (output.get("stderr")
+                                              or output.get("status") or "?"))
+        return ok
 
     def _hosted_days_in_period(self, period_start, period_end):
         """Días que la instancia estuvo hospedada dentro de ``[period_start,
@@ -399,6 +514,7 @@ class PrimateCloudInstance(models.Model):
         por queue_job (muta Route53).
         """
         self.ensure_one()
+        self._pcm_assert_not_imported(_("crear DNS"))
         if not self.dns_pending:
             raise UserError(_("Esta instancia no tiene un DNS pendiente."))
         self.with_delay(
@@ -409,6 +525,7 @@ class PrimateCloudInstance(models.Model):
     def job_retry_dns(self):
         """Job: crea el registro DNS pendiente reusando el flujo de provisioning."""
         self.ensure_one()
+        self._pcm_assert_not_imported(_("crear DNS"))
         data = self._dns_pending_data()
         if not data:
             return False
@@ -433,6 +550,42 @@ class PrimateCloudInstance(models.Model):
             self.message_post(body=_(
                 "El reintento de DNS falló otra vez: %s.") % error)
             return False
+
+    # --- Solo lectura de importados (regla dura 2026-10-22) -------------
+    # Campos de INFRAESTRUCTURA de una instancia importada: tocarlos cambiaría
+    # el gemelo o dispararía side-effects (main_url → cambio de dominio real).
+    # Lo anotable (project_id para clasificar, notes, cost_weight) sigue
+    # permitido: vive solo en PCM y no toca el ambiente real.
+    _PCM_INFRA_FIELDS = frozenset({
+        "main_url", "slug", "http_port", "gevent_port", "conf_path",
+        "service_name", "data_dir", "addons_dir", "pg_user", "python_bin",
+        "odoo_bin", "log_path", "odoo_version", "odoo_edition",
+        "database_id", "ssl_state", "ssl_cert_expiry",
+    })
+
+    def pcm_is_imported(self):
+        """¿Esta instancia vive en un servidor importado? (solo lectura)."""
+        self.ensure_one()
+        machine = self._machine()
+        return bool(machine) and machine.management_state == "adopted_readonly"
+
+    def _pcm_assert_not_imported(self, accion):
+        """Corta (y audita) cualquier intento de modificar un importado."""
+        for inst in self:
+            if not inst.pcm_is_imported():
+                continue
+            durable_log(self.env, {
+                "action_type": "readonly_block", "result": "failed",
+                "name": _("Bloqueado (importado): %(a)s sobre %(n)s",
+                          a=accion, n=inst.display_name),
+                "user_id": self.env.uid,
+                "resource_model": inst._name, "resource_id": inst.id,
+                "error_message": _("Recurso importado: solo lectura."),
+            })
+            raise UserError(_(
+                "«%(n)s» es una instancia IMPORTADA (solo lectura): no se "
+                "puede %(a)s, sin excepción ni override — es un ambiente "
+                "real funcionando.", n=inst.display_name, a=accion))
 
     # --- HTTPS (D-R3.9 endurecida) ------------------------------------
     def _public_url(self):
@@ -463,6 +616,7 @@ class PrimateCloudInstance(models.Model):
         → certbot → verificación real) vía queue_job. Sirve para montajes
         viejos que quedaron en HTTP y para reintentar un ``failed``."""
         self.ensure_one()
+        self._pcm_assert_not_imported(_("emitir HTTPS (certbot)"))
         if not self.main_url:
             raise UserError(_(
                 "La instancia no tiene dominio (URL principal): sin dominio "
@@ -482,6 +636,7 @@ class PrimateCloudInstance(models.Model):
     def job_enable_ssl(self):
         """Job: un ciclo de _provision_ssl para ESTA instancia."""
         self.ensure_one()
+        self._pcm_assert_not_imported(_("emitir HTTPS (certbot)"))
         return self.environment_id._provision_ssl(self)
 
     def _on_domain_changed(self, old_domain):
@@ -507,6 +662,7 @@ class PrimateCloudInstance(models.Model):
     def job_apply_domain_change(self, old_domain):
         """Job: aplica el cambio de dominio en el servidor + reemite SSL."""
         self.ensure_one()
+        self._pcm_assert_not_imported(_("cambiar el dominio"))
         return self.environment_id._apply_instance_domain_change(
             self, old_domain)
 
@@ -520,6 +676,9 @@ class PrimateCloudInstance(models.Model):
         max_hours = int(Param.get_param("pcm.ssl_pending_max_hours", "24"))
         for inst in self.search([("ssl_state", "=", "pending"),
                                  ("state", "=", "active")]):
+            if inst.pcm_is_imported():
+                # Regla dura: NINGÚN cron toca un importado — ni certbot.
+                continue
             try:
                 result = inst.environment_id._provision_ssl(inst)
             except Exception as error:  # noqa: BLE001 — un fallo no corta el cron

@@ -687,6 +687,11 @@ class TestR4B4Backups(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        # Regla dura 2026-10-22: el cerrojo de la triple confirmación se
+        # prueba en test_blindaje_readonly; acá se prueba la MECÁNICA
+        # del job, así que el job_token se da por quemado.
+        self.patch(type(self.env["primate.cloud.destruction.ticket"]),
+                   "burn_job_token", lambda *a, **k: True)
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
@@ -928,6 +933,11 @@ class TestR4B5Staging(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        # Regla dura 2026-10-22: el cerrojo de la triple confirmación se
+        # prueba en test_blindaje_readonly; acá se prueba la MECÁNICA
+        # del job, así que el job_token se da por quemado.
+        self.patch(type(self.env["primate.cloud.destruction.ticket"]),
+                   "burn_job_token", lambda *a, **k: True)
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
@@ -1486,14 +1496,19 @@ class TestR4B6Terminate(TransactionCase):
         # El chequeo imperativo muerto ya no existe.
         self.assertFalse(hasattr(type(self.machine), "_terminate_is_cross_client"))
 
-    def test_admin_puede_terminar(self):
+    def test_admin_solo_no_alcanza_para_terminar(self):
+        """Regla dura 2026-10-22: ser Cloud Admin ya no alcanza — terminar
+        exige el grupo destructivo (asignado a mano) + la triple
+        confirmación. (Antes: «admin puede terminar».)"""
+        from odoo.exceptions import AccessError
         admin = self.env["res.users"].create({
             "name": "Adm", "login": "adm_termbe",
             "group_ids": [(6, 0, [self.env.ref(
                 "primate_cloud_manager.group_cloud_admin").id])]})
         with mock.patch.object(type(self.machine), "with_delay") as wd:
-            self.machine.with_user(admin).action_terminate()
-            wd.assert_called()
+            with self.assertRaises(AccessError):
+                self.machine.with_user(admin).action_terminate()
+            wd.assert_not_called()
 
 
 @tagged("post_install", "-at_install", "primate_cloud")

@@ -12,6 +12,7 @@ from ..services import (
     aws_base, aws_cost_explorer, aws_ec2, aws_rds, aws_route53,
 )
 from ..tools import bus, crypto
+from .primate_cloud_readonly_guard import ReadonlyGuard
 
 _logger = logging.getLogger(__name__)
 
@@ -236,20 +237,25 @@ class PrimateCloudAccount(models.Model):
         if account.auth_method == "assume_role":
             if not account.role_arn:
                 raise UserError(_("Falta el Role ARN para el método 'Asumir rol IAM'."))
-            return aws_base.AwsBaseService(
+            service = aws_base.AwsBaseService(
                 access_key_id=creds["access_key_id"] or None,
                 secret_access_key=creds["secret_access_key"] or None,
                 region=account.default_region,
                 role_arn=account.role_arn,
                 external_id=account.external_id,
             )
-        if not creds["access_key_id"] or not creds["secret_access_key"]:
-            raise UserError(_("Faltan las credenciales IAM (Access Key ID y Secret)."))
-        return aws_base.AwsBaseService(
-            access_key_id=creds["access_key_id"],
-            secret_access_key=creds["secret_access_key"],
-            region=account.default_region,
-        )
+        else:
+            if not creds["access_key_id"] or not creds["secret_access_key"]:
+                raise UserError(_("Faltan las credenciales IAM (Access Key ID y Secret)."))
+            service = aws_base.AwsBaseService(
+                access_key_id=creds["access_key_id"],
+                secret_access_key=creds["secret_access_key"],
+                region=account.default_region,
+            )
+        # Regla dura 2026-10-22: TODO servicio AWS sale con el cerrojo de
+        # frontera — ninguna mutación sobre un recurso importado llega a AWS.
+        service.guard = ReadonlyGuard.from_env(self.env)
+        return service
 
     def resolve_ubuntu_ami(self, region=None):
         """Resuelve el AMI de Ubuntu 24.04 para la región (o la de la cuenta).

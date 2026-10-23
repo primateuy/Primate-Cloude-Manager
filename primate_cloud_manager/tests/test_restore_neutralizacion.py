@@ -39,6 +39,11 @@ class TestRestoreNeutralizaAntesDeArrancar(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        # Regla dura 2026-10-22: el cerrojo de la triple confirmación se
+        # prueba en test_blindaje_readonly; acá se prueba la MECÁNICA
+        # del job, así que el job_token se da por quemado.
+        self.patch(type(self.env["primate.cloud.destruction.ticket"]),
+                   "burn_job_token", lambda *a, **k: True)
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",

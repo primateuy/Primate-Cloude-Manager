@@ -1,4 +1,9 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_destruction_ticket_destructive,destruction.ticket destructivo ro,model_primate_cloud_destruction_ticket,group_cloud_destructive,1,0,0,0
+access_destruction_ticket_admin,destruction.ticket admin ro,model_primate_cloud_destruction_ticket,group_cloud_admin,1,0,0,0
+access_destruction_wizard,destruction.wizard destructivo,model_primate_cloud_destruction_wizard,group_cloud_destructive,1,1,1,1
+access_twin_snapshot_viewer,twin.snapshot viewer ro,model_primate_cloud_twin_snapshot,group_cloud_viewer,1,0,0,0
+access_twin_snapshot_admin,twin.snapshot admin,model_primate_cloud_twin_snapshot,group_cloud_admin,1,0,0,0
 access_account_viewer,primate.cloud.account viewer,model_primate_cloud_account,group_cloud_viewer,1,0,0,0
 access_account_operator,primate.cloud.account operator,model_primate_cloud_account,group_cloud_operator,1,0,0,0
 access_account_admin,primate.cloud.account admin,model_primate_cloud_account,group_cloud_admin,1,1,1,1

@@ -1027,6 +1027,11 @@ class TestBackupRestore(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        # Regla dura 2026-10-22: el cerrojo de la triple confirmación se
+        # prueba en test_blindaje_readonly; acá se prueba la MECÁNICA
+        # del job, así que el job_token se da por quemado.
+        self.patch(type(self.env["primate.cloud.destruction.ticket"]),
+                   "burn_job_token", lambda *a, **k: True)
         self.account = self.env["primate.cloud.account"].create({
             "name": "C", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",
@@ -1111,9 +1116,13 @@ class TestBackupRestore(TransactionCase):
         with self.assertRaises(UserError):
             wizard.action_restore()
         wizard.confirm_environment_name = "Forum Prod"
+        # Regla dura 2026-10-22: con el nombre bien, pisar la base de prod
+        # registrada NO encola: abre la triple confirmación.
         with mock.patch.object(type(self.prod), "with_delay") as with_delay:
-            wizard.action_restore()
-            with_delay.assert_called_once()
+            accion = wizard.action_restore()
+            with_delay.assert_not_called()
+        self.assertEqual(accion["res_model"], "primate.cloud.destruction.wizard")
+        self.assertEqual(accion["context"]["dest_action"], "restore_overwrite")
 
     def test_nombre_db_invalido(self):
         wizard = self._wizard(target_db_name="forum; drop database x")

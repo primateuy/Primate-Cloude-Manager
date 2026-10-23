@@ -34,8 +34,22 @@
                                 ? 'fa fa-lock' : 'fa fa-link'"/>
                             <t t-out="d.main_url"/></a>
                     </div>
+                    <!-- Regla dura 2026-10-22: IMPORTADO = solo lectura total. -->
+                    <div t-if="d.is_imported" class="o_pcm_note o_pcm_imported_note">
+                        <i class="fa fa-lock"/>
+                        <b>IMPORTADO — SOLO LECTURA.</b> Odoo real funcionando:
+                        PCM lo observa (gemelo) y no lo modifica de ninguna
+                        forma. Sin acciones disponibles.
+                    </div>
+                    <!-- Desmontar (DESTRUCTIVO): solo el grupo manual, nunca
+                         sobre un importado; abre la triple confirmación. -->
+                    <button t-if="d.can_destroy and !d.is_imported and d.state === 'active'"
+                            class="o_pcm_btn o_pcm_btn_danger"
+                            t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_destroy_wizard')">
+                        <i class="fa fa-trash"/> Desmontar instancia…
+                    </button>
                     <!-- DNS pendiente (R4-B6.4): aviso + acceso por IP + reintento -->
-                    <div t-if="d.dns_pending" class="o_pcm_note o_pcm_dns_pending">
+                    <div t-if="d.dns_pending and !d.is_imported" class="o_pcm_note o_pcm_dns_pending">
                         <i class="fa fa-exclamation-triangle o_pcm_err"/>
                         <b>DNS pendiente:</b> <t t-out="d.dns_pending.reason"/>
                         <div class="o_pcm_mono o_pcm_muted" t-if="dnsCurlHint">
@@ -49,7 +63,7 @@
                     <!-- HTTPS (D-R3.9 endurecida): estado del certificado.
                          failed/none con dominio → botón; pending → se avisa
                          que el reintento automático corre solo. -->
-                    <div t-if="d.main_url and d.ssl and d.ssl.state === 'pending'"
+                    <div t-if="d.main_url and !d.is_imported and d.ssl and d.ssl.state === 'pending'"
                          class="o_pcm_note o_pcm_ssl_note">
                         <i class="fa fa-clock-o"/>
                         <b>HTTPS en emisión:</b> sirviendo por http mientras
@@ -61,7 +75,7 @@
                             <i class="fa fa-refresh"/> Reintentar ahora
                         </button>
                     </div>
-                    <div t-if="d.main_url and d.ssl and (d.ssl.state === 'failed' or d.ssl.state === 'none')"
+                    <div t-if="d.main_url and !d.is_imported and d.ssl and (d.ssl.state === 'failed' or d.ssl.state === 'none')"
                          class="o_pcm_note o_pcm_ssl_note">
                         <i class="fa fa-exclamation-triangle o_pcm_err"/>
                         <b>Sin HTTPS:</b>
@@ -90,6 +104,10 @@
                     <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'addons' }"
                             t-on-click="() => this.setTab('addons')">
                         <i class="fa fa-puzzle-piece"/> Addons
+                    </button>
+                    <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'gemelo' }"
+                            t-on-click="() => this.setTab('gemelo')">
+                        <i class="fa fa-clone"/> Gemelo
                     </button>
                     <button class="o_pcm_tab" t-att-class="{ o_pcm_tab_active: state.tab === 'config' }"
                             t-on-click="() => this.setTab('config')">
@@ -368,6 +386,78 @@
                 </t>
 
                 <!-- ================= TAB: CONFIG ================= -->
+                <t t-if="state.tab === 'gemelo'">
+                    <div class="o_pcm_section_head o_pcm_section_bar">
+                        <h2>Gemelo exacto</h2>
+                        <button class="o_pcm_btn o_pcm_btn_accent"
+                                t-on-click="() => this.runOn('primate.cloud.ec2.instance', d.server_machine_id, 'action_capture_twin')">
+                            <i class="fa fa-refresh"/> Capturar ahora
+                        </button>
+                    </div>
+                    <div t-if="!d.twin" class="o_pcm_card o_pcm_empty">
+                        <i class="fa fa-clone o_pcm_empty_icon"/>
+                        <div>Sin snapshot todavía: capturá el gemelo del servidor
+                             (lectura pura, también en importados).</div>
+                    </div>
+                    <t t-if="d.twin">
+                        <div class="o_pcm_card">
+                            <div class="o_pcm_muted">
+                                Snapshot v<t t-out="d.twin.version"/> ·
+                                <t t-out="d.twin.taken_at"/> ·
+                                <t t-out="d.twin.total"/> versión(es) guardada(s)
+                            </div>
+                            <div t-if="d.twin.alerts.length" class="o_pcm_note o_pcm_ssl_note">
+                                <i class="fa fa-exclamation-triangle o_pcm_err"/>
+                                <b>ALERTAS (<t t-out="d.twin.alerts.length"/>):</b>
+                                <div t-foreach="d.twin.alerts" t-as="al" t-key="al_index"
+                                     class="o_pcm_mono">• <t t-out="al"/></div>
+                            </div>
+                            <div class="o_pcm_kv"><span>Odoo</span>
+                                <span class="o_pcm_mono"><t t-out="d.twin.odoo_release"/> @ <t t-out="d.twin.core_commit"/>
+                                <t t-if="d.twin.enterprise_commit"> · enterprise @ <t t-out="d.twin.enterprise_commit"/></t></span></div>
+                            <div class="o_pcm_kv"><span>Python</span>
+                                <span class="o_pcm_mono" t-out="d.twin.python_version"/></div>
+                            <div class="o_pcm_kv"><span>Servicio</span>
+                                <span class="o_pcm_mono"><t t-out="d.twin.service.unit"/> (<t t-out="d.twin.service.active"/>) · workers <t t-out="d.twin.workers"/></span></div>
+                            <div class="o_pcm_kv"><span>Base</span>
+                                <span class="o_pcm_mono"><t t-out="d.twin.database.db_name"/> · PG <t t-out="d.twin.database.pg_version"/> · <t t-out="d.twin.db_size_mb"/> MB</span></div>
+                            <div class="o_pcm_kv"><span>Filestore</span>
+                                <span class="o_pcm_mono"><t t-out="d.twin.filestore.path"/> · <t t-out="d.twin.filestore_mb"/> MB</span></div>
+                        </div>
+                        <div class="o_pcm_section_head"><h2>Repositorios (addons_path en orden)</h2></div>
+                        <div class="o_pcm_card">
+                            <div t-foreach="d.twin.repos" t-as="r" t-key="r_index" class="o_pcm_line">
+                                <div class="o_pcm_line_main">
+                                    <span class="o_pcm_mono" t-out="r.path"/>
+                                    <span class="o_pcm_muted o_pcm_mono"> · <t t-out="r.remote"/> @ <t t-out="r.branch"/> · <t t-out="r.sha"/>
+                                        <t t-if="r.submodules"> · <t t-out="r.submodules"/> submódulo(s)</t></span>
+                                    <span t-if="r.dirty" class="o_pcm_err">
+                                        ⚠ CAMBIOS LOCALES (<t t-out="r.dirty_detail"/>) — la mudanza por git los perdería</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="o_pcm_section_head"><h2>odoo.conf (secretos enmascarados)</h2></div>
+                        <div class="o_pcm_card"><div class="o_pcm_mono o_pcm_pre">
+                            <div t-foreach="Object.keys(d.twin.conf)" t-as="k" t-key="k">
+                                <t t-out="k"/> = <t t-out="d.twin.conf[k]"/></div>
+                        </div></div>
+                        <div class="o_pcm_section_head"><h2>nginx / dominios / certificados</h2></div>
+                        <div class="o_pcm_card">
+                            <div t-foreach="d.twin.nginx" t-as="site" t-key="site_index" class="o_pcm_mono">
+                                • <t t-out="site.site"/> → <t t-out="site.server_names"/>
+                                <t t-foreach="site.certificates" t-as="c" t-key="c_index">
+                                    · cert vence <t t-out="c.not_after"/></t>
+                            </div>
+                        </div>
+                        <div class="o_pcm_section_head"><h2>Sistema y crons</h2></div>
+                        <div class="o_pcm_card o_pcm_mono o_pcm_pre">
+                            <div><t t-out="d.twin.system.os"/> · kernel <t t-out="d.twin.system.kernel"/></div>
+                            <pre t-if="d.twin.cron_system" t-out="d.twin.cron_system"/>
+                        </div>
+                        <div class="o_pcm_section_head"><h2>pip freeze</h2></div>
+                        <div class="o_pcm_card"><pre class="o_pcm_mono o_pcm_pre_scroll" t-out="d.twin.pip_freeze"/></div>
+                    </t>
+                </t>
                 <t t-if="state.tab === 'config'">
                     <div t-if="config.loading" class="o_pcm_card o_pcm_muted">Leyendo odoo.conf…</div>
                     <div t-elif="config.status !== 'ok'" class="o_pcm_card o_pcm_muted">

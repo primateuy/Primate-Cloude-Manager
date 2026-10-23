@@ -82,6 +82,13 @@ class PrimateCloudRepository(models.Model):
     configured_branch = fields.Char(string="Rama configurada", help="Ej.: 19.0, main")
     local_path = fields.Char(string="Ruta local", help="Ruta en la EC2 (ej.: /opt/odoo/addons).")
     current_commit = fields.Char(string="Commit actual", help="Hash desplegado en el servidor.")
+    # Gemelo (punto 3, 2026-10-22): la mudanza por git PERDERÍA lo local.
+    local_changes_alert = fields.Boolean(
+        string="⚠ Cambios locales", readonly=True, copy=False,
+        help="El repo tiene archivos sin commitear o commits sin pushear: "
+             "una mudanza basada en git los perdería. NO se tocan.")
+    local_changes_detail = fields.Char(
+        string="Detalle de cambios locales", readonly=True, copy=False)
     latest_commit = fields.Char(string="Último commit", help="Último hash en la rama remota.")
     sync_state = fields.Selection(
         [
@@ -467,3 +474,34 @@ class PrimateCloudRepository(models.Model):
             "params": {"type": "info", "message": message,
                        "next": {"type": "ir.actions.act_window_close"}},
         }
+
+    def _pcm_machine(self):
+        self.ensure_one()
+        return (self.instance_id.environment_id or self.environment_id
+                )._active_machine() if (self.instance_id
+                                        or self.environment_id) else None
+
+    def _pcm_assert_not_imported(self, accion):
+        """Regla dura 2026-10-22: los repos de un ambiente importado son los
+        REALES del servidor productivo — PCM no los toca (el gemelo solo los
+        observa, con contexto pcm_import_sync)."""
+        if self.env.context.get("pcm_import_sync"):
+            return
+        for repo in self:
+            machine = repo._pcm_machine()
+            if machine and machine.management_state == "adopted_readonly":
+                raise UserError(_(
+                    "«%(n)s» es un repositorio de un ambiente IMPORTADO "
+                    "(solo lectura): no se puede %(a)s.",
+                    n=repo.display_name, a=accion))
+
+    def write(self, vals):
+        infra = set(vals) - {"local_changes_alert", "local_changes_detail",
+                             "sync_state", "current_commit"}
+        if infra:
+            self._pcm_assert_not_imported(_("modificar"))
+        return super().write(vals)
+
+    def unlink(self):
+        self._pcm_assert_not_imported(_("eliminar"))
+        return super().unlink()

@@ -17,6 +17,7 @@ pasaría también si el camino estuviera roto para todos.
 """
 from unittest import mock
 
+from odoo.exceptions import UserError
 from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
 
@@ -65,11 +66,15 @@ class TestF2ContratoFix(TransactionCase):
         self.assertEqual(maquina.management_state, "adopted_readonly")
 
     def test_el_sync_no_revoca_ni_otorga_una_habilitacion(self):
+        """El re-sync no cambia la marca de origen. (Regla 2026-10-22: un
+        importado ya no puede pasar a managed — se afirma que sigue
+        adopted_readonly tras re-sincronizar, y que nadie lo cambia.)"""
         self.Ec2._sync_from_aws(self.account, [ec2("i-9", "suelto")])
         maquina = self.Ec2.search([("aws_instance_id", "=", "i-9")])
-        maquina.management_state = "managed"
+        with self.assertRaises(UserError):
+            maquina.management_state = "managed"
         self.Ec2._sync_from_aws(self.account, [ec2("i-9", "suelto")])
-        self.assertEqual(maquina.management_state, "managed")
+        self.assertEqual(maquina.management_state, "adopted_readonly")
 
     def test_el_contrato_de_retorno_del_sync_no_cambia(self):
         res = self.Ec2._sync_from_aws(self.account, [ec2("i-9", "suelto")])

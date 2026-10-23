@@ -31,3 +31,5 @@ from . import test_cadena_validacion
 from . import test_region_y_filestore
 from . import test_dueno_restore_catalogo
 from . import test_https_ssl
+from . import test_blindaje_readonly
+from . import test_gemelo
