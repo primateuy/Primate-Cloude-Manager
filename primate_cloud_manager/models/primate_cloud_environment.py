@@ -27,6 +27,7 @@ from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm,
 from ..tools import bus, crypto, dates
 from .primate_cloud_ec2_instance import CUSTOM_ADDONS_DIR
 from .primate_cloud_instance import LEGACY_SERVICE
+from .primate_cloud_destruction import durable_log
 
 _logger = logging.getLogger(__name__)
 
@@ -161,6 +162,16 @@ class PrimateCloudEnvironment(models.Model):
         required=True,
         tracking=True,
     )
+    # Marca de origen (regla dura 2026-10-22, punto 2a): todo lo que cuelga de
+    # un entorno importado —instancias, bases, DNS, repos— hereda el solo
+    # lectura. Vale también SIN máquina AWS (Cloudpepper: gemelo desde
+    # archivo). Inmutable: solo el sync del import la escribe.
+    pcm_origin = fields.Selection(
+        [("pcm", "Montado por PCM"),
+         ("imported_aws", "Importado de AWS (solo lectura)"),
+         ("imported_cloudpepper", "Importado de Cloudpepper (solo lectura)")],
+        string="Origen", default="pcm", required=True, readonly=True,
+        copy=False, index=True, tracking=True)
     # Mismos defaults que la instancia: el formulario del entorno los muestra
     # ya completos (19 / Community) en vez de vacíos.
     odoo_version = fields.Selection(
@@ -1901,14 +1912,58 @@ class PrimateCloudEnvironment(models.Model):
         # El paso SSL usa el ChangeId para esperar INSYNC antes de certbot.
         return change_id
 
+    def pcm_is_imported(self):
+        """¿Entorno importado? Marca de origen O alguna máquina adoptada."""
+        self.ensure_one()
+        return self.pcm_origin != "pcm" or any(
+            m.management_state == "adopted_readonly"
+            for m in self.ec2_instance_ids)
+
     def _pcm_assert_env_not_imported(self, accion):
-        """Regla dura 2026-10-22: un entorno con servidor IMPORTADO no se
-        toca — corte temprano y con mensaje (y el cerrojo de frontera igual
-        bloquearía la llamada a AWS si algo se escapara)."""
+        """Regla dura 2026-10-22: un entorno IMPORTADO no se toca — corte
+        temprano y con mensaje (y el cerrojo de frontera igual bloquearía la
+        llamada a AWS si algo se escapara)."""
         for env_rec in self:
             for machine in env_rec.ec2_instance_ids:
                 if machine.management_state == "adopted_readonly":
                     machine._exigir_gestion_habilitada(accion)
+            if env_rec.pcm_origin != "pcm":
+                durable_log(self.env, {
+                    "action_type": "readonly_block", "result": "failed",
+                    "name": _("Bloqueado (importado): %(a)s sobre %(n)s",
+                              a=accion, n=env_rec.name),
+                    "user_id": self.env.uid,
+                    "resource_model": env_rec._name,
+                    "resource_id": env_rec.id,
+                    "error_message": _("Entorno importado: solo lectura."),
+                })
+                raise UserError(_(
+                    "«%(n)s» es un entorno IMPORTADO (%(o)s): solo lectura "
+                    "sin excepción — no se puede %(a)s.", n=env_rec.name,
+                    o=dict(env_rec._fields["pcm_origin"].selection)[
+                        env_rec.pcm_origin], a=accion))
+
+    def write(self, vals):
+        """La marca de origen de un importado es inmutable."""
+        if "pcm_origin" in vals and not self.env.context.get("pcm_import_sync"):
+            for env_rec in self:
+                if env_rec.pcm_origin != "pcm" and \
+                        vals["pcm_origin"] != env_rec.pcm_origin:
+                    raise UserError(_(
+                        "«%s» es un entorno IMPORTADO: su marca de origen es "
+                        "permanente.", env_rec.name))
+                if env_rec.pcm_origin == "pcm" and vals["pcm_origin"] != "pcm":
+                    raise UserError(_(
+                        "La marca de importado la pone solo el import."))
+        return super().write(vals)
+
+    def unlink(self):
+        for env_rec in self:
+            if env_rec.pcm_is_imported():
+                raise UserError(_(
+                    "«%s» es un entorno IMPORTADO (solo lectura): no se "
+                    "elimina de PCM.", env_rec.name))
+        return super().unlink()
 
     @api.model
     def _check_hosted_zone(self, account, hosted_zone_id):

@@ -52,6 +52,12 @@ class PrimateCloudDnsRecord(models.Model):
         ondelete="cascade",
         index=True,
     )
+    # Marca de origen (regla dura 2026-10-22): lo que trae el sync de AWS y
+    # NO creó PCM nace «importado» y es solo lectura sin excepción.
+    pcm_origin = fields.Selection(
+        [("pcm", "Creado por PCM"), ("imported", "Importado (solo lectura)")],
+        string="Origen", default="pcm", required=True, readonly=True,
+        copy=False, index=True)
     environment_id = fields.Many2one(
         "primate.cloud.environment",
         string="Entorno",
@@ -239,8 +245,10 @@ class PrimateCloudDnsRecord(models.Model):
                     })
                 updated += 1
             else:
-                # Nuevo desde AWS: por definición coincide con AWS.
+                # Nuevo desde AWS: por definición coincide con AWS. Si PCM no
+                # lo tenía, no lo creó PCM: entra como IMPORTADO (solo lectura).
                 self.create({
+                    "pcm_origin": "imported",
                     "account_id": account.id,
                     "hosted_zone_id": data.get("hosted_zone_id"),
                     "name": data.get("name"),
@@ -346,7 +354,11 @@ class PrimateCloudDnsRecord(models.Model):
 
     def pcm_is_imported(self):
         self.ensure_one()
+        if self.pcm_origin != "pcm":
+            return True
         source = self.instance_id.environment_id or self.environment_id
+        if source and source.pcm_origin != "pcm":
+            return True
         machine = source._active_machine() if source else None
         return bool(machine) and machine.management_state == "adopted_readonly"
 
@@ -354,9 +366,7 @@ class PrimateCloudDnsRecord(models.Model):
         """Regla dura 2026-10-22: el DNS de un ambiente IMPORTADO es real y
         productivo — PCM no lo toca de ninguna forma."""
         for record in self:
-            source = record.instance_id.environment_id or record.environment_id
-            machine = source._active_machine() if source else None
-            if machine and machine.management_state == "adopted_readonly":
+            if record.pcm_is_imported():
                 durable_log(self.env, {
                     "action_type": "readonly_block", "result": "failed",
                     "name": _("Bloqueado (importado): %(a)s sobre %(n)s",

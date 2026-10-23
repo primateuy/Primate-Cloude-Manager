@@ -488,8 +488,10 @@ class PrimateCloudRepository(models.Model):
         if self.env.context.get("pcm_import_sync"):
             return
         for repo in self:
+            env_rec = repo.instance_id.environment_id or repo.environment_id
             machine = repo._pcm_machine()
-            if machine and machine.management_state == "adopted_readonly":
+            if (env_rec and env_rec.pcm_origin != "pcm") or (
+                    machine and machine.management_state == "adopted_readonly"):
                 raise UserError(_(
                     "«%(n)s» es un repositorio de un ambiente IMPORTADO "
                     "(solo lectura): no se puede %(a)s.",

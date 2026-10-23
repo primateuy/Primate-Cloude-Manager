@@ -443,11 +443,14 @@ class PrimateCloudEc2Instance(models.Model):
         Instance = self.env["primate.cloud.instance"]
         entorno = self.environment_id
         if not entorno:
-            entorno = self.env["primate.cloud.environment"].create({
+            entorno = self.env["primate.cloud.environment"].with_context(
+                pcm_import_sync=True).create({
                 "name": self.name,
                 "account_id": self.account_id.id,
                 "state": "active",
                 "ec2_instance_id": self.id,
+                # Marca de origen (regla 2026-10-22).
+                "pcm_origin": "imported_aws",
             })
             self.environment_id = entorno
 
@@ -627,6 +630,11 @@ class PrimateCloudEc2Instance(models.Model):
         created = updated = 0
         records = []
         for data in instances:
+            # Cuenta de solo aprovisionamiento: lo que no creó PCM no se
+            # importa (lo observa la cuenta de solo lectura).
+            if account.provision_only and (data.get("tags") or {}).get(
+                    "primate:managed_by") != "pcm":
+                continue
             vals = self._aws_vals(data, now)
             existing = self.search(
                 [

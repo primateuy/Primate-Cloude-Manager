@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_external_import_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.external.import.wizard.form</field>
+        <field name="model">primate.cloud.external.import.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Importar servidor externo">
+                <div class="alert alert-info" role="alert">
+                    PCM <b>no se conecta</b> a este proveedor. Corré en el
+                    servidor, con tu acceso habitual, el script de solo
+                    lectura <code>pcm_readonly_discovery.sh</code>
+                    (<code>sudo bash pcm_readonly_discovery.sh &gt; gemelo.txt</code>:
+                    no escribe nada en el servidor) y subí acá el archivo.
+                    Lo importado queda en <b>solo lectura</b>, sin excepción.
+                </div>
+                <group>
+                    <field name="provider"/>
+                    <field name="environment_id"
+                           options="{'no_create': True}"/>
+                    <field name="server_name" invisible="environment_id"
+                           required="not environment_id"/>
+                    <field name="project_id" invisible="environment_id"
+                           options="{'no_create': True}"/>
+                    <field name="twin_file" filename="twin_filename"/>
+                    <field name="twin_filename" invisible="1"/>
+                </group>
+                <footer>
+                    <button name="action_import" type="object"
+                            string="Importar (solo lectura)" class="btn-primary"/>
+                    <button string="Cancelar" special="cancel"
+                            class="btn-secondary"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_external_import_wizard" model="ir.actions.act_window">
+        <field name="name">Importar servidor de Cloudpepper</field>
+        <field name="res_model">primate.cloud.external.import.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <menuitem id="menu_external_import"
+              name="Importar servidor de Cloudpepper"
+              parent="menu_primate_cloud_inventory"
+              action="action_external_import_wizard"
+              sequence="90"
+              groups="primate_cloud_manager.group_cloud_admin"/>
+
+</odoo>

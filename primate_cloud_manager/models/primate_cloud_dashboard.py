@@ -389,9 +389,9 @@ class PrimateCloudDashboard(models.AbstractModel):
             "origin_id": environment.origin_environment_id.id or False,
             # Regla dura 2026-10-22: importado = solo lectura TOTAL en la UI;
             # y lo destructivo solo existe para el grupo manual.
-            "is_imported": any(
-                m.management_state == "adopted_readonly"
-                for m in environment.ec2_instance_ids),
+            "is_imported": environment.pcm_is_imported(),
+            "origin_label": dict(environment._fields["pcm_origin"].selection)
+            .get(environment.pcm_origin, ""),
             "can_destroy": self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_destructive"),
             "servers": [{

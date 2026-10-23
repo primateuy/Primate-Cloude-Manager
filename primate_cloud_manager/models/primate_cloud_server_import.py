@@ -176,6 +176,11 @@ class PrimateCloudServerImport(models.Model):
         self.ensure_one()
         account = self.account_id
         Line = self.env["primate.cloud.server.import.line"]
+        if self.account_id.provision_only:
+            raise UserError(_(
+                "La cuenta «%s» es de SOLO APROVISIONAMIENTO: no importa "
+                "servidores ajenos. Importá con la cuenta de solo lectura.")
+                % self.account_id.name)
         self.write({"state": "running", "started_at": fields.Datetime.now()})
         estados = {"running"} | ({"stopped"} if self.include_stopped else set())
         errores_region = []

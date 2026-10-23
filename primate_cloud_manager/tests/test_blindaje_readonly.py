@@ -501,3 +501,66 @@ class TestTripleConfirmacion(TransactionCase):
         with mock.patch.object(type(inst), "with_delay") as delay:
             inst.action_enable_ssl()
         self.assertTrue(delay.called)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestOrigenDeLoSincronizado(TransactionCase):
+    """Lo que trae el sync de AWS y no creó PCM (DNS de la zona, RDS) nace
+    IMPORTADO; la cuenta de solo aprovisionamiento no importa nada ajeno."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "Prod RO", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+
+    def test_dns_sincronizado_nace_importado_y_no_se_toca(self):
+        Dns = self.env["primate.cloud.dns.record"]
+        Dns._sync_from_aws(self.account, [{
+            "hosted_zone_id": "ZREAL", "name": "erp.cliente.com.",
+            "record_type": "A", "record_value": "9.9.9.9", "ttl": 300}])
+        rec = Dns.search([("name", "=", "erp.cliente.com.")])
+        self.assertEqual(rec.pcm_origin, "imported")
+        self.assertTrue(rec.pcm_is_imported())
+        for fn in (rec.action_open_edit, rec.action_open_delete,
+                   rec.job_apply_change, rec.job_delete):
+            with self.subTest(fn=fn.__name__):
+                with self.assertRaises(UserError):
+                    fn()
+        guard = ReadonlyGuard.from_env(self.env)
+        self.assertIn("erp.cliente.com", guard.dns_names)
+
+    def test_rds_sincronizada_nace_importada(self):
+        Db = self.env["primate.cloud.database"]
+        Db._sync_rds_from_aws(self.account, [{
+            "name": "cliente-prod", "rds_identifier": "cliente-prod-db",
+            "engine": "postgres", "engine_version": "14.9",
+            "status": "available"}])
+        db = Db.search([("rds_identifier", "=", "cliente-prod-db")])
+        self.assertEqual(db.pcm_origin, "imported")
+        guard = ReadonlyGuard.from_env(self.env)
+        self.assertIn("cliente-prod-db", guard.rds_ids)
+        with self.assertRaises(UserError):
+            guard.check("rds", "delete_db_instance",
+                        {"DBInstanceIdentifier": "cliente-prod-db"})
+
+    def test_cuenta_solo_aprovisionamiento_no_importa_lo_ajeno(self):
+        prov = self.env["primate.cloud.account"].create({
+            "name": "Prod PROV", "default_region": "us-east-1",
+            "iam_access_key_id": "AK2", "iam_secret_access_key": "sk2",
+            "provision_only": True})
+        Ec2 = self.env["primate.cloud.ec2.instance"]
+        res = Ec2._sync_from_aws(prov, [
+            {"aws_instance_id": "i-ajena", "name": "prod-cliente",
+             "instance_state": "running", "region": "us-east-1", "tags": {}},
+            {"aws_instance_id": "i-de-pcm", "name": "barraca",
+             "instance_state": "running", "region": "us-east-1",
+             "tags": {"primate:managed_by": "pcm"}},
+        ])
+        self.assertEqual(res["created"], 1)
+        self.assertFalse(Ec2.search([("aws_instance_id", "=", "i-ajena")]))
+        self.assertTrue(Ec2.search([("aws_instance_id", "=", "i-de-pcm")]))
+        corrida = self.env["primate.cloud.server.import"].create(
+            {"account_id": prov.id, "regions": "us-east-1"})
+        with self.assertRaises(UserError):
+            corrida.job_import_servers(commit=False)

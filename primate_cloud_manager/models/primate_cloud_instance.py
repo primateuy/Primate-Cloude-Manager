@@ -564,8 +564,11 @@ class PrimateCloudInstance(models.Model):
     })
 
     def pcm_is_imported(self):
-        """¿Esta instancia vive en un servidor importado? (solo lectura)."""
+        """¿Esta instancia es importada? (máquina adoptada o entorno con
+        marca de origen importada — Cloudpepper no tiene máquina AWS)."""
         self.ensure_one()
+        if self.environment_id and self.environment_id.pcm_origin != "pcm":
+            return True
         machine = self._machine()
         return bool(machine) and machine.management_state == "adopted_readonly"
 

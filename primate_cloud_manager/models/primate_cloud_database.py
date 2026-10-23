@@ -36,6 +36,12 @@ class PrimateCloudDatabase(models.Model):
         ondelete="cascade",
         index=True,
     )
+    # Marca de origen (regla dura 2026-10-22): lo que trae el sync de AWS y
+    # NO creó PCM nace «importado» y es solo lectura sin excepción.
+    pcm_origin = fields.Selection(
+        [("pcm", "Creado por PCM"), ("imported", "Importado (solo lectura)")],
+        string="Origen", default="pcm", required=True, readonly=True,
+        copy=False, index=True)
     environment_id = fields.Many2one(
         "primate.cloud.environment",
         string="Entorno",
@@ -140,8 +146,12 @@ class PrimateCloudDatabase(models.Model):
                 )
 
     def pcm_is_imported(self):
-        """¿La base vive en un servidor importado? (solo lectura)."""
+        """¿La base es importada o vive en un servidor importado?"""
         self.ensure_one()
+        if self.pcm_origin != "pcm":
+            return True
+        if self.environment_id and self.environment_id.pcm_origin != "pcm":
+            return True
         machine = self.ec2_instance_id or (
             self.environment_id._active_machine()
             if self.environment_id else None)
@@ -256,6 +266,8 @@ class PrimateCloudDatabase(models.Model):
             else:
                 vals.update(
                     {
+                        # Traída por el sync y no creada por PCM: IMPORTADA.
+                        "pcm_origin": "imported",
                         "account_id": account.id,
                         "rds_identifier": data["rds_identifier"],
                     }

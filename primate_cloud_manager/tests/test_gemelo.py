@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from unittest import mock
 
+from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 from odoo.tools import file_open
 
@@ -275,3 +276,87 @@ class TestGemelo(TransactionCase):
                        r"restart|reload)", r"mktemp", r"\btee\b"):
             self.assertIsNone(re.search(patron, texto), patron)
 
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestCloudpepperImport(TransactionCase):
+    """Servidor externo SIN máquina AWS: gemelo desde archivo, marca de
+    origen heredada por todo lo que cuelga del entorno, solo lectura."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "Cuenta DNS", "default_region": "us-east-1",
+            "iam_access_key_id": "AK", "iam_secret_access_key": "sk"})
+
+    def _importar(self, env_rec=None, twin=None):
+        twin = twin or _twin_dos_instancias()
+        wiz = self.env["primate.cloud.external.import.wizard"].create({
+            "server_name": "cp-clientes-1",
+            "environment_id": env_rec.id if env_rec else False,
+            "twin_file": base64.b64encode(_stdout_de(twin).encode()),
+            "twin_filename": "gemelo.txt"})
+        wiz.action_import()
+        return self.env["primate.cloud.environment"].search(
+            [("name", "=", "cp-clientes-1")], limit=1)
+
+    def test_import_crea_entorno_marcado_con_gemelo(self):
+        env_rec = self._importar()
+        self.assertEqual(env_rec.pcm_origin, "imported_cloudpepper")
+        self.assertTrue(env_rec.pcm_is_imported())
+        self.assertFalse(env_rec.ec2_instance_ids, "Cloudpepper no tiene EC2")
+        snaps = self.env["primate.cloud.twin.snapshot"].search(
+            [("environment_id", "=", env_rec.id)])
+        self.assertEqual(len(snaps), 2)
+        self.assertTrue(all(i.pcm_is_imported() for i in snaps.instance_id))
+        # Re-importar sobre el mismo entorno = versión 2, sin duplicar.
+        self._importar(env_rec)
+        self.assertEqual(max(self.env["primate.cloud.twin.snapshot"].search(
+            [("environment_id", "=", env_rec.id)]).mapped("version")), 2)
+        self.assertEqual(len(env_rec.instance_ids.filtered("conf_path")), 2)
+
+    def test_lo_importado_de_cloudpepper_no_se_toca(self):
+        env_rec = self._importar()
+        inst = env_rec.instance_ids.filtered("conf_path")[:1]
+        dns = self.env["primate.cloud.dns.record"].create({
+            "name": "a.cliente.com", "environment_id": env_rec.id,
+            "account_id": self.account.id, "hosted_zone_id": "ZCP", "record_type": "A",
+            "record_value": "5.5.5.5", "state": "active"})
+        intentos = {
+            "backup": lambda: env_rec.action_run_backup(),
+            "agregar instancia": lambda: env_rec.job_add_instance(inst.id, {}),
+            "staging": lambda: env_rec.action_create_staging(),
+            "restore externo": lambda: env_rec.action_restore_external_dump(),
+            "HTTPS": lambda: inst.action_enable_ssl(),
+            "cambiar dominio": lambda: inst.write({"main_url": "x.y.com"}),
+            "borrar instancia": lambda: inst.unlink(),
+            "borrar DNS": lambda: dns.action_open_delete(),
+            "cambiar marca": lambda: env_rec.write({"pcm_origin": "pcm"}),
+            "borrar entorno": lambda: env_rec.unlink(),
+        }
+        for nombre, fn in intentos.items():
+            with self.subTest(accion=nombre):
+                try:
+                    fn()
+                    self.fail("%s no se bloqueó" % nombre)
+                except UserError:
+                    pass
+
+    def test_frontera_conoce_los_nombres_dns_de_cloudpepper(self):
+        from odoo.addons.primate_cloud_manager.models.primate_cloud_readonly_guard import (
+            ReadonlyGuard)
+        env_rec = self._importar()
+        self.env["primate.cloud.dns.record"].create({
+            "name": "a.cliente.com", "environment_id": env_rec.id,
+            "account_id": self.account.id, "hosted_zone_id": "ZCP", "record_type": "A",
+            "record_value": "5.5.5.5", "state": "active"})
+        guard = ReadonlyGuard.from_env(self.env)
+        self.assertIn("a.cliente.com", guard.dns_names)
+
+    def test_la_marca_no_se_pone_a_mano(self):
+        proyecto = self.env["primate.cloud.server.import"]._proyecto_centinela()
+        env_pcm = self.env["primate.cloud.environment"].create({
+            "name": "montado-por-pcm", "env_type": "testing",
+            "project_id": proyecto.id})
+        with self.assertRaises(UserError):
+            env_pcm.write({"pcm_origin": "imported_cloudpepper"})

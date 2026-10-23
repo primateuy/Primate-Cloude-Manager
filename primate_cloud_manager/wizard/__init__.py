@@ -12,3 +12,4 @@ from . import primate_cloud_instance_create_wizard
 from . import primate_cloud_server_manage_wizard
 from . import primate_cloud_server_import_wizard
 from . import primate_cloud_destruction_wizard
+from . import primate_cloud_external_import_wizard

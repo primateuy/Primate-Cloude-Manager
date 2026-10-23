@@ -60,6 +60,7 @@ Arquitectura extensible para Azure y GCP en fases futuras.
         "wizard/primate_cloud_server_manage_wizard_views.xml",
         # Menús (último: referencia acciones de las vistas anteriores)
         "views/primate_cloud_menus.xml",
+        "wizard/primate_cloud_external_import_wizard_views.xml",
         # Importación de servidores (F2): después de los menús, porque su
         # menuitem cuelga de menu_primate_cloud_operations.
         "views/primate_cloud_server_import_views.xml",

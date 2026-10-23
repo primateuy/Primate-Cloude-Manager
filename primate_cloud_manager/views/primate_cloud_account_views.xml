@@ -62,6 +62,7 @@
                         <group string="Cuenta">
                             <field name="aws_account_id"/>
                             <field name="default_region"/>
+                            <field name="provision_only"/>
                             <field name="last_sync_date"/>
                         </group>
                         <group string="Autenticación" groups="primate_cloud_manager.group_cloud_admin">

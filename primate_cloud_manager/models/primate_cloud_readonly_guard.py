@@ -46,15 +46,19 @@ class ReadonlyGuard:
                 ("management_state", "=", "adopted_readonly")])
         instance_ids = [m.aws_instance_id for m in machines
                         if m.aws_instance_id]
-        environments = machines.mapped("environment_id")
+        environments = machines.mapped("environment_id") | env[
+            "primate.cloud.environment"].sudo().with_context(
+                active_test=False).search([("pcm_origin", "!=", "pcm")])
         dns = env["primate.cloud.dns.record"].sudo().with_context(
             active_test=False).search([
-                "|", ("environment_id", "in", environments.ids),
+                "|", "|", ("pcm_origin", "=", "imported"),
+                ("environment_id", "in", environments.ids),
                 ("instance_id.environment_id", "in", environments.ids)])
         rds = env["primate.cloud.database"].sudo().with_context(
             active_test=False).search([
-                ("environment_id", "in", environments.ids),
-                ("db_type", "=", "rds")])
+                ("db_type", "=", "rds"),
+                "|", ("pcm_origin", "=", "imported"),
+                ("environment_id", "in", environments.ids)])
         document = env["ir.config_parameter"].sudo().get_param(
             DISCOVERY_DOCUMENT_PARAM, DISCOVERY_DOCUMENT_DEFAULT)
 
@@ -73,7 +77,7 @@ class ReadonlyGuard:
             })
 
         return cls(instance_ids, dns.mapped("name"),
-                   [r for r in rds.mapped("name") if r], document, on_block)
+                   [r.rds_identifier or r.name for r in rds if r.rds_identifier or r.name], document, on_block)
 
     # ------------------------------------------------------------------
     @staticmethod

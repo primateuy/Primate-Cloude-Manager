@@ -132,91 +132,18 @@ class PrimateCloudTwinSnapshot(models.Model):
                 for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)}
 
 
-class PrimateCloudEc2InstanceTwin(models.Model):
-    _inherit = "primate.cloud.ec2.instance"
-
-    def action_capture_twin(self):
-        """Captura el gemelo de ESTE servidor (lectura pura: permitido también
-        —y sobre todo— en importados)."""
-        self.ensure_one()
-        twin = self._twin_fetch()
-        snapshots = self._twin_apply(twin)
-        self.message_post(body=_(
-            "Gemelo capturado: %(n)s instancia(s) Odoo, %(a)s alerta(s).",
-            n=len(snapshots), a=sum(snapshots.mapped("alert_count"))))
-        return {
-            "type": "ir.actions.client", "tag": "display_notification",
-            "params": {"type": "success", "sticky": False,
-                       "message": _("Gemelo capturado: %s instancia(s), "
-                                    "%s alerta(s).") % (
-                           len(snapshots),
-                           sum(snapshots.mapped("alert_count")))},
-        }
-
-    def _twin_fetch(self):
-        """Corre el discovery de SOLO LECTURA y devuelve el JSON del gemelo."""
-        self.ensure_one()
-        ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
-        region = self.region or self.account_id.default_region
-        if self.management_state == "adopted_readonly":
-            output = self._run_readonly_document(ssm, region, "pcm twin")
-            document = output.get("document")
-            if output.get("status") != "Success":
-                raise UserError(_(
-                    "El discovery de solo lectura falló (%(st)s). En un "
-                    "servidor IMPORTADO solo puede correr el documento SSM "
-                    "«%(doc)s»: verificá que exista en la cuenta y que el "
-                    "servidor tenga el agente SSM (checklist de la mudanza).",
-                    st=output.get("status"), doc=document))
-        else:
-            with file_open(DISCOVERY_SCRIPT_PATH) as handle:
-                script = handle.read()
-            output = ssm.run_script(
-                self.aws_instance_id, script, region=region,
-                comment="pcm twin: %s" % self.name,
-                timeout=420, check=False)
-            if output.get("status") != "Success":
-                raise UserError(_("El discovery del gemelo falló: %s")
-                                % (output.get("stderr")
-                                   or output.get("status")))
-        return self._twin_parse(output.get("stdout") or "")
-
-    def _run_readonly_document(self, ssm, region, comment):
-        """El ÚNICO camino de lectura dentro de un servidor importado."""
-        params = self.env["ir.config_parameter"].sudo()
-        document = params.get_param(DISCOVERY_DOCUMENT_PARAM,
-                                     DISCOVERY_DOCUMENT_DEFAULT)
-        bucket = params.get_param(DISCOVERY_S3_BUCKET_PARAM) or None
-        output = ssm.run_document(
-            self.aws_instance_id, document, region=region,
-            comment="%s: %s" % (comment, self.name), timeout=600,
-            output_s3_bucket=bucket,
-            output_s3_prefix="pcm-readonly-discovery" if bucket else None)
-        return dict(output, document=document)
-
-    @staticmethod
-    def _twin_parse(stdout):
-        chunks = [line[len("PCM_TWIN_B64:"):] for line in stdout.splitlines()
-                  if line.startswith("PCM_TWIN_B64:")]
-        if not chunks or "PCM_TWIN_OK" not in stdout:
-            raise UserError(_(
-                "El discovery no devolvió el gemelo completo: la salida "
-                "inline de SSM se corta en 24.000 caracteres (servidor con "
-                "muchas instancias) o el script se interrumpió. Configurá un "
-                "bucket en «%s» para recibir la salida completa por S3.",
-                DISCOVERY_S3_BUCKET_PARAM))
-        blob = "".join(chunks)
-        return json.loads(gzip.decompress(base64.b64decode(blob)).decode())
+class PrimateCloudTwinMixin(models.AbstractModel):
+    """Aplicación del gemelo, compartida por máquina (AWS) y entorno
+    (Cloudpepper / cualquier servidor sin EC2: gemelo desde archivo)."""
+    _name = "primate.cloud.twin.mixin"
+    _description = "Aplicación del gemelo exacto"
 
     # ------------------------------------------------------------------
-    def _twin_apply(self, twin):
-        """Vuelca el gemelo a PCM: instancias Odoo (creando las que falten),
-        repos con alerta de cambios locales, y un snapshot versionado por
-        instancia. Los writes van con ``pcm_import_sync`` (es EL sync)."""
-        self.ensure_one()
-        env_rec = self.environment_id
-        if not env_rec:
-            raise UserError(_("El servidor no tiene entorno en PCM."))
+    def _twin_apply_to(self, env_rec, twin, machine=None):
+        """Vuelca el gemelo a PCM en ``env_rec``: instancias Odoo (creando las
+        que falten), repos con alerta de cambios locales, y un snapshot
+        versionado por instancia. Los writes van con ``pcm_import_sync`` (es
+        EL sync). ``machine`` es opcional: Cloudpepper no tiene EC2."""
         Instance = self.env["primate.cloud.instance"].with_context(
             pcm_import_sync=True)
         Snapshot = self.env["primate.cloud.twin.snapshot"].sudo()
@@ -239,7 +166,8 @@ class PrimateCloudEc2InstanceTwin(models.Model):
             ent = data.get("odoo_enterprise") or {}
             db = data.get("database") or {}
             snapshots |= Snapshot.create({
-                "instance_id": instance.id, "machine_id": self.id,
+                "instance_id": instance.id,
+                "machine_id": machine.id if machine else False,
                 "version": (last.version or 0) + 1,
                 "payload_json": json.dumps(payload, ensure_ascii=False),
                 "alerts_json": json.dumps(alerts, ensure_ascii=False),
@@ -403,3 +331,98 @@ class PrimateCloudEc2InstanceTwin(models.Model):
         if not (data.get("database") or {}).get("db_size_bytes"):
             alerts.append(_("No se pudo medir el tamaño de la base."))
         return alerts
+
+
+class PrimateCloudEc2InstanceTwin(models.Model):
+    _name = "primate.cloud.ec2.instance"
+    _inherit = ["primate.cloud.ec2.instance", "primate.cloud.twin.mixin"]
+
+    def action_capture_twin(self):
+        """Captura el gemelo de ESTE servidor (lectura pura: permitido también
+        —y sobre todo— en importados)."""
+        self.ensure_one()
+        twin = self._twin_fetch()
+        snapshots = self._twin_apply(twin)
+        self.message_post(body=_(
+            "Gemelo capturado: %(n)s instancia(s) Odoo, %(a)s alerta(s).",
+            n=len(snapshots), a=sum(snapshots.mapped("alert_count"))))
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "success", "sticky": False,
+                       "message": _("Gemelo capturado: %s instancia(s), "
+                                    "%s alerta(s).") % (
+                           len(snapshots),
+                           sum(snapshots.mapped("alert_count")))},
+        }
+
+    def _twin_fetch(self):
+        """Corre el discovery de SOLO LECTURA y devuelve el JSON del gemelo."""
+        self.ensure_one()
+        ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+        region = self.region or self.account_id.default_region
+        if self.management_state == "adopted_readonly":
+            output = self._run_readonly_document(ssm, region, "pcm twin")
+            document = output.get("document")
+            if output.get("status") != "Success":
+                raise UserError(_(
+                    "El discovery de solo lectura falló (%(st)s). En un "
+                    "servidor IMPORTADO solo puede correr el documento SSM "
+                    "«%(doc)s»: verificá que exista en la cuenta y que el "
+                    "servidor tenga el agente SSM (checklist de la mudanza).",
+                    st=output.get("status"), doc=document))
+        else:
+            with file_open(DISCOVERY_SCRIPT_PATH) as handle:
+                script = handle.read()
+            output = ssm.run_script(
+                self.aws_instance_id, script, region=region,
+                comment="pcm twin: %s" % self.name,
+                timeout=420, check=False)
+            if output.get("status") != "Success":
+                raise UserError(_("El discovery del gemelo falló: %s")
+                                % (output.get("stderr")
+                                   or output.get("status")))
+        return self._twin_parse(output.get("stdout") or "")
+
+    def _run_readonly_document(self, ssm, region, comment):
+        """El ÚNICO camino de lectura dentro de un servidor importado."""
+        params = self.env["ir.config_parameter"].sudo()
+        document = params.get_param(DISCOVERY_DOCUMENT_PARAM,
+                                     DISCOVERY_DOCUMENT_DEFAULT)
+        bucket = params.get_param(DISCOVERY_S3_BUCKET_PARAM) or None
+        output = ssm.run_document(
+            self.aws_instance_id, document, region=region,
+            comment="%s: %s" % (comment, self.name), timeout=600,
+            output_s3_bucket=bucket,
+            output_s3_prefix="pcm-readonly-discovery" if bucket else None)
+        return dict(output, document=document)
+
+    @staticmethod
+    def _twin_parse(stdout):
+        chunks = [line[len("PCM_TWIN_B64:"):] for line in stdout.splitlines()
+                  if line.startswith("PCM_TWIN_B64:")]
+        if not chunks or "PCM_TWIN_OK" not in stdout:
+            raise UserError(_(
+                "El discovery no devolvió el gemelo completo: la salida "
+                "inline de SSM se corta en 24.000 caracteres (servidor con "
+                "muchas instancias) o el script se interrumpió. Configurá un "
+                "bucket en «%s» para recibir la salida completa por S3.",
+                DISCOVERY_S3_BUCKET_PARAM))
+        blob = "".join(chunks)
+        return json.loads(gzip.decompress(base64.b64decode(blob)).decode())
+
+    def _twin_apply(self, twin):
+        """El gemelo de ESTE servidor, volcado en su entorno."""
+        self.ensure_one()
+        if not self.environment_id:
+            raise UserError(_("El servidor no tiene entorno en PCM."))
+        return self._twin_apply_to(self.environment_id, twin, machine=self)
+
+
+class PrimateCloudEnvironmentTwin(models.Model):
+    _name = "primate.cloud.environment"
+    _inherit = ["primate.cloud.environment", "primate.cloud.twin.mixin"]
+
+    def _twin_apply(self, twin):
+        """Gemelo volcado directo en el entorno (sin máquina AWS)."""
+        self.ensure_one()
+        return self._twin_apply_to(self, twin, machine=None)

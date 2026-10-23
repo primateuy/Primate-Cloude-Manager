@@ -222,6 +222,15 @@ class PrimateCloudAccount(models.Model):
     # ------------------------------------------------------------------
     # Sesión AWS
     # ------------------------------------------------------------------
+    # Regla dura 2026-10-22 (IAM en dos usuarios): la cuenta de
+    # APROVISIONAMIENTO no importa nada ajeno — ni EC2 sin la etiqueta de PCM,
+    # ni DNS, ni RDS. Lo ajeno lo observa SOLO la cuenta de solo lectura.
+    provision_only = fields.Boolean(
+        string="Solo aprovisionamiento",
+        help="La cuenta solo gestiona lo que crea PCM: el sync y la "
+             "importación ignoran todo recurso sin primate:managed_by=pcm. "
+             "Usala con el usuario IAM pcm-prod-prov.")
+
     def _get_aws_service(self):
         """Construye el adaptador :class:`AwsBaseService` para esta cuenta.
 
@@ -971,11 +980,13 @@ class PrimateCloudAccount(models.Model):
             ec2_res = self.env["primate.cloud.ec2.instance"]._sync_from_aws(
                 self, ec2.list_instances(region=region)
             )
-            rds_res = self.env["primate.cloud.database"]._sync_rds_from_aws(
-                self, rds.list_instances(region=region)
-            )
+            rds_res = {"created": 0, "updated": 0, "skipped": 0} \
+                if self.provision_only else \
+                self.env["primate.cloud.database"]._sync_rds_from_aws(
+                    self, rds.list_instances(region=region))
             dns_created = dns_updated = 0
-            for zone in route53.list_zones():
+            zonas = [] if self.provision_only else route53.list_zones()
+            for zone in zonas:
                 dns_res = self.env["primate.cloud.dns.record"]._sync_from_aws(
                     self, route53.list_records(zone["id"])
                 )
