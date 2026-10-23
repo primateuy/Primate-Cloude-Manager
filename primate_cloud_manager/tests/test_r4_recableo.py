@@ -1059,7 +1059,7 @@ class TestR4B5Staging(TransactionCase):
             "status": "Success",
             "stdout": ("PCM_BOOTSTRAP_OK\nPCM_INSTALL_OK\n"
                        "PCM_DUMP_SIZE_BYTES=1\nPCM_FS_SIZE_BYTES=1\n"
-                       "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_NEUTRALIZED\n"
+                       "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_CHECKLIST_OK\n"
                        "PCM_RESTORE_OK")}
         params = {"region": "us-east-1", "db_name": "prod_staging",
                   "db_password": "PgPass_x", "domain": "stg.pcm.test",
@@ -1111,7 +1111,7 @@ class TestR4B5Staging(TransactionCase):
         fake = mock.Mock()
         fake.run_script.return_value = {
             "status": "Success",
-            "stdout": "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_RESTORE_OK"}
+            "stdout": "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_CHECKLIST_OK\nPCM_RESTORE_OK"}
         called = {}
         with mock.patch.object(aws_s3.AwsS3Service, "head_object",
                                return_value={"key": "k"}), \

@@ -183,7 +183,7 @@ class TestStaging(TransactionCase):
         fake_ssm.run_script.return_value = {
             "status": "Success",
             "stdout": "PCM_DUMP_SIZE_BYTES=1048576\nPCM_FS_SIZE_BYTES=0\n"
-                      "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_NEUTRALIZED\n"
+                      "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_CHECKLIST_OK\n"
                       "PCM_RESTORE_OK",
             "stderr": "",
         }
@@ -248,7 +248,7 @@ class TestStaging(TransactionCase):
         fake_ssm.run_script.return_value = {
             "status": "Success",
             "stdout": "PCM_DUMP_SIZE_BYTES=1048576\nPCM_FS_SIZE_BYTES=0\n"
-                      "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_NEUTRALIZED\n"
+                      "PCM_BACKUP_OK\nPCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_CHECKLIST_OK\n"
                       "PCM_RESTORE_OK",
             "stderr": "",
         }

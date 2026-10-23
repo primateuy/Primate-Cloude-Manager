@@ -1262,7 +1262,7 @@ class TestBackupRestore(TransactionCase):
         ssm = mock.Mock()
         ssm.run_script.return_value = ssm_output or {
             "status": "Success",
-            "stdout": "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_RESTORE_OK",
+            "stdout": "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_CHECKLIST_OK\nPCM_RESTORE_OK",
         }
         pre_record = self.env["primate.cloud.backup"].create({
             "name": "Pre-restore x", "environment_id": target.id,
@@ -1652,7 +1652,7 @@ class TestStagingInstanceAware(TransactionCase):
         ssm = mock.Mock()
         ssm.run_script.return_value = {
             "status": "Success",
-            "stdout": "PCM_NEUTRALIZED\nPCM_RESTORE_OK",
+            "stdout": "PCM_NEUTRALIZED\nPCM_CHECKLIST_OK\nPCM_RESTORE_OK",
         }
         with mock.patch.object(aws_s3.AwsS3Service, "head_object",
                                return_value={"key": "k"}), \

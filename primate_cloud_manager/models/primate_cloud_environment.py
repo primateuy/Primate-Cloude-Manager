@@ -58,6 +58,8 @@ HEALTH_PROBE_TIMEOUT = 10
 
 # --- HTTPS (D-R3.9 endurecida, 2026-10-22) ---
 SSL_LE_EMAIL = "ops@primate.uy"
+SSM_LONG_TIMEOUT_PARAM = "pcm.ssm_long_timeout_seconds"
+SSM_LONG_TIMEOUT_DEFAULT = 4 * 3600   # restore/backup de bases grandes
 SSL_RETRY_MAX = 6              # ejecuciones REALES de certbot (rate limits LE)
 SSL_INSYNC_POLLS = 24          # GetChange hasta INSYNC: 24 × 5 s ≈ 2 min
 SSL_INSYNC_POLL_SECONDS = 5
@@ -3060,6 +3062,22 @@ class PrimateCloudEnvironment(models.Model):
         )
 
     @api.model
+    @api.model
+    def _ssm_long_timeout(self):
+        """Tope (s) de los comandos SSM largos: restore y backup.
+
+        Una base grande (Barraca Julia: 11 GB de zip, 12,8 GB de SQL y 262 mil
+        archivos) no entra en la hora del default de AWS-RunShellScript. Este
+        valor viaja como executionTimeout al agente y es también lo que PCM
+        espera. Parámetro ``pcm.ssm_long_timeout_seconds``; default 4 h.
+        """
+        value = self.env["ir.config_parameter"].sudo().get_param(
+            SSM_LONG_TIMEOUT_PARAM, str(SSM_LONG_TIMEOUT_DEFAULT))
+        try:
+            return max(int(value), 3600)
+        except (TypeError, ValueError):
+            return SSM_LONG_TIMEOUT_DEFAULT
+
     def _render_neutralization_sql(self, staging_url):
         """Lee neutralization.sql y reemplaza el token %%STAGING_URL%%."""
         with file_open(NEUTRALIZATION_SQL_PATH, "r") as sql_file:
@@ -3578,7 +3596,7 @@ class PrimateCloudEnvironment(models.Model):
                 ),
                 region=instance.region or region,
                 comment="pcm backup: %s" % database.name,
-                timeout=3600,
+                timeout=self._ssm_long_timeout(),
                 # check=False: el except de abajo es SOLO para SSM inaccesible;
                 # un comando que corre y falla lo detecta el status+PCM_BACKUP_OK.
                 check=False,
@@ -3912,7 +3930,7 @@ class PrimateCloudEnvironment(models.Model):
                     neutralize_sql=neutralize_sql),
                 region=instance.region or region,
                 comment="pcm restore: %s" % db_name,
-                timeout=3600,
+                timeout=self._ssm_long_timeout(),
                 # check=False: el except de abajo es SOLO para SSM inaccesible;
                 # un comando que corre y falla lo detecta el status+PCM_RESTORE_OK.
                 check=False,
@@ -3939,7 +3957,12 @@ class PrimateCloudEnvironment(models.Model):
                 "unit. Detalle: %s") % (stderr or stdout).strip()[-2000:],
                 result="partial")
         if output.get("status") != "Success" or "PCM_RESTORE_OK" not in stdout:
-            error_text = stderr or stdout or output.get("status")
+            # La cola del log (stdout) dice QUÉ falló; el stderr de SSM suele
+            # ser sólo «failed to run commands: exit status 1».
+            error_text = ("%s%s" % (stdout.strip()[-2000:],
+                                    " · stderr: %s" % stderr.strip()[-500:]
+                                    if stderr.strip() else "")
+                          if stdout.strip() else stderr or output.get("status"))
             if "PCM_ERROR_PG_MISMATCH" in stdout + stderr:
                 error_text = _(
                     "Versión de PostgreSQL incompatible: el dump viene de una "
@@ -3975,10 +3998,19 @@ class PrimateCloudEnvironment(models.Model):
                     "El restore terminó sin confirmar la neutralización. NO "
                     "usar el entorno hasta verificarla a mano."),
                     result="partial")
+            if "PCM_CHECKLIST_OK" not in stdout:
+                return fail(_(
+                    "El restore terminó sin el checklist de SELECTs en verde: "
+                    "la base NO se rotula neutralizada. Verificarla a mano."),
+                    result="partial")
+            checks = marcas.get("checks") or {}
+            resumen = ", ".join("%s=%s" % kv for kv in checks.items())
             self.staging_neutralization_log = _(
-                "Neutralizada dentro del restore, antes de arrancar Odoo.")
+                "Neutralizada dentro del restore, antes de arrancar Odoo. "
+                "Checklist en verde: %s") % resumen
             self.message_post(body=_(
-                "Base neutralizada para staging (antes de arrancar Odoo)."))
+                "Base neutralizada (antes de arrancar Odoo). Checklist de "
+                "SELECTs en verde: %s") % resumen)
 
         # 7. Registro de la base destino (si no existía) + bitácora.
         if not target_db:
@@ -4269,6 +4301,9 @@ class PrimateCloudEnvironment(models.Model):
                 datos["filestore_files"] = linea.split("=", 1)[1].strip()
             elif linea.startswith("PCM_WARNING_ROLE"):
                 datos["warning_role"] = linea[len("PCM_WARNING_ROLE"):].strip()
+            elif linea.startswith("PCM_CHECK ") and "=" in linea:
+                clave, valor = linea[len("PCM_CHECK "):].split("=", 1)
+                datos.setdefault("checks", {})[clave.strip()] = valor.strip()
         return datos
 
     def _restore_borrar_origen(self, origen, account, region):
@@ -4426,8 +4461,87 @@ class PrimateCloudEnvironment(models.Model):
                 "-v ON_ERROR_STOP=1 -d %s; then PCM_NEUTRALIZED=1; "
                 '%s "PCM_NEUTRALIZED"; else %s "PCM_NEUTRALIZE_FAILED"; exit 1; fi'
                 % (shlex.quote(b64), db, say, say),
-            ],
+            ] + PrimateCloudEnvironment._restore_lineas_checklist(
+                db, say, PrimateCloudEnvironment._neutralized_url(sql)),
         }
+
+    @staticmethod
+    def _neutralized_url(sql):
+        """La web.base.url que fija el SQL de neutralización ('' si no fija)."""
+        match = re.search(
+            r"SET value = '([^']*)' WHERE key = 'web\.base\.url'", sql or "")
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _restore_lineas_checklist(db, say, expected_url):
+        """Checklist de SELECTs del framework de migración, DESPUÉS de
+        neutralizar y con Odoo todavía parado (2026-10-23).
+
+        «Neutralizada» no se declara por haber corrido el SQL: se declara con
+        los SELECTs en verde. Cada valor sale como ``PCM_CHECK clave=valor``
+        (la bitácora lo muestra). Si algo da rojo —SMTP activo o con
+        credenciales, crons activos, correo en cola, un website con dominio o
+        una web.base.url que no es la esperada—, la neutralización cuenta como
+        FALLIDA: PCM_NEUTRALIZED vuelve a 0 y la unit no arranca.
+
+        Los conteos de módulos y adjuntos son informativos (el operador los
+        compara contra el origen). Las tablas que dependen de módulos se miran
+        con query_to_xml detrás de to_regclass: un SELECT directo sobre una
+        tabla inexistente no compila aunque esté dentro de un CASE.
+        """
+        def opcional(tabla, consulta):
+            return ("(case when to_regclass('public.%s') is null then 0 "
+                    "else (xpath('/row/c/text()', query_to_xml('%s', false, "
+                    "true, '')))[1]::text::int end)" % (tabla, consulta))
+
+        sql = "\n".join([
+            "select 'modules_installed=' || (select count(*) from "
+            "ir_module_module where state = 'installed')",
+            "union all select 'attachments_stored=' || (select count(*) from "
+            "ir_attachment where store_fname is not null)",
+            "union all select 'smtp_active=' || (select count(*) from "
+            "ir_mail_server where active)",
+            "union all select 'smtp_with_credentials=' || (select count(*) "
+            "from ir_mail_server where coalesce(smtp_user, '') <> '' or "
+            "coalesce(smtp_pass, '') <> '')",
+            "union all select 'fetchmail_active=' || %s" % opcional(
+                "fetchmail_server",
+                "select count(*) as c from fetchmail_server where active"),
+            "union all select 'crons_active=' || (select count(*) from "
+            "ir_cron where active)",
+            "union all select 'mail_pending=' || %s" % opcional(
+                "mail_mail", "select count(*) as c from mail_mail where "
+                "state in (''outgoing'', ''exception'')"),
+            "union all select 'website_with_domain=' || %s" % opcional(
+                "website", "select count(*) as c from website where "
+                "domain is not null"),
+            "union all select 'web_base_url=' || coalesce((select value from "
+            "ir_config_parameter where key = 'web.base.url'), '')",
+            ";",
+        ])
+        b64 = base64.b64encode(sql.encode("utf-8")).decode("ascii")
+        rojos = ("smtp_active smtp_with_credentials fetchmail_active "
+                 "crons_active mail_pending website_with_domain")
+        return [
+            "PCM_CHK=$(printf '%%s' %s | base64 -d | sudo -u postgres psql "
+            "-tA -v ON_ERROR_STOP=1 -d %s) || { PCM_NEUTRALIZED=0; "
+            '%s "PCM_NEUTRALIZE_FAILED checklist: los SELECTs no corrieron"; '
+            "exit 1; }" % (shlex.quote(b64), db, say),
+            'while IFS= read -r PCM_L; do [ -n "$PCM_L" ] && '
+            '%s "PCM_CHECK $PCM_L"; done <<< "$PCM_CHK"' % say,
+            "PCM_ROJO=$(printf '%%s\\n' \"$PCM_CHK\" | awk -F= -v r=%s "
+            "'BEGIN { n = split(r, k, \" \"); for (i = 1; i <= n; i++) "
+            "m[k[i]] = 1 } ($1 in m) && $2 != \"0\" { printf \"%%s \", $0 }')"
+            % shlex.quote(rojos),
+            'PCM_URL=$(printf \'%s\\n\' "$PCM_CHK" | sed -n '
+            "'s/^web_base_url=//p')",
+            'if [ "$PCM_URL" != %s ]; then PCM_ROJO="${PCM_ROJO}'
+            'web_base_url=$PCM_URL "; fi' % shlex.quote(expected_url),
+            'if [ -n "$PCM_ROJO" ]; then PCM_NEUTRALIZED=0; '
+            '%s "PCM_NEUTRALIZE_FAILED checklist en rojo: $PCM_ROJO"; exit 1; fi'
+            % say,
+            '%s "PCM_CHECKLIST_OK"' % say,
+        ]
 
     @api.model
     def _build_restore_script_catalogo(self, db_name, backup, has_filestore,
@@ -4685,6 +4799,11 @@ class PrimateCloudEnvironment(models.Model):
             # fallos POSTERIORES (un psql que muere a mitad), no para un caso
             # evitable. El espacio ya se validó arriba con NEED2.
             '  unzip -q -o "$FNAME" -d "$WORK/x"',
+            # Permisos normalizados: un zip armado sin atributos de archivo
+            # (p. ej. con zipfile de Python) extrae todo en modo 000, y ni
+            # postgres puede leer el dump ni Odoo el filestore (visto en el
+            # ensayo de Barraca Julia del 2026-10-23: «Permission denied»).
+            '  chmod -R u+rwX,go+rX "$WORK/x"',
             '  if [ ! -f "$WORK/x/dump.sql" ]; then '
             'say "PCM_ERROR: el zip no tiene dump.sql (no es un backup de '
             'Odoo)"; exit 1; fi',

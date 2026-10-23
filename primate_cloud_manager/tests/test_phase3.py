@@ -55,6 +55,26 @@ class TestSsmService(TransactionCase):
         self.assertEqual(out["stdout"], "ok")
         self.assertEqual(out["command_id"], "cmd-1")
 
+    def test_run_script_largo_le_pide_el_mismo_tope_al_agente(self):
+        """Sin executionTimeout, AWS-RunShellScript mata el script a la hora
+        aunque PCM espere más (restore de una base grande)."""
+        base, client = _base_with_client()
+        client.send_command.return_value = {"Command": {"CommandId": "cmd-1"}}
+        client.get_command_invocation.return_value = {
+            "Status": "Success", "StandardOutputContent": "ok", "ResponseCode": 0}
+        ssm = aws_ssm.AwsSsmService(base)
+        ssm.run_script("i-1", "echo ok", timeout=14400, poll_interval=0,
+                       _sleep=lambda s: None)
+        self.assertEqual(
+            client.send_command.call_args.kwargs["Parameters"],
+            {"commands": ["echo ok"], "executionTimeout": ["14400"]})
+        # Hasta la hora, el comando viaja como siempre (sin el parámetro).
+        ssm.run_script("i-1", "echo ok", timeout=900, poll_interval=0,
+                       _sleep=lambda s: None)
+        self.assertEqual(
+            client.send_command.call_args.kwargs["Parameters"],
+            {"commands": ["echo ok"]})
+
     def test_run_script_espera_agente_y_reintenta(self):
         # El agente SSM no está listo: el primer SendCommand falla, el segundo va.
         base, client = _base_with_client()

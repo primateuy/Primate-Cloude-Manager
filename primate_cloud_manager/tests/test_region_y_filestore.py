@@ -148,7 +148,7 @@ class TestMensajeFilestore(TransactionCase):
     def test_filestore_restaurado_con_su_cantidad(self):
         ok, chatter, log = self._restore(
             "PCM_FORMAT=odoo_zip\nPCM_DROP_STARTED\nPCM_FILESTORE_OK /opt/x\n"
-            "PCM_FILESTORE_FILES=2470\nPCM_NEUTRALIZED\nPCM_RESTORE_OK")
+            "PCM_FILESTORE_FILES=2470\nPCM_NEUTRALIZED\nPCM_CHECKLIST_OK\nPCM_RESTORE_OK")
         self.assertTrue(ok)
         for texto in (chatter, log):
             self.assertIn("Filestore restaurado (2470 archivos)", texto)
@@ -157,7 +157,7 @@ class TestMensajeFilestore(TransactionCase):
     def test_sin_filestore_en_el_origen(self):
         ok, chatter, log = self._restore(
             "PCM_FORMAT=custom\nPCM_DROP_STARTED\nPCM_FILESTORE_SKIP\n"
-            "PCM_NEUTRALIZED\nPCM_RESTORE_OK")
+            "PCM_NEUTRALIZED\nPCM_CHECKLIST_OK\nPCM_RESTORE_OK")
         self.assertTrue(ok)
         self.assertIn("Sin filestore en el origen", chatter)
         self.assertNotIn("el backup no tenía", chatter)

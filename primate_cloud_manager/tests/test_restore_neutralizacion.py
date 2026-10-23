@@ -115,6 +115,23 @@ class TestRestoreNeutralizaAntesDeArrancar(TransactionCase):
                      script.rindex("PCM_RESTORE_OK")]
             self.assertEqual(orden, sorted(orden), script)
 
+    def test_zip_extraido_con_permisos_normalizados(self):
+        """Un zip sin atributos de archivo extrae en modo 000: se normaliza
+        antes de que postgres lea el dump o Odoo el filestore."""
+        _catalogo, externo = self._scripts()
+        unzip = externo.index('unzip -q -o "$FNAME" -d "$WORK/x"')
+        chmod = externo.index('chmod -R u+rwX,go+rX "$WORK/x"')
+        carga = externo.rindex('-f "$WORK/x/dump.sql"')
+        self.assertLess(unzip, chmod)
+        self.assertLess(chmod, carga)
+
+    def test_job_fallido_muestra_la_cola_del_log(self):
+        ok, _script, log = self._job(
+            "PCM_DROP_STARTED\n/var/tmp/x/dump.sql: Permission denied",
+            status="Failed")
+        self.assertFalse(ok)
+        self.assertIn("Permission denied", log.error_message)
+
     def test_el_trap_arranca_solo_por_pcm_start_unit(self):
         """El único ``systemctl start`` está dentro de pcm_start_unit."""
         for script in self._scripts():
@@ -231,7 +248,8 @@ class TestRestoreNeutralizaAntesDeArrancar(TransactionCase):
 
     def test_job_neutraliza_dentro_del_script(self):
         ok, script, log = self._job(
-            "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_RESTORE_OK")
+            "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_CHECK smtp_active=0\n"
+            "PCM_CHECK modules_installed=115\nPCM_CHECKLIST_OK\nPCM_RESTORE_OK")
         self.assertTrue(ok)
         self.assertEqual(log.result, "success")
         self.assertIn("pcm_start_unit", script)
@@ -241,6 +259,117 @@ class TestRestoreNeutralizaAntesDeArrancar(TransactionCase):
         self.assertIn("UPDATE website SET domain = NULL", sql)
         self.assertIn("antes de arrancar Odoo",
                       self.env_srv.staging_neutralization_log)
+        self.assertIn("modules_installed=115",
+                      self.env_srv.staging_neutralization_log)
+
+    def test_job_sin_checklist_no_se_rotula_neutralizada(self):
+        """El SQL corrió pero los SELECTs no confirmaron: parcial."""
+        ok, _script, log = self._job(
+            "PCM_DROP_STARTED\nPCM_NEUTRALIZED\nPCM_RESTORE_OK")
+        self.assertFalse(ok)
+        self.assertEqual(log.result, "partial")
+        self.assertIn("SELECTs", log.error_message)
+
+    def test_job_espera_el_tope_largo(self):
+        """El restore de una base grande no entra en la hora del agente."""
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.ssm_long_timeout_seconds", "7200")
+        fake = mock.Mock()
+        fake.run_script.return_value = {
+            "status": "Success", "stderr": "",
+            "stdout": "PCM_NEUTRALIZED\nPCM_CHECKLIST_OK\nPCM_RESTORE_OK"}
+        with mock.patch.object(aws_s3.AwsS3Service, "head_object",
+                               return_value={"key": "k", "size": 1}), \
+                mock.patch.object(type(self.machine), "_get_ssm_service",
+                                  return_value=fake):
+            self.env_srv.job_restore_backup({
+                "backup_id": self.backup.id, "db_name": "barraca_julia",
+                "instance_id": self.machine.id, "pre_backup": False})
+        self.assertEqual(fake.run_script.call_args.kwargs["timeout"], 7200)
+        self.assertEqual(self.Env._ssm_long_timeout(), 7200)
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.ssm_long_timeout_seconds", "60")
+        self.assertEqual(self.Env._ssm_long_timeout(), 3600)  # nunca menos
+
+    # ------------------------------------------------------------------
+    # 3. El checklist de SELECTs, EJECUTADO en bash
+    # ------------------------------------------------------------------
+    URL = "https://bj.1-2-3-4.sslip.io"
+    VERDE = "\n".join([
+        "modules_installed=115", "attachments_stored=265195",
+        "smtp_active=0", "smtp_with_credentials=0", "fetchmail_active=0",
+        "crons_active=0", "mail_pending=0", "website_with_domain=0",
+        "web_base_url=https://bj.1-2-3-4.sslip.io"])
+
+    def _bash_checklist(self, salida_selects):
+        sql = ("UPDATE ir_config_parameter SET value = '%s' WHERE key = "
+               "'web.base.url';" % self.URL)
+        piezas = self.Env._restore_lineas_neutralizacion(
+            "barraca_julia", "odoo-bj", sql, "say")
+        script = "\n".join([
+            "set -euo pipefail",
+            'say() { echo "$*"; }',
+            'systemctl() { echo "ARRANCA $2"; }',
+            # psql simulado: el SQL de los SELECTs devuelve el fixture; el de
+            # la neutralización se consume.
+            'sudo() { q=$(cat); case "$q" in *modules_installed*) '
+            'printf "%s\\n" "$FIXTURE" ;; *) : ;; esac; }',
+        ] + piezas["init"] + [
+            "trap '%s' EXIT" % piezas["start"],
+            "PCM_DROPPED=1",
+        ] + piezas["apply"] + ["say PCM_RESTORE_OK"])
+        return subprocess.run(["bash", "-c", script], capture_output=True,
+                              text=True, timeout=20,
+                              env={"FIXTURE": salida_selects,
+                                   "PATH": "/usr/bin:/bin"})
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("base64"),
+                         "requiere bash y base64")
+    def test_bash_checklist_verde_arranca(self):
+        r = self._bash_checklist(self.VERDE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("PCM_CHECK modules_installed=115", r.stdout)
+        self.assertIn("PCM_CHECK web_base_url=%s" % self.URL, r.stdout)
+        self.assertIn("PCM_CHECKLIST_OK", r.stdout)
+        self.assertIn("ARRANCA odoo-bj", r.stdout)
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("base64"),
+                         "requiere bash y base64")
+    def test_bash_checklist_rojo_no_arranca(self):
+        for clave in ("smtp_active", "smtp_with_credentials", "crons_active",
+                      "mail_pending", "website_with_domain",
+                      "fetchmail_active"):
+            with self.subTest(clave=clave):
+                rojo = self.VERDE.replace("%s=0" % clave, "%s=2" % clave)
+                r = self._bash_checklist(rojo)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("PCM_NEUTRALIZE_FAILED checklist en rojo: "
+                              "%s=2" % clave, r.stdout)
+                self.assertIn("PCM_UNIT_LEFT_STOPPED", r.stdout)
+                self.assertNotIn("ARRANCA", r.stdout)
+                self.assertNotIn("PCM_CHECKLIST_OK", r.stdout)
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("base64"),
+                         "requiere bash y base64")
+    def test_bash_checklist_url_de_produccion_no_arranca(self):
+        r = self._bash_checklist(self.VERDE.replace(
+            self.URL, "https://barracajulia.primate.com.uy"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("web_base_url=https://barracajulia.primate.com.uy",
+                      r.stdout)
+        self.assertNotIn("ARRANCA", r.stdout)
+
+    def test_checklist_sql_de_los_selects(self):
+        """Lo que se consulta, leído del base64 que viaja."""
+        lineas = self.Env._restore_lineas_checklist("db", "say", self.URL)
+        b64 = re.search(r"printf '%s' (\S+) \| base64 -d", lineas[0]).group(1)
+        sql = base64.b64decode(b64.strip("'")).decode()
+        for pedazo in ("state = 'installed'", "from ir_mail_server where active",
+                       "smtp_user", "smtp_pass", "from ir_cron where active",
+                       "to_regclass('public.website')",
+                       "to_regclass('public.mail_mail')",
+                       "key = 'web.base.url'"):
+            self.assertIn(pedazo, sql)
 
     def test_job_sin_marcador_de_neutralizacion_no_es_exito(self):
         ok, _script, log = self._job("PCM_DROP_STARTED\nPCM_RESTORE_OK")

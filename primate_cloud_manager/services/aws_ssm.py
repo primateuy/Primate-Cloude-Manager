@@ -10,6 +10,8 @@ import time
 SSM_TERMINAL_STATES = {"Success", "Failed", "Cancelled", "TimedOut"}
 
 # Documento estándar de AWS para correr comandos de shell en Linux.
+# Tope por defecto del agente para AWS-RunShellScript (executionTimeout).
+SSM_DEFAULT_EXECUTION_TIMEOUT = 3600
 RUN_SHELL_DOCUMENT = "AWS-RunShellScript"
 
 # Señales de que el agente SSM aún no está registrado tras arrancar la EC2.
@@ -69,7 +71,8 @@ class AwsSsmService:
         """
         self._base = base
 
-    def send_command(self, instance_id, commands, region=None, comment=None):
+    def send_command(self, instance_id, commands, region=None, comment=None,
+                     execution_timeout=None):
         """Envía un comando de shell a una instancia.
 
         Args:
@@ -77,17 +80,23 @@ class AwsSsmService:
             commands (str|list[str]): comando(s) a ejecutar.
             region (str, optional): región de la instancia.
             comment (str, optional): comentario para trazabilidad en SSM.
+            execution_timeout (int, optional): segundos que el AGENTE deja
+                correr el script antes de matarlo. Sin esto vale el default
+                de AWS-RunShellScript: 3600 s, aunque PCM espere más.
 
         Returns:
             str: CommandId de la invocación.
         """
         if isinstance(commands, str):
             commands = [commands]
+        parameters = {"commands": commands}
+        if execution_timeout:
+            parameters["executionTimeout"] = [str(int(execution_timeout))]
         client = self._base.get_client("ssm", region=region)
         response = client.send_command(
             InstanceIds=[instance_id],
             DocumentName=RUN_SHELL_DOCUMENT,
-            Parameters={"commands": commands},
+            Parameters=parameters,
             Comment=(comment or "primate_cloud_manager")[:100],
         )
         return response["Command"]["CommandId"]
@@ -206,7 +215,8 @@ class AwsSsmService:
         }
 
     def _send_waiting_for_agent(
-        self, instance_id, script, region, comment, agent_timeout, agent_poll, _sleep
+        self, instance_id, script, region, comment, agent_timeout, agent_poll, _sleep,
+        execution_timeout=None,
     ):
         """Envía el comando reintentando hasta que el agente SSM esté online.
 
@@ -221,11 +231,14 @@ class AwsSsmService:
             Exception: el último error si el agente no aparece dentro del timeout.
         """
         waited = 0
+        extra = {}
+        if execution_timeout:
+            extra["execution_timeout"] = execution_timeout
         while True:
             try:
                 return self.send_command(
-                    instance_id, script, region=region, comment=comment
-                )
+                    instance_id, script, region=region, comment=comment,
+                    **extra)
             except Exception as error:  # noqa: BLE001 - se evalúa si es transitorio
                 transient = any(sig in str(error) for sig in SSM_AGENT_NOT_READY)
                 if not transient or waited >= agent_timeout:
@@ -266,7 +279,10 @@ class AwsSsmService:
                 que evalúan el ``status`` del dict devuelto — y es una DECISIÓN
                 explícita, no el default. No aplica con ``wait=False`` (no hay
                 estado terminal que chequear).
-            timeout (int): segundos máximos de espera del resultado.
+            timeout (int): segundos máximos de espera del resultado. Si pasa
+                de 3600 (el tope por defecto del agente), se le pide al agente
+                el mismo tope: si no, AWS mata el script a la hora mientras PCM
+                sigue esperando.
             poll_interval (int): segundos entre consultas de estado.
             agent_timeout (int): segundos máximos esperando que el agente SSM aparezca.
             agent_poll (int): segundos entre reintentos de envío.
@@ -280,7 +296,9 @@ class AwsSsmService:
             SsmCommandError: si ``check`` y el comando no terminó en ``Success``.
         """
         command_id = self._send_waiting_for_agent(
-            instance_id, script, region, comment, agent_timeout, agent_poll, _sleep
+            instance_id, script, region, comment, agent_timeout, agent_poll, _sleep,
+            execution_timeout=(timeout if timeout > SSM_DEFAULT_EXECUTION_TIMEOUT
+                               else None),
         )
         if not wait:
             return {"command_id": command_id, "status": "Pending"}
