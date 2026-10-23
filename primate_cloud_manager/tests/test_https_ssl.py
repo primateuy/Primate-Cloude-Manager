@@ -494,3 +494,14 @@ class TestHttpsSsl(TransactionCase):
                     self.assertTrue(self.server.job_install_instance(params))
                 self.assertFalse(dns.called, "sin create_dns no se toca Route 53")
                 self.assertEqual(ssl.called, esperado)
+
+    def test_produccion_reemplaza_un_certificado_de_staging(self):
+        """Linaje de staging + pedido de producción → --force-renewal (si no,
+        certbot -n se queda con el de prueba)."""
+        fake = FakeSsm(respuestas_ok())
+        self._ciclo(fake)
+        script = [c["script"] for c in fake.calls if "certbot" in c["comment"]][0]
+        self.assertIn("acme-staging", script)
+        self.assertIn("--force-renewal", script)
+        self.assertIn("$EXTRA", script)
+        self.assertNotIn("--staging", script)

@@ -2191,12 +2191,21 @@ class PrimateCloudEnvironment(models.Model):
                          use_staging):
         """Ejecuta certbot --nginx por SSM. Returns (ok, detalle)."""
         staging_flag = " --staging" if use_staging else ""
+        # Un linaje de STAGING ya existente (p. ej. el parámetro quedó en True
+        # en un ensayo) no se reemplaza solo: certbot -n se queda con él porque
+        # no está vencido. Pidiendo producción, se fuerza la reemisión.
+        force = "" if use_staging else (
+            'if grep -qs "acme-staging" /etc/letsencrypt/renewal/%(d)s.conf; '
+            'then EXTRA="--force-renewal"; fi\n' % {"d": domain})
         script = (
             "set -e\n"
+            'EXTRA=""\n'
+            "%(force)s"
             "certbot --nginx -n --agree-tos --redirect -m %(mail)s "
-            "-d %(domain)s%(staging)s\n"
+            "-d %(domain)s%(staging)s $EXTRA\n"
             "nginx -t && systemctl reload nginx\n"
             'echo "PCM_SSL_OK"' % {
+                "force": force,
                 "mail": shlex.quote(SSL_LE_EMAIL),
                 "domain": shlex.quote(domain),
                 "staging": staging_flag,
