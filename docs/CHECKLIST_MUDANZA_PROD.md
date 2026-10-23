@@ -4,6 +4,19 @@ Orden obligatorio. No se pasa al paso siguiente sin cerrar el anterior.
 Todo lo importado es **solo lectura sin excepción** (UI, modelo, cerrojo de
 frontera e IAM). Detalle de IAM y del simulador: [`docs/iam/README.md`](iam/README.md).
 
+## ⛔ Regla del día (para Claude, sin excepción)
+
+Claude **no ejecuta ningún comando directo contra servidores o cuentas
+productivas**: ni `ssh`, ni `aws` cli, ni `rm`, ni nada equivalente. Todo pasa
+por PCM: lectura e importación con la cuenta de **`pcm-prod-readonly`**, y la
+provisión de Barraca Julia con la de **`pcm-prod-provision`**. Si algo
+requiere salirse de eso, Claude **frena y le pregunta a Daryl** antes de
+hacer nada.
+
+Los pocos comandos directos de este checklist (Policy Simulator, listado de
+la llave de propiedad, gemelo de Cloudpepper por ssh) los corre **Daryl**
+desde su máquina; Claude solo los prepara.
+
 ---
 
 ## 1. Enlace con la cuenta de SOLO LECTURA
@@ -17,7 +30,13 @@ frontera e IAM). Detalle de IAM y del simulador: [`docs/iam/README.md`](iam/READ
    `TerminateInstances`/`StopInstances` → **explicitDeny**;
    `SendCommand` con `AWS-RunShellScript` → **implicitDeny**;
    `SendCommand` con `pcm-readonly-discovery` → **allowed**.
-4. En PCM: Cuentas AWS → nueva cuenta «Prod — solo lectura» con las claves de
+4. **Antes de importar (lo corre Daryl):** listar todo recurso productivo que
+   YA tenga la llave `primate:managed_by` (comando de solo lectura en
+   `docs/iam/README.md`, «Antes de importar»). **Esperado: vacío.** Si aparece
+   algo, se frena: un recurso ajeno con la llave quedaría operable por
+   `pcm-prod-prov`. Se averigua quién la puso y se resuelve fuera de PCM antes
+   de seguir.
+5. En PCM: Cuentas AWS → nueva cuenta «Prod — solo lectura» con las claves de
    `pcm-prod-ro`. **Validar conexión.** (*Solo aprovisionamiento*: apagado.)
 
 ## 2. Importación y revisión del gemelo
@@ -33,9 +52,24 @@ frontera e IAM). Detalle de IAM y del simulador: [`docs/iam/README.md`](iam/READ
    después, «Capturar gemelo (solo lectura)» para re-capturar.
 
 ### Cloudpepper (PCM no se conecta: ni API ni SSH)
-1. En cada servidor, con tu acceso habitual:
-   `sudo bash pcm_readonly_discovery.sh > gemelo-<servidor>.txt`
-   (el script está en `primate_cloud_manager/data/`; solo lee, no escribe nada).
+1. Por cada servidor, **desde tu máquina** (lo corre Daryl), en la raíz del repo:
+
+   ```bash
+   ssh <servidor> 'sudo bash -s' \
+     < primate_cloud_manager/data/pcm_readonly_discovery.sh \
+     > gemelo-<servidor>.txt
+   ```
+
+   El script viaja por la entrada de ssh y el gemelo vuelve por la salida:
+   **no se copia nada al servidor ni se escribe nada allá** (tampoco
+   `.git/index` ni `.pyc`: el script los apaga). Si el usuario de ssh ya es
+   root, sacar el `sudo`. La salida **no es JSON plano**: son líneas
+   `PCM_TWIN_B64:…` (JSON comprimido y en base64) cerradas por
+   `PCM_TWIN_OK`. Ese marco permite que PCM detecte una salida cortada, y es
+   lo que espera el asistente. Chequeo rápido:
+   `tail -1 gemelo-<servidor>.txt` → `PCM_TWIN_OK`. Lo único que queda en
+   el servidor es lo que deja cualquier ssh: el login en los logs del
+   sistema y la línea de `sudo` en el log de autenticación.
 2. PCM → Inventario → **Importar servidor de Cloudpepper** → nombre del
    servidor + archivo. Queda marcado «Importado de Cloudpepper».
 
@@ -66,7 +100,9 @@ frontera e IAM). Detalle de IAM y del simulador: [`docs/iam/README.md`](iam/READ
    (`<ZONE_ID>` = zona real del dominio; `<NOMBRES_DNS_DE_PCM>` = el dominio
    de Barraca Julia, ej. `barraca-julia.primate.cloud`). Verificar en el
    simulador: `StopInstances` sobre una instancia importada → **implicitDeny**;
-   `ChangeResourceRecordSets` con un nombre que no es de PCM → **implicitDeny**.
+   `ChangeResourceRecordSets` con un nombre que no es de PCM → **implicitDeny**;
+   `CreateTags` de `primate:managed_by` sobre una instancia existente →
+   **explicitDeny** (caso 3 del README).
 2. En PCM: cuenta nueva «Prod — aprovisionamiento» con las claves de
    `pcm-prod-prov` y **Solo aprovisionamiento** marcado. Validar conexión.
 3. **Zona real**: `Hosted Zone ID` copiado de Route 53 → Hosted zones. Al
