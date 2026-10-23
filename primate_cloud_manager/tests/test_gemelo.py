@@ -279,6 +279,20 @@ class TestGemelo(TransactionCase):
                                   "el discovery contiene algo mutante: %s"
                                   % patron)
 
+    def test_script_apaga_escrituras_laterales(self):
+        """Lecturas que escriben solas: git status refresca .git/index y
+        Python deja .pyc al importar pip. El script las apaga ANTES de
+        arrancar Python (y todo subproceso hereda el entorno)."""
+        with file_open(twin_mod.DISCOVERY_SCRIPT_PATH) as handle:
+            texto = handle.read()
+        antes_de_python = texto.split("python3 - <<", 1)[0]
+        for variable in ("GIT_OPTIONAL_LOCKS=0", "PYTHONDONTWRITEBYTECODE=1",
+                         "PIP_DISABLE_PIP_VERSION_CHECK=1",
+                         "PIP_NO_CACHE_DIR=1"):
+            with self.subTest(variable=variable):
+                self.assertRegex(antes_de_python,
+                                 r"(?m)^export [^\n]*\b%s" % re.escape(variable))
+
     def test_documento_ssm_sincronizado_y_sin_parametros(self):
         """El JSON que se sube a AWS (data/ssm/) es EXACTAMENTE el generado
         de los dos scripts de solo lectura, y no acepta parámetros."""

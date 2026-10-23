@@ -7,11 +7,13 @@
         <field name="arch" type="xml">
             <form string="Importar servidor externo">
                 <div class="alert alert-info" role="alert">
-                    PCM <b>no se conecta</b> a este proveedor. Corré en el
-                    servidor, con tu acceso habitual, el script de solo
-                    lectura <code>pcm_readonly_discovery.sh</code>
-                    (<code>sudo bash pcm_readonly_discovery.sh &gt; gemelo.txt</code>:
-                    no escribe nada en el servidor) y subí acá el archivo.
+                    PCM <b>no se conecta</b> a este proveedor. Desde tu
+                    máquina, con tu acceso habitual, corré el script de solo
+                    lectura <code>pcm_readonly_discovery.sh</code> por ssh:
+                    <code>ssh &lt;servidor&gt; 'sudo bash -s' &lt; pcm_readonly_discovery.sh &gt; gemelo.txt</code>.
+                    El script viaja por la entrada y el gemelo vuelve por la
+                    salida: no se copia ni se escribe nada en el servidor.
+                    Subí acá el <code>gemelo.txt</code>.
                     Lo importado queda en <b>solo lectura</b>, sin excepción.
                 </div>
                 <group>
