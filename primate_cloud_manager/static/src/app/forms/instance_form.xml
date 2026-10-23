@@ -103,6 +103,12 @@
                     </PcmField>
                 </div>
 
+                <!-- HTTPS (D-R3.9 endurecida): por defecto se emite al terminar -->
+                <label class="o_pcm_form_check">
+                    <input type="checkbox" t-att-checked="state.ssl_auto"
+                           t-on-change="(ev) => this.toggle('ssl_auto', ev)"/>
+                    <span>Emitir HTTPS al terminar (Let's Encrypt, apenas el dominio apunte acá)</span>
+                </label>
                 <!-- DNS opcional -->
                 <label class="o_pcm_form_check">
                     <input type="checkbox" t-att-checked="state.create_dns"

@@ -83,6 +83,12 @@ class PrimateCloudProvisionWizard(models.TransientModel):
 
     # --- DNS ---
     create_dns = fields.Boolean(string="Crear registro DNS", default=True)
+    ssl_auto = fields.Boolean(
+        string="Emitir HTTPS al terminar", default=True,
+        help="Let's Encrypt apenas el dominio apunte al servidor (verifica "
+             "propagación antes de gastar un intento). Apagalo si el DNS lo "
+             "apunta el cliente más tarde: queda en HTTP con «Activar HTTPS "
+             "ahora».")
     hosted_zone_id = fields.Char(string="Hosted Zone ID")
     ttl = fields.Integer(string="TTL", default=300)
 
@@ -202,6 +208,7 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             "backup_retention_days": self.backup_retention_days,
             # DNS
             "create_dns": self.create_dns,
+            "ssl_auto": self.ssl_auto,
             "hosted_zone_id": self.hosted_zone_id,
             "ttl": self.ttl,
             # Odoo

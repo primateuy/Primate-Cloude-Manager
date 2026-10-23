@@ -228,6 +228,11 @@
                 <div class="o_pcm_form_section">
                     <div class="o_pcm_form_section_head">DNS</div>
                     <label class="o_pcm_form_check">
+                        <input type="checkbox" t-att-checked="state.ssl_auto"
+                               t-on-change="(ev) => this.toggle('ssl_auto', ev)"/>
+                        <span>Emitir HTTPS al terminar (Let's Encrypt, apenas el dominio apunte acá)</span>
+                    </label>
+                    <label class="o_pcm_form_check">
                         <input type="checkbox" t-att-checked="state.create_dns"
                                t-on-change="(ev) => this.toggle('create_dns', ev)"/>
                         <span>Crear registro DNS en Route 53 para el dominio</span>

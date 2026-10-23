@@ -49,6 +49,7 @@ export class InstanceForm extends Component {
             admin_password: "",
             workers: 0,
             create_dns: false,
+            ssl_auto: true,
             hosted_zone_id: "",
             ttl: 300,
         });
@@ -159,6 +160,7 @@ export class InstanceForm extends Component {
                 admin_password: this.state.admin_password,
                 workers: this.state.workers || 0,
                 create_dns: this.state.create_dns,
+                ssl_auto: this.state.ssl_auto,
                 hosted_zone_id: this.state.hosted_zone_id,
                 ttl: this.state.ttl || 300,
             };

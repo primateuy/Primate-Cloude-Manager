@@ -74,6 +74,12 @@ class PrimateCloudInstanceCreateWizard(models.TransientModel):
              "de sobra.",
     )
     create_dns = fields.Boolean(string="Crear registro DNS")
+    ssl_auto = fields.Boolean(
+        string="Emitir HTTPS al terminar", default=True,
+        help="Let's Encrypt apenas el dominio apunte al servidor (verifica "
+             "propagación antes de gastar un intento). Apagalo si el DNS lo "
+             "apunta el cliente más tarde: queda en HTTP con «Activar HTTPS "
+             "ahora».")
     hosted_zone_id = fields.Char(string="Hosted Zone ID")
     ttl = fields.Integer(string="TTL", default=300)
 
@@ -184,6 +190,7 @@ class PrimateCloudInstanceCreateWizard(models.TransientModel):
             "admin_password": self.admin_password,
             "workers": self.workers,
             "create_dns": self.create_dns,
+            "ssl_auto": self.ssl_auto,
             "hosted_zone_id": self.hosted_zone_id,
             "ttl": self.ttl,
         })

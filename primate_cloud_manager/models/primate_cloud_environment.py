@@ -1120,7 +1120,7 @@ class PrimateCloudEnvironment(models.Model):
         # 5. HTTPS verificado (decisión 1 del OK: warning + auto-retry, JAMÁS
         #    bloquea — la instancia ya quedó activa sirviendo HTTP).
         ssl_result = None
-        if instance_rec and params.get("create_dns"):
+        if instance_rec and self._ssl_wanted(domain, params):
             bus.provision_step(self.env, self,
                                _("Emitiendo HTTPS (propagación + certbot)…"))
             try:
@@ -1472,7 +1472,8 @@ class PrimateCloudEnvironment(models.Model):
             # HTTPS verificado (D-R3.9 endurecida): el DNS ya se intentó ANTES
             # del install; con DNS sano se emite el certificado. Warning +
             # auto-retry, jamás bloquea (decisión 1 del OK).
-            if params.get("create_dns") and not instance.dns_pending:
+            if (self._ssl_wanted(params.get("domain") or instance.main_url,
+                                 params) and not instance.dns_pending):
                 bus.provision_step(self.env, self,
                                    _("Emitiendo HTTPS (propagación + certbot)…"))
                 try:
@@ -1989,6 +1990,22 @@ class PrimateCloudEnvironment(models.Model):
     # web.base.url. certbot SOLO corre con la propagación confirmada
     # (ajuste C: los rate limits de Let's Encrypt no se queman esperando).
     # ==================================================================
+    @staticmethod
+    def _ssl_wanted(domain, params):
+        """¿Corre el paso SSL al terminar el montaje? Siempre que el dominio
+        sea REAL — con o sin DNS en Route 53 (sslip.io, o DNS del cliente):
+        la verificación de propagación decide si ya se puede. No: si el
+        usuario lo apagó (ssl_auto=False), o dominios reservados/placeholder
+        que jamás van a resolver (.local, .invalid, .localhost, .test...)."""
+        if params.get("ssl_auto") is False:
+            return False
+        dominio = (domain or "").strip().lower().rstrip(".")
+        if "." not in dominio:
+            return False
+        reservados = (".local", ".invalid", ".localhost", ".test",
+                      ".example", ".internal", ".lan")
+        return not dominio.endswith(reservados)
+
     def _ssl_use_le_staging(self):
         """``pcm.ssl_use_le_staging`` (default False): agrega ``--staging`` a
         certbot para iterar sin consumir límites de producción de LE. Los
@@ -2794,7 +2811,7 @@ class PrimateCloudEnvironment(models.Model):
         self.message_post(body=_("Staging creado y activo en %s.") % domain)
         self._log("staging_create", name=_("Crear staging: %s") % self.name, result="success")
         # HTTPS verificado también para el staging (warning, nunca bloquea).
-        if params.get("create_dns") and self.primary_instance_id:
+        if self._ssl_wanted(domain, params) and self.primary_instance_id:
             bus.provision_step(self.env, self,
                                _("Emitiendo HTTPS (propagación + certbot)…"))
             try:

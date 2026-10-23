@@ -457,3 +457,40 @@ class TestHttpsSsl(TransactionCase):
         self.assertTrue(ok)   # el montaje NO se cae por SSL
         self.assertEqual(self.server.state, "active")
         self.assertEqual(self.server.primary_instance_id.ssl_state, "pending")
+
+    # ---------------------------------------- cuándo corre el paso SSL
+    def test_ssl_wanted_dominio_real_con_o_sin_route53(self):
+        wanted = self.server._ssl_wanted
+        self.assertTrue(wanted("demo.1-2-3-4.sslip.io", {}))
+        self.assertTrue(wanted("erp.cliente.com", {"create_dns": False}))
+        self.assertFalse(wanted("demo.1-2-3-4.sslip.io", {"ssl_auto": False}))
+        for placeholder in ("sandbox.primate.local", "x.invalid", "a.test",
+                            "localhost", ""):
+            with self.subTest(dominio=placeholder):
+                self.assertFalse(wanted(placeholder, {}))
+
+    def test_cadena_sin_route53_igual_emite_https(self):
+        """sslip.io / DNS del cliente: sin create_dns, el paso SSL corre igual
+        (la propagación decide); con ssl_auto=False, no."""
+        for ssl_auto, esperado in ((True, True), (False, False)):
+            with self.subTest(ssl_auto=ssl_auto):
+                params = {"create_dns": False, "ssl_auto": ssl_auto,
+                          "domain": "demo.1-2-3-4.sslip.io", "db_mode": "none"}
+                self.server.state = "draft"
+                with mock.patch.object(type(self.account), "_get_aws_service",
+                                       return_value=mock.Mock()), \
+                        mock.patch.object(type(self.server),
+                                          "_ensure_server_bootstrap"), \
+                        mock.patch.object(type(self.server),
+                                          "_materialize_multiodoo_layout"), \
+                        mock.patch.object(type(self.server),
+                                          "_provision_run_instance_install"), \
+                        mock.patch.object(type(self.server), "_provision_dns") \
+                        as dns, \
+                        mock.patch.object(type(self.server), "_provision_ssl",
+                                          return_value="active") as ssl, \
+                        mock.patch.object(aws_ssm, "AwsSsmService",
+                                          return_value=FakeSsm()):
+                    self.assertTrue(self.server.job_install_instance(params))
+                self.assertFalse(dns.called, "sin create_dns no se toca Route 53")
+                self.assertEqual(ssl.called, esperado)
