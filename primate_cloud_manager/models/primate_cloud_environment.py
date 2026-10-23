@@ -3387,6 +3387,11 @@ class PrimateCloudEnvironment(models.Model):
         ])
         enqueued = 0
         for environment in environments:
+            # Regla dura 2026-10-22: lo importado no se toca. El job lo
+            # bloquearía igual (frontera), pero encolarlo cada hora sólo
+            # llena la bitácora de bloqueos y la cola de jobs fallidos.
+            if environment.pcm_is_imported():
+                continue
             window_start = self._backup_window_start(
                 environment.backup_policy_id, now
             )

@@ -892,6 +892,16 @@ class TestManagedBackups(TransactionCase):
             self.Env._cron_run_managed_backups()
             with_delay.assert_called_once()
 
+    def test_cron_no_encola_backups_de_importados(self):
+        """Un entorno cuya máquina quedó adoptada en solo lectura no recibe
+        backups programados: el job se bloquearía igual, cada hora."""
+        self.instance.with_context(pcm_import_sync=True).sudo().write(
+            {"management_state": "adopted_readonly"})
+        self.assertTrue(self.environment.pcm_is_imported())
+        with mock.patch.object(type(self.environment), "with_delay") as with_delay:
+            self.Env._cron_run_managed_backups()
+            with_delay.assert_not_called()
+
     def test_cron_no_encola_si_ventana_cubierta(self):
         self.env["primate.cloud.backup"].create({
             "name": "reciente", "environment_id": self.environment.id,
