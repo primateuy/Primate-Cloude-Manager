@@ -634,7 +634,13 @@ class PrimateCloudInstance(models.Model):
         self.with_delay(
             description=_("Activar HTTPS: %s") % self.display_name
         ).job_enable_ssl()
-        return True
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info", "sticky": False,
+                       "message": _("Emisión de HTTPS encolada para %s: "
+                                    "propagación, certbot y verificación.")
+                       % self.main_url},
+        }
 
     def job_enable_ssl(self):
         """Job: un ciclo de _provision_ssl para ESTA instancia."""

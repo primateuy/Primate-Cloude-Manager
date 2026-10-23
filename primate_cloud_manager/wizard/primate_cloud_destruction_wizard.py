@@ -24,20 +24,20 @@ class PrimateCloudDestructionWizard(models.TransientModel):
     _name = "primate.cloud.destruction.wizard"
     _description = "Confirmación destructiva en 3 pasos"
 
-    res_model = fields.Char(required=True, readonly=True)
-    res_id = fields.Integer(required=True, readonly=True)
-    action = fields.Char(required=True, readonly=True)
-    callback = fields.Char(required=True, readonly=True)
-    callback_params = fields.Char(readonly=True)
-    ticket_id = fields.Integer(readonly=True)
-    token = fields.Char(readonly=True)
+    res_model = fields.Char(required=True, )
+    res_id = fields.Integer(required=True, )
+    action = fields.Char(required=True, )
+    callback = fields.Char(required=True, )
+    callback_params = fields.Char()
+    ticket_id = fields.Integer()
+    token = fields.Char()
     step = fields.Selection(
         [("impact", "1 · Impacto"), ("name", "2 · Nombre exacto"),
          ("reauth", "3 · Re-autenticación")],
-        default="impact", required=True, readonly=True)
-    impact_text = fields.Text(string="Qué se va a destruir", readonly=True)
-    resource_name = fields.Char(readonly=True)
-    ttl_minutes = fields.Integer(readonly=True)
+        default="impact", required=True)
+    impact_text = fields.Text(string="Qué se va a destruir", )
+    resource_name = fields.Char()
+    ttl_minutes = fields.Integer()
     typed_name = fields.Char(string="Escribí el nombre EXACTO del recurso")
     password = fields.Char(string="Tu contraseña")
     totp_code = fields.Char(string="Código 2FA (si tenés TOTP)")
@@ -46,6 +46,10 @@ class PrimateCloudDestructionWizard(models.TransientModel):
     def default_get(self, fields_list):
         """Abre el PASO 1 pidiendo el ticket al servidor (grupo + impacto)."""
         values = super().default_get(fields_list)
+        # El cliente web llama default_get dos veces (al abrir y, al guardar,
+        # para lo que no envió): el ticket se arma SOLO en la primera.
+        if "ticket_id" not in fields_list:
+            return values
         ctx = self.env.context
         model = ctx.get("dest_model")
         res_id = ctx.get("dest_res_id")

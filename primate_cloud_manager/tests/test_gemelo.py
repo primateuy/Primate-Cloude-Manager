@@ -211,6 +211,27 @@ class TestGemelo(TransactionCase):
         self.assertEqual(masked["db_name"], "prod")
         self.assertNotIn("superSecreto", json.dumps(masked))
 
+    def test_script_lee_el_argv_de_systemd(self):
+        """systemctl show -p ExecStart devuelve «{ path=… ; argv[]=… }»: el
+        python del venv sale del argv (antes tomaba «path=…» y pip quedaba
+        vacío — cazado en el servidor real del laboratorio)."""
+        ns, _sh = self._funciones_del_script()
+        crudo = ("{ path=/opt/x/venv/bin/python3 ; argv[]=/opt/x/venv/bin/python3 "
+                 "/opt/x/src/odoo-bin -c /etc/odoo/a.conf ; ignore_errors=no ; "
+                 "start_time=[n/a] ; pid=0 ; code=(null) }")
+        argv = ns["argv_de"](crudo)
+        self.assertEqual(argv.split()[0], "/opt/x/venv/bin/python3")
+        self.assertIn("-c /etc/odoo/a.conf", argv)
+        self.assertEqual(ns["argv_de"]("/usr/bin/python3 odoo-bin -c b.conf"),
+                         "/usr/bin/python3 odoo-bin -c b.conf")
+
+    def test_script_lee_repos_ajenos_sin_tocar_config(self):
+        """Root leyendo repos de otro usuario: git exige safe.directory; va
+        por invocación (-c), nunca escribiendo la config global."""
+        _ns, sh = self._funciones_del_script()
+        self.assertNotIn("git config --global", sh)
+        self.assertNotRegex(sh, r"sh\(\"git (?!-c safe\.directory='\*')")
+
     def test_script_detecta_cambios_locales(self):
         ns, _sh = self._funciones_del_script()
         with tempfile.TemporaryDirectory() as tmp:

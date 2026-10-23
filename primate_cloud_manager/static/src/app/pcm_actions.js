@@ -12,7 +12,11 @@
  * - cualquier otra acción -> se delega al servicio de acción global.
  */
 export function handlePcmActionResult(env, res) {
-    if (!res) {
+    // Solo se despachan ACCIONES (objetos con type). Un método que devuelve
+    // True/False (p. ej. action_retry_dns) no es una acción: pasarlo a
+    // doAction rompía el cliente con «Cannot create property 'context' on
+    // boolean» (diálogo Oops).
+    if (!res || typeof res !== "object" || !res.type) {
         return;
     }
     if (res.type === "ir.actions.act_window") {

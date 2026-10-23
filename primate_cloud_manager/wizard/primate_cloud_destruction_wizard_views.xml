@@ -6,23 +6,23 @@
         <field name="model">primate.cloud.destruction.wizard</field>
         <field name="arch" type="xml">
             <form string="Operación destructiva">
-                <field name="step" invisible="1"/>
-                <field name="ticket_id" invisible="1"/>
-                <field name="token" invisible="1"/>
-                <field name="res_model" invisible="1"/>
-                <field name="res_id" invisible="1"/>
-                <field name="action" invisible="1"/>
-                <field name="callback" invisible="1"/>
-                <field name="callback_params" invisible="1"/>
+                <field name="step" invisible="1" force_save="1"/>
+                <field name="ticket_id" invisible="1" force_save="1"/>
+                <field name="token" invisible="1" force_save="1"/>
+                <field name="res_model" invisible="1" force_save="1"/>
+                <field name="res_id" invisible="1" force_save="1"/>
+                <field name="action" invisible="1" force_save="1"/>
+                <field name="callback" invisible="1" force_save="1"/>
+                <field name="callback_params" invisible="1" force_save="1"/>
 
                 <!-- Paso 1: impacto -->
                 <group invisible="step != 'impact'">
                     <div class="alert alert-danger" role="alert" colspan="2">
                         <b>⚠ Acción IRREVERSIBLE.</b> Leé el impacto completo.
-                        El ticket vence en <field name="ttl_minutes" readonly="1"
+                        El ticket vence en <field name="ttl_minutes" readonly="1" force_save="1"
                         class="oe_inline"/> minutos.
                     </div>
-                    <field name="impact_text" readonly="1" nolabel="1" colspan="2"/>
+                    <field name="impact_text" readonly="1" force_save="1" nolabel="1" colspan="2"/>
                 </group>
 
                 <!-- Paso 2: nombre exacto, tipeado a mano -->

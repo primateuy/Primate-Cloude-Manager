@@ -152,6 +152,31 @@
                     </div>
                 </div>
 
+                <!-- Instancias Odoo (también sin servidor EC2: Cloudpepper) -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Instancias Odoo</h2>
+                </div>
+                <div t-if="!d.odoo_instances.length" class="o_pcm_card o_pcm_muted">
+                    Sin instancias Odoo registradas.
+                </div>
+                <div t-if="d.odoo_instances.length" class="o_pcm_card">
+                    <div t-foreach="d.odoo_instances" t-as="oi" t-key="oi.id"
+                         class="o_pcm_line o_pcm_line_click"
+                         t-on-click="() => this.openRecord('primate.cloud.instance', oi.id, oi.name)">
+                        <div class="o_pcm_line_main">
+                            <span class="o_pcm_line_name" t-out="oi.name"/>
+                            <span class="o_pcm_muted">
+                                <t t-if="oi.project_name"> · <t t-out="oi.project_name"/></t>
+                                <t t-if="oi.main_url"> ·
+                                    <i t-att-class="oi.ssl_state === 'active' ? 'fa fa-lock' : 'fa fa-link'"/>
+                                    <span class="o_pcm_mono" t-out="oi.main_url"/></t>
+                                · <t t-out="oi.state_label"/>
+                            </span>
+                        </div>
+                        <i class="fa fa-angle-right o_pcm_muted"/>
+                    </div>
+                </div>
+
                 <!-- DNS -->
                 <div class="o_pcm_section_head o_pcm_section_bar">
                     <h2>Registros DNS</h2>

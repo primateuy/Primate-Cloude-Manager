@@ -489,6 +489,27 @@ class TestTripleConfirmacion(TransactionCase):
                 dns.sudo().job_delete()
         self.assertEqual(fake.delete_record.call_count, 1)
 
+    def test_wizard_arma_un_solo_ticket(self):
+        """Abrir y guardar el wizard como lo hace el cliente web: UN ticket y
+        un solo «Paso 1/3» en la auditoría (antes se duplicaba)."""
+        from odoo.tests import Form
+        antes_t = self.Ticket.sudo().search_count([])
+        antes_a = len(self._auditoria())
+        ctx = {"dest_model": self.machine._name, "dest_res_id": self.machine.id,
+               "dest_action": "ec2_terminate",
+               "dest_callback": "action_terminate"}
+        form = Form(self.env["primate.cloud.destruction.wizard"].with_user(
+            self.destructor).with_context(**ctx))
+        wiz = form.save()
+        self.assertEqual(self.Ticket.sudo().search_count([]), antes_t + 1)
+        self.assertEqual(len(self._auditoria()) - antes_a, 1)
+        self.assertEqual(wiz.ticket_id, self.Ticket.sudo().search(
+            [], order="id desc", limit=1).id)
+        wiz.action_next_from_impact()
+        wiz.typed_name = "srv-pcm-1"
+        wiz.action_confirm_name()
+        self.assertEqual(wiz.step, "reauth")
+
     # --------------------------------------------- lo no destructivo, normal
     def test_lo_de_pcm_sigue_normal(self):
         with mock.patch.object(type(self.machine), "with_delay") as delay:

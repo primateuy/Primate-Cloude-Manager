@@ -394,6 +394,20 @@ class PrimateCloudDashboard(models.AbstractModel):
             .get(environment.pcm_origin, ""),
             "can_destroy": self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_destructive"),
+            # Las instancias Odoo del entorno, con o sin servidor EC2 (un
+            # entorno de Cloudpepper no tiene máquina: sin esta lista sus
+            # instancias quedaban inalcanzables en la app).
+            "odoo_instances": [{
+                "id": i.id, "name": i.name,
+                "main_url": i.main_url or "",
+                "url": i._public_url() if i.main_url else "",
+                "ssl_state": i.ssl_state,
+                "state": i.state,
+                "state_label": dict(i._fields["state"].selection).get(
+                    i.state, i.state or ""),
+                "project_name": i.project_id.display_name or "",
+            } for i in environment.instance_ids.filtered(
+                lambda x: x.state != "archived")],
             "servers": [{
                 "id": inst.id, "name": inst.display_name,
                 "state": inst.instance_state,
