@@ -826,8 +826,17 @@ class PrimateCloudAccount(models.Model):
             counts["skipped"] += 1
             lines.append(_("↷ %s: no encontrada en AWS") % inst.name)
             return
+        live_tags = data.get("tags") or {}
+        # La llave de propiedad (primate:managed_by=pcm) solo se pone AL CREAR
+        # el recurso (policy pcm-prod-provision). Una máquina que no la tiene
+        # en AWS no es de PCM: re-etiquetarla sería apropiársela.
+        if live_tags.get(aws_base.MANAGED_BY_TAG) != aws_base.MANAGED_BY_VALUE:
+            counts["skipped"] += 1
+            lines.append(_("↷ %s: sin la llave de PCM en AWS (no se toca)")
+                         % inst.name)
+            return
         env_ref, client_ref = inst.environment_id._cost_attribution_refs()
-        current = (data.get("tags") or {}).get(aws_base.ENVIRONMENT_ID_TAG)
+        current = live_tags.get(aws_base.ENVIRONMENT_ID_TAG)
         if current == env_ref:
             counts["already_ok"] += 1
             return
@@ -846,6 +855,8 @@ class PrimateCloudAccount(models.Model):
             environment=inst.environment_id.name,
             client_ref=client_ref, environment_ref=env_ref,
         )
+        # Nunca se re-escribe la llave sobre un recurso existente.
+        tags = [t for t in tags if t["Key"] != aws_base.MANAGED_BY_TAG]
         resource_ids = [inst.aws_instance_id] + (data.get("volume_ids") or [])
         try:
             ec2.create_tags(resource_ids, tags, region=region)

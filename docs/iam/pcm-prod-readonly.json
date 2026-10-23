@@ -104,9 +104,9 @@
           "aws:ResourceTag/primate:managed_by": "pcm",
           "ec2:CreateAction": [
             "RunInstances",
+            "CreateVolume",
             "CreateSecurityGroup",
-            "AllocateAddress",
-            "CreateVolume"
+            "AllocateAddress"
           ]
         }
       }
@@ -168,6 +168,36 @@
         "iam:Reset*",
         "iam:Change*"
       ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NadieTocaLaLlaveDePropiedadEnRecursosExistentes",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateTags",
+        "ec2:DeleteTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEqualsIgnoreCase": {
+          "aws:TagKeys": [
+            "primate:managed_by"
+          ]
+        },
+        "StringNotEquals": {
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateVolume",
+            "CreateSecurityGroup",
+            "AllocateAddress"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "NuncaBorrarEtiquetas",
+      "Effect": "Deny",
+      "Action": "ec2:DeleteTags",
       "Resource": "*"
     }
   ]

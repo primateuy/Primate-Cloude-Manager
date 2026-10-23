@@ -31,10 +31,33 @@ queda bloqueada para ella.
 
 Las condiciones usan la etiqueta que PCM ya pone en todo lo que crea:
 `primate:managed_by = pcm` (helper `build_resource_tags`, en instancia,
-volumen, security group y Elastic IP). Un servidor importado **no** la tiene,
-y la policy de readonly prohíbe agregarla (`ec2:CreateTags` sobre recursos
-sin la etiqueta solo se permite en la creación). Por eso lo importado queda
-fuera del alcance de cualquier escritura aunque se adjunte `provision`.
+volumen, security group y Elastic IP). Un servidor importado **no** la tiene.
+
+La etiqueta es la **llave de seguridad**: si alguien pudiera ponérsela a una
+instancia importada, `pcm-prod-prov` la podría operar. Por eso, en **las dos**
+policies:
+
+- `ec2:CreateTags` **solo** se permite dentro de la creación
+  (`ec2:CreateAction` = `RunInstances` / `CreateVolume` /
+  `CreateSecurityGroup` / `AllocateAddress`): PCM etiqueta todo con
+  `TagSpecifications` en el mismo llamado que crea el recurso.
+- `NadieTocaLaLlaveDePropiedadEnRecursosExistentes`: **Deny explícito** de
+  `CreateTags` y `DeleteTags` cuando la clave `primate:managed_by` está en el
+  pedido (comparación sin mayúsculas: `Primate:Managed_By` también cuenta,
+  porque IAM compara así las claves de `aws:ResourceTag`) y no es una creación.
+- `NuncaBorrarEtiquetas`: Deny de todo `DeleteTags`. Un `DeleteTags` sin
+  claves borra **todas**, y ahí `aws:TagKeys` no viene en el pedido: la
+  condición de arriba sola no lo frenaría.
+
+Además, el cerrojo de frontera de PCM bloquea en código cualquier
+`create_tags`/`delete_tags` que toque la llave, sobre cualquier recurso.
+
+**Costo asumido:** después de creada una máquina, PCM ya no puede
+re-etiquetarla en producción. El re-tag de `primate:client_id` al cambiar
+el cliente de un servidor y el botón «Re-etiquetar recursos» fallan con
+AccessDenied. Ninguno de los dos corta nada (queda el error en la bitácora),
+pero la atribución de costos de ese servidor queda con el cliente original
+hasta que un admin la corrija a mano.
 
 ## Placeholders a reemplazar
 
@@ -134,6 +157,71 @@ aws iam simulate-principal-policy \
 ```
 
 Esperado: **`allowed`**.
+
+### 3. Nadie se apropia de lo importado poniéndole la llave
+
+El simulador no recibe la lista real de `Tags` del pedido: `aws:TagKeys` se
+pasa como clave de contexto, y es justo lo que mira el Deny.
+
+```bash
+# Ponerle primate:managed_by a una instancia existente: denegado
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::<ACCOUNT_ID>:user/<pcm-prod-ro|pcm-prod-prov> \
+  --action-names ec2:CreateTags ec2:DeleteTags \
+  --resource-arns arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<ID_IMPORTADA> \
+  --context-entries \
+    "ContextKeyName=aws:TagKeys,ContextKeyValues=primate:managed_by,ContextKeyType=stringList" \
+    "ContextKeyName=aws:RequestTag/primate:managed_by,ContextKeyValues=pcm,ContextKeyType=string" \
+  --query "EvaluationResults[].[EvalActionName,EvalDecision]" --output table
+```
+
+Esperado con los dos usuarios: **`explicitDeny`** en las dos acciones
+(`NadieTocaLaLlaveDePropiedadEnRecursosExistentes`). Repetir con
+`ContextKeyValues=Primate:Managed_By`: también **`explicitDeny`**. Repetir
+sobre `instance/<ID_DE_PCM>`, con
+`aws:ResourceTag/primate:managed_by=pcm` en el contexto: **también**
+`explicitDeny`. Ni lo propio se re-etiqueta con la llave.
+
+```bash
+# La misma etiqueta DENTRO de RunInstances: permitida (solo provision)
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::<ACCOUNT_ID>:user/pcm-prod-prov \
+  --action-names ec2:CreateTags \
+  --resource-arns arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/i-nueva \
+  --context-entries \
+    "ContextKeyName=ec2:CreateAction,ContextKeyValues=RunInstances,ContextKeyType=string" \
+    "ContextKeyName=aws:TagKeys,ContextKeyValues=primate:managed_by,ContextKeyType=stringList" \
+  --query "EvaluationResults[].[EvalActionName,EvalDecision]" --output table
+```
+
+Esperado: **`allowed`** con `pcm-prod-prov`; con `pcm-prod-ro`,
+**`implicitDeny`** (no crea nada).
+
+## Antes de importar: ¿algo productivo YA tiene la llave?
+
+Solo lectura y con las claves de **`pcm-prod-ro`** (perfil local, ej.
+`pcm-prod-ro`). Lo corre Daryl, no Claude. Usa solo `ec2:DescribeRegions`,
+`ec2:DescribeTags` y `rds:DescribeDBInstances`, que esa policy ya permite.
+Recorre todas las regiones y el `grep -i` también caza variantes de
+mayúsculas:
+
+```bash
+export AWS_PROFILE=pcm-prod-ro
+for r in $(aws ec2 describe-regions --query 'Regions[].RegionName' --output text); do
+  aws ec2 describe-tags --region "$r" --output text \
+      --query 'Tags[].[ResourceType,ResourceId,Key,Value]' \
+    | grep -i 'primate:managed_by' | sed "s/^/$r  /"
+  aws rds describe-db-instances --region "$r" --output text \
+      --query "DBInstances[].[DBInstanceIdentifier,join(',',TagList[].Key)]" \
+    | grep -i 'primate:managed_by' | sed "s/^/$r  rds  /"
+done; echo "-- fin del listado --"
+```
+
+`describe-tags` cubre todos los tipos de recurso de EC2: instancias,
+volúmenes, security groups, Elastic IPs, snapshots, AMIs, etc.
+**Esperado: solo la línea `-- fin del listado --`.** Cualquier otra línea
+(región, tipo, id, clave, valor) es un recurso productivo que hoy
+`pcm-prod-prov` podría operar: se frena antes de importar.
 
 ### En la consola
 

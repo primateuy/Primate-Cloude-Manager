@@ -252,13 +252,16 @@ class TestRetagPhase9(TransactionCase):
         environment = self.env["primate.cloud.environment"].create({
             "name": "E", "project_id": project.id, "env_type": "production",
             "state": "active"})
-        # EC2 REAL en moto SIN los tags estables (simula recurso legado).
+        # EC2 REAL en moto SIN los tags estables (simula recurso legado), pero
+        # con la llave de PCM puesta AL CREAR (como toda máquina de PCM).
         client = boto3.client("ec2", region_name="us-east-1")
         res = client.run_instances(
             ImageId="ami-12345678", MinCount=1, MaxCount=1,
             InstanceType="t3.micro",
             TagSpecifications=[{"ResourceType": "instance",
-                                "Tags": [{"Key": "Name", "Value": "e"}]}])
+                                "Tags": [{"Key": "Name", "Value": "e"},
+                                         {"Key": aws_base.MANAGED_BY_TAG,
+                                          "Value": aws_base.MANAGED_BY_VALUE}]}])
         aws_id = res["Instances"][0]["InstanceId"]
         instance = self.env["primate.cloud.ec2.instance"].create({
             "name": "e", "account_id": account.id,
@@ -329,6 +332,38 @@ class TestRetagPhase9(TransactionCase):
                      for t in vols["Volumes"][0].get("Tags", [])}
             self.assertEqual(vtags.get(aws_base.ENVIRONMENT_ID_TAG),
                              environment.pcm_ref)
+
+    def test_retag_no_se_apropia_de_lo_que_no_tiene_la_llave(self):
+        """Sin primate:managed_by en AWS = no es de PCM: ni se etiqueta ni se
+        le pone la llave (solo nace al crear el recurso)."""
+        with mock_aws():
+            account, environment, instance, aws_id = \
+                self._setup_account_with_instance()
+            from ..services import aws_base
+            client = boto3.client("ec2", region_name="us-east-1")
+            client.delete_tags(Resources=[aws_id],
+                               Tags=[{"Key": aws_base.MANAGED_BY_TAG}])
+            c = account.job_retag_resources(dry_run=False)
+            self.assertEqual(c["skipped"], 1)
+            self.assertEqual(c["tagged"], 0)
+            r = client.describe_instances(InstanceIds=[aws_id])
+            keys = {t["Key"] for t in
+                    r["Reservations"][0]["Instances"][0].get("Tags", [])}
+            self.assertNotIn(aws_base.MANAGED_BY_TAG, keys)
+            self.assertNotIn(aws_base.ENVIRONMENT_ID_TAG, keys)
+
+    def test_retag_nunca_reescribe_la_llave(self):
+        with mock_aws():
+            account, environment, instance, aws_id = \
+                self._setup_account_with_instance()
+            from ..services import aws_ec2
+            with mock.patch.object(aws_ec2.AwsEc2Service, "create_tags",
+                                   autospec=True) as ct:
+                account.job_retag_resources(dry_run=False)
+            self.assertTrue(ct.called)
+            enviadas = {t["Key"] for t in ct.call_args.args[2]}
+            self.assertNotIn("primate:managed_by", enviadas)
+            self.assertIn("primate:environment_id", enviadas)
 
     def test_retag_salta_terminada(self):
         with mock_aws():

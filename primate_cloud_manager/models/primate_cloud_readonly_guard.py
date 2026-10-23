@@ -20,6 +20,8 @@ _logger = logging.getLogger(__name__)
 
 DISCOVERY_DOCUMENT_PARAM = "pcm.readonly_discovery_document"
 DISCOVERY_DOCUMENT_DEFAULT = "pcm-readonly-discovery"
+# Llave de propiedad (minúsculas: IAM compara claves de tag sin distinguir).
+OWNERSHIP_TAG = "primate:managed_by"
 
 
 def _norm_dns(name):
@@ -102,9 +104,29 @@ class ReadonlyGuard:
             "excepción. No se llamó al proveedor.",
             svc=service, op=operation, det=detail))
 
+    @staticmethod
+    def _touches_ownership_key(operation, params):
+        """CreateTags/DeleteTags sobre la llave de propiedad, o un DeleteTags
+        sin claves (que borra TODAS, la llave incluida)."""
+        if operation not in ("create_tags", "delete_tags"):
+            return False
+        tags = params.get("Tags")
+        if operation == "delete_tags" and not tags:
+            return True
+        return any((t.get("Key") or "").lower() == OWNERSHIP_TAG
+                   for t in tags or [])
+
     def check(self, service, operation, params):
         """Levanta si la operación (NO de lectura) toca algo importado."""
         params = params or {}
+        # La llave primate:managed_by solo nace con el recurso (TagSpecifications
+        # al crear, que no pasa por acá). Ponerla o sacarla DESPUÉS sería ganar
+        # o perder la propiedad de algo existente: bloqueado sobre cualquier
+        # recurso, importado o no.
+        if service == "ec2" and self._touches_ownership_key(operation, params):
+            self._block(service, operation, _(
+                "la etiqueta %s solo se pone al crear el recurso")
+                % OWNERSHIP_TAG)
         if service in ("ec2", "ssm"):
             touched = self._ids_in(params) & self.instance_ids
             if touched:

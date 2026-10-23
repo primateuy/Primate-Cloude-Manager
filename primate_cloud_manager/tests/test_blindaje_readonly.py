@@ -260,6 +260,28 @@ class TestBlindajeImportados(TransactionCase):
         ec2.stop_instances(InstanceIds=["i-de-pcm"])     # no importado: pasa
         self.assertTrue(clientes["ec2"].stop_instances.called)
 
+    def test_frontera_llave_de_propiedad_intocable(self):
+        """Poner o sacar primate:managed_by sobre algo existente = ganar o
+        perder la propiedad: bloqueado sobre CUALQUIER recurso."""
+        base, clientes = self._base_con_guarda()
+        ec2 = base.get_client("ec2")
+        for intento in (
+                lambda: ec2.create_tags(Resources=["i-ajena"], Tags=[
+                    {"Key": "primate:managed_by", "Value": "pcm"}]),
+                lambda: ec2.create_tags(Resources=["i-de-pcm"], Tags=[
+                    {"Key": "Primate:Managed_By", "Value": "pcm"}]),
+                lambda: ec2.delete_tags(Resources=["i-de-pcm"], Tags=[
+                    {"Key": "primate:managed_by"}]),
+                lambda: ec2.delete_tags(Resources=["i-de-pcm"])):
+            with self.assertRaises(UserError):
+                intento()
+        self.assertFalse(clientes["ec2"].create_tags.called)
+        self.assertFalse(clientes["ec2"].delete_tags.called)
+        # Otras etiquetas sobre lo de PCM siguen pasando por la frontera.
+        ec2.create_tags(Resources=["i-de-pcm"], Tags=[
+            {"Key": "primate:environment_id", "Value": "x"}])
+        self.assertTrue(clientes["ec2"].create_tags.called)
+
     def test_frontera_ssm_solo_documento_de_lectura(self):
         base, clientes = self._base_con_guarda()
         ssm = base.get_client("ssm")

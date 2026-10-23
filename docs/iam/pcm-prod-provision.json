@@ -69,27 +69,9 @@
         "StringEquals": {
           "ec2:CreateAction": [
             "RunInstances",
+            "CreateVolume",
             "CreateSecurityGroup",
             "AllocateAddress"
-          ]
-        }
-      }
-    },
-    {
-      "Sid": "ReetiquetarSoloLoDePCM",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:CreateTags",
-        "ec2:DeleteTags"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:ResourceTag/primate:managed_by": "pcm"
-        },
-        "ForAllValues:StringNotEquals": {
-          "aws:TagKeys": [
-            "primate:managed_by"
           ]
         }
       }
@@ -232,6 +214,36 @@
         "arn:aws:s3:::pcm-*",
         "arn:aws:s3:::pcm-*/*"
       ]
+    },
+    {
+      "Sid": "NadieTocaLaLlaveDePropiedadEnRecursosExistentes",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateTags",
+        "ec2:DeleteTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEqualsIgnoreCase": {
+          "aws:TagKeys": [
+            "primate:managed_by"
+          ]
+        },
+        "StringNotEquals": {
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateVolume",
+            "CreateSecurityGroup",
+            "AllocateAddress"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "NuncaBorrarEtiquetas",
+      "Effect": "Deny",
+      "Action": "ec2:DeleteTags",
+      "Resource": "*"
     }
   ]
 }
