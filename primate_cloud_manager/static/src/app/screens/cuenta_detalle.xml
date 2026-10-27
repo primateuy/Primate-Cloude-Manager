@@ -64,6 +64,8 @@
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Región por defecto</span><span t-out="d.default_region or '—'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Método de autenticación</span><span t-out="d.auth_method or '—'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Solo aprovisionamiento</span><span t-out="d.provision_only ? 'Sí — no importa ni ve lo ajeno' : 'No'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Usuario IAM esperado</span><span class="o_pcm_mono" t-out="d.expected_iam_user or '— (no se controla)'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Respondió (ARN)</span><span class="o_pcm_mono" t-out="d.caller_arn or '— (validá la conexión)'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
                     </div>
                     <div class="o_pcm_card" t-if="d.notes">

@@ -44,6 +44,14 @@
                     </PcmField>
                 </div>
 
+                <PcmField label="'Usuario IAM esperado'"
+                          help="'Dueño de las keys (p. ej. pcm-prod-ro). «Validar conexión» falla si responden con otro usuario.'">
+                    <input class="o_pcm_input o_pcm_mono" type="text"
+                           t-att-value="state.expected_iam_user"
+                           t-att-placeholder="'pcm-prod-ro'"
+                           t-on-input="(ev) => this.onInput('expected_iam_user', ev)"/>
+                </PcmField>
+
                 <!-- Credenciales: solo-admin (mismo gate que el modelo). -->
                 <div t-if="state.isCloudAdmin" class="o_pcm_form_section">
                     <div class="o_pcm_form_section_head">Autenticación</div>

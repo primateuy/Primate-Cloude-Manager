@@ -28,6 +28,23 @@ FERNET_KEY_PARAM = "primate_cloud_manager.fernet_key"
 FERNET_KEY_ENV = "PRIMATE_CLOUD_FERNET_KEY"
 
 
+def iam_principal_name(arn):
+    """Usuario (o rol) de un ARN de ``sts:GetCallerIdentity``.
+
+    ``arn:aws:iam::123:user/pcm-prod-ro`` → ``pcm-prod-ro``;
+    ``arn:aws:sts::123:assumed-role/Rol/sesion`` → ``Rol``.
+    """
+    partes = (arn or "").split(":", 5)
+    if len(partes) < 6:
+        return ""
+    tipo, _sep, resto = partes[5].partition("/")
+    if tipo == "user":
+        return resto.rsplit("/", 1)[-1]
+    if tipo == "assumed-role":
+        return resto.split("/", 1)[0]
+    return partes[5]
+
+
 def mask_access_key(key_id):
     """«AKIA…WXYZ»: la Access Key ID no se muestra entera ni a los admins
     (decisión 2026-10-27; salía en claro en la ficha y en los videos)."""
@@ -145,6 +162,19 @@ class PrimateCloudAccount(models.Model):
         help="Fecha del último pull de Cost Explorer (leyenda 'datos al').",
     )
     notes = fields.Text(string="Notas")
+
+    # Keys cruzadas (2026-10-27): las cuentas de lectura y de aprovisionamiento
+    # están en el MISMO AWS, así que unas keys pegadas en la cuenta equivocada
+    # igual «conectan». El usuario esperado es un dato de la cuenta (no fijo
+    # en el código) y «Validar conexión» lo compara con quién respondió.
+    expected_iam_user = fields.Char(
+        string="Usuario IAM esperado", copy=False,
+        help="Usuario IAM (o rol) dueño de las keys de esta cuenta, p. ej. "
+             "pcm-prod-ro. «Validar conexión» falla si las keys responden "
+             "con otro usuario. Vacío: no se controla.")
+    caller_arn = fields.Char(
+        string="Respondió (ARN)", readonly=True, copy=False,
+        help="ARN que devolvió sts:GetCallerIdentity en la última validación.")
 
     # Una cuenta AWS se carga DOS veces a propósito (2026-10-27): la de
     # lectura (pcm-prod-ro) y la «Solo aprovisionamiento» (pcm-prod-prov),
@@ -367,12 +397,34 @@ class PrimateCloudAccount(models.Model):
                       ntype="danger", sticky=True, reload=True)
             return False
 
+        arn = result.get("arn") or ""
+        esperado = (self.expected_iam_user or "").strip()
+        if result["success"] and esperado and iam_principal_name(arn) != esperado:
+            error = _(
+                "Las keys responden como «%(real)s» (%(arn)s), pero esta cuenta "
+                "espera «%(esperado)s». ¿Están cruzadas? Cargá las keys del "
+                "usuario %(esperado)s y volvé a validar.",
+                real=iam_principal_name(arn) or "?", arn=arn or "sin ARN",
+                esperado=esperado)
+            self.write({"connection_state": "error", "caller_arn": arn})
+            self.message_post(body=error)
+            Log.log_operation(
+                "connection_test",
+                name=_("Validar conexión: %s") % self.name,
+                record=self, result="failed", error_message=error)
+            bus.toast(self.env, error, title=_("Conexión AWS"),
+                      ntype="danger", sticky=True, reload=True)
+            return False
+
         if result["success"]:
-            vals = {"connection_state": "connected"}
+            vals = {"connection_state": "connected", "caller_arn": arn}
             if result.get("account_id"):
                 vals["aws_account_id"] = result["account_id"]
             self.write(vals)
-            self.message_post(body=_("Conexión validada correctamente (cuenta %s).") % result.get("account_id"))
+            self.message_post(body=_(
+                "Conexión validada correctamente (cuenta %(cuenta)s, "
+                "respondió %(arn)s).", cuenta=result.get("account_id"),
+                arn=arn or "?"))
             Log.log_operation(
                 "connection_test",
                 name=_("Validar conexión: %s") % self.name,

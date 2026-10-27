@@ -25,6 +25,8 @@
 set -euo pipefail
 
 PERFIL="${PERFIL:-pcm-prod-provision}"
+# Usuario IAM dueño de las keys del perfil: si responde otro, se frena.
+USUARIO_ESPERADO="${USUARIO_ESPERADO:-pcm-prod-prov}"
 REGION="us-east-1"
 ARCHIVO="${1:?uso: infra/subir_dump.sh <archivo.zip> [cliente]}"
 CLIENTE="${2:-barraca-julia}"
@@ -33,9 +35,10 @@ NOMBRE="$(basename "$ARCHIVO")"
 
 CUENTA="$(aws sts get-caller-identity --profile "$PERFIL" --query Account --output text)"
 USUARIO="$(aws sts get-caller-identity --profile "$PERFIL" --query Arn --output text)"
+echo "Respondió: $USUARIO"
 case "$USUARIO" in
-    */pcm-prod-prov) ;;
-    *) echo "El perfil $PERFIL no es el usuario pcm-prod-prov ($USUARIO). Freno."; exit 2 ;;
+    *:user/"$USUARIO_ESPERADO"|*:user/*/"$USUARIO_ESPERADO") echo "usuario: $USUARIO_ESPERADO ✓" ;;
+    *) echo "El perfil $PERFIL no es el usuario $USUARIO_ESPERADO ($USUARIO): ¿keys cruzadas? Freno."; exit 2 ;;
 esac
 BUCKET="pcm-dumps-${CUENTA}"
 KEY="incoming/${CLIENTE}/${NOMBRE}"

@@ -49,6 +49,7 @@ export class AccountForm extends Component {
             default_region: "",
             auth_method: "access_key",
             notes: "",
+            expected_iam_user: "",
             iam_access_key_id: "",
             iam_secret_access_key: "",  // nunca se precarga
             role_arn: "",
@@ -83,6 +84,7 @@ export class AccountForm extends Component {
             default_region: d.default_region || "",
             auth_method: d.auth_method || "access_key",
             notes: d.notes || "",
+            expected_iam_user: d.expected_iam_user || "",
             iam_access_key_id: d.iam_access_key_id || "",  // enmascarada (AKIA…WXYZ)
             akidLoaded: d.iam_access_key_id || "",
             iam_secret_access_key: "",                      // SIEMPRE vacío
@@ -145,6 +147,7 @@ export class AccountForm extends Component {
                 default_region: this.state.default_region,
                 auth_method: this.state.auth_method,
                 notes: this.state.notes,
+                expected_iam_user: (this.state.expected_iam_user || "").trim(),
             };
             // Credenciales: solo admin (el gate del modelo también las protege).
             if (this.state.isCloudAdmin) {

@@ -1435,6 +1435,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             "default_region": (acc.default_region or "") if acc else "",
             "auth_method": (acc.auth_method if acc else "access_key") or "access_key",
             "notes": (acc.notes or "") if acc else "",
+            "expected_iam_user": (acc.expected_iam_user or "") if acc else "",
             "regions": options("default_region"),
             "auth_methods": options("auth_method"),
             "is_cloud_admin": is_admin,
@@ -1478,6 +1479,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "default_region": region_labels.get(acc.default_region, acc.default_region or ""),
             "auth_method": auth_labels.get(acc.auth_method, acc.auth_method or ""),
             "provision_only": bool(acc.provision_only),
+            "expected_iam_user": acc.expected_iam_user or "",
+            "caller_arn": acc.caller_arn or "",
             "last_sync_date": fields.Datetime.to_string(acc.last_sync_date) or "",
             "notes": acc.notes or "",
             "environments": [{

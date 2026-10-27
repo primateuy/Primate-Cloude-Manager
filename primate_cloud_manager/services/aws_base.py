@@ -155,14 +155,17 @@ class AwsBaseService:
         """Verifica que las credenciales sean válidas contra ``sts:GetCallerIdentity``.
 
         Returns:
-            dict: ``{"success": bool, "account_id": str|None, "error": str|None}``.
+            dict: ``{"success": bool, "account_id": str|None, "arn": str|None,
+            "error": str|None}``; ``arn`` es quién respondió (usuario o rol).
         """
         try:
             sts = self.get_client("sts")
             identity = sts.get_caller_identity()
-            return {"success": True, "account_id": identity["Account"], "error": None}
+            return {"success": True, "account_id": identity["Account"],
+                    "arn": identity.get("Arn"), "error": None}
         except Exception as error:  # noqa: BLE001 - se normaliza el error al modelo
-            return {"success": False, "account_id": None, "error": str(error)}
+            return {"success": False, "account_id": None, "arn": None,
+                    "error": str(error)}
 
 # Prefijos de operaciones boto3 que NO modifican nada (lectura pura).
 READ_ONLY_PREFIXES = (
