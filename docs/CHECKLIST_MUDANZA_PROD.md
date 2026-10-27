@@ -90,7 +90,7 @@ blureados en el montaje).
 | 3 | CC ✅ | Parámetros: `pcm.ssl_use_le_staging = False`; tope SSL y tope SSM en sus defaults (24 h y 4 h). Grupo «PCM: operaciones destructivas» **vacío**. |
 | 4 | CC ✅ | Cuentas AWS **«Primate»** (lectura) y **«Primate - aprovisionamiento»** (**Solo aprovisionamiento** marcado), us-east-1, Access Key IAM, **sin credenciales**. |
 | 5 | CC ✅ | Proyecto **Barraca Julia** (cuenta «Primate - aprovisionamiento») y entorno **`bj-uat`** en Borrador, tipo **Staging**, con el aviso de UAT en el chatter. |
-| 6 | YO | Levantar: `~/Odoo/clients/19.0/pcm_produccion/levantar.sh` → http://127.0.0.1:19190, usuario `admin`. |
+| 6 | YO | **Antes del primer uso**, actualizar el módulo: `~/Odoo/clients/19.0/pcm_produccion/levantar.sh -u primate_cloud_manager`. Trae los arreglos del ensayo del 27-oct: dos cuentas con el mismo AWS ID (lectura + aprovisionamiento), la importación en cola (sin esto fallaba siempre), la IP fija, el dominio definitivo, los secretos fuera de queue_job y la Access Key ID enmascarada. Después, para el uso normal: `levantar.sh` → http://127.0.0.1:19190, usuario `admin`. |
 | 7 | YO | Preferencias → **Seguridad → «Habilitar la A2F»**. |
 | 8 | YO | Enterprise: registrar el código de suscripción (si no, vence a los 30 días). |
 | — | pendiente | Mudar `pcm_produccion` a un servidor con HTTPS (anotado en la KB). |
@@ -271,14 +271,14 @@ se toca nada de lo que usa `pcm_demo`.
    group, subred y perfil `pcm-ssm-role`) · dominio provisorio
    `bj-uat.pcm.invalid` · contraseña admin (master del odoo.conf) · nombre de
    la instancia **`bj-uat`** · **t3.xlarge** · disco **100** · Ubuntu 24.04 ·
-   PostgreSQL local, base **`bj_uat`** · **sin** Route 53 · **sin** «Emitir
-   HTTPS» (todavía no hay IP). El volumen sale gp3 (AMI de Canonical
-   `ebs-gp3`).
+   PostgreSQL local, base **`bj_uat`** · **«IP fija (Elastic IP)» marcada**
+   (viene por defecto) · **sin** Route 53 · **sin** «Emitir HTTPS» (el
+   dominio todavía es el provisorio). El volumen sale gp3 (AMI de Canonical
+   `ebs-gp3`). La IP que muestra el servidor al terminar ya es la fija.
 2. [ ] PCM · Con la IP: **«Gestionar»** → **URL principal** =
    `bj-uat.<ip-con-guiones>.sslip.io` → Guardar. PCM reescribe el vhost y
    emite HTTPS (Let's Encrypt producción). Esperar **«HTTPS activo»** (en el
-   ensayo: 30 s). ⚠ Sin Elastic IP: **no detener el servidor** (al arrancar
-   cambia la IP y sslip.io deja de apuntar).
+   ensayo: 30 s). Con la IP fija, un stop/start ya no rompe sslip.io.
 3. [ ] PCM · **«Restaurar desde un dump…»** (panel lateral): origen «Key S3
    manual» = la ruta que imprimió `subir_dump.sh` · formato: detectar ·
    **Eliminar el dump de S3 al finalizar: sí** · base destino `bj_uat` ·
@@ -305,6 +305,14 @@ se toca nada de lo que usa `pcm_demo`.
          **sin usuario ni contraseña**. **Parámetros del sistema** →
          `web.base.url` = la URL sslip.io.
 
+### ⏳ Pendiente de bj-uat: el dominio definitivo
+bj-uat queda en `https://bj-uat.<ip>.sslip.io` **sin registro DNS propio**
+(decisión 2026-10-27). Cuando el cliente confirme el dominio, seguir
+`docs/AGREGAR_DOMINIO.md`: **«Crear DNS ahora»** si el dominio está en la zona
+de Route 53 de la cuenta (y el stack tiene `ZonaDns`/`NombresDns`), o
+**«Asociar dominio existente»** si el registro A se carga a mano (Route 53 u
+otro DNS). Los dos son no destructivos: si algo falla, sigue en sslip.io.
+
 ### Lo que enseñó el ensayo (23-oct, sandbox, ya corregido)
 - El plan Free rechaza t3.xlarge: PCM informa el error de AWS y no queda nada
   creado; «Aprovisionar» se puede repetir. El ensayo usó m7i-flex.large.
@@ -323,7 +331,13 @@ se toca nada de lo que usa `pcm_demo`.
 | Restore (bajar, descomprimir, cargar, filestore, neutralizar, checklist) | 2 min 30 s |
 
 ### Plan B si SSL falla
-La instancia queda **activa en HTTP** (nunca rota): badge «Sin HTTPS» con el
+(Esto vale para el HTTPS del **montaje**. Al pasar después a un **dominio
+definitivo** es distinto: si el certificado nuevo falla, PCM desarma lo nuevo y
+la instancia **sigue en sslip.io con su HTTPS**, sin pasar por HTTP; la ficha
+avisa «No se pudo pasar a <dominio>» con Reintentar / Descartar. Ver
+`docs/AGREGAR_DOMINIO.md`.)
+
+En el montaje, la instancia queda **activa en HTTP** (nunca rota): badge «Sin HTTPS» con el
 motivo. Corregir la causa (IP cambiada, puerto 443) y **«Activar HTTPS
 ahora»**. El reintento automático corre cada 10 min (solo gasta intento de
 certbot con la propagación confirmada; tope 6 intentos y 24 h esperando).
@@ -334,7 +348,8 @@ certbot con la propagación confirmada; tope 6 intentos y 24 h esperando).
   se borra si salió bien): se repite el restore.
 - Hay que deshacer todo → YO me asigno el grupo destructivo y termino el
   servidor (triple confirmación). IAM impide igual tocar lo importado.
-  Al terminar, me lo saco.
+  PCM libera la IP fija al terminar (si no puede, lo dice en el chatter:
+  liberarla a mano en EC2 → Elastic IPs). Al terminar, me lo saco.
 
 ## F6 · Cierre y aviso a INCO
 

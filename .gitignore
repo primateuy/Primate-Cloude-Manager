@@ -27,3 +27,6 @@ forum.conf
 # Evidencia de smoke-tests de UI
 tools/smoke_ui/screenshots/
 entregables/
+
+# Videos de demo/ensayo (pesados, fuera de git)
+docs/demo/*.mp4
