@@ -15,7 +15,7 @@ const WIZARD_FIELDS = [
     "security_group_ids", "subnet_id", "instance_profile", "db_mode", "db_name",
     "db_user", "db_password", "pg_version", "rds_identifier", "rds_instance_class",
     "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
-    "ssl_auto", "hosted_zone_id", "ttl", "elastic_ip",
+    "ssl_auto", "hosted_zone_id", "ttl", "elastic_ip", "sslip_domain",
 ];
 
 /**
@@ -48,6 +48,7 @@ export class EnvForm extends Component {
             errors: {},
             isCloudAdmin: false,
             accountName: "",
+            sslipName: "instancia",
             environmentName: "",
             regionStatus: "draft",
             regionStatusLabel: "",
@@ -82,6 +83,7 @@ export class EnvForm extends Component {
             rds_multi_az: false,
             backup_retention_days: 7,
             elastic_ip: true,
+            sslip_domain: false,
             create_dns: false,
             ssl_auto: true,
             hosted_zone_id: "",
@@ -108,6 +110,7 @@ export class EnvForm extends Component {
         Object.assign(this.state, {
             isCloudAdmin: d.is_cloud_admin,
             accountName: d.account_name || "",
+            sslipName: d.sslip_name || "instancia",
             environmentName: d.environment_name || "",
             regionStatus: d.region_status || "draft",
             regionStatusLabel: d.region_status_label || "",
@@ -190,8 +193,14 @@ export class EnvForm extends Component {
     // validación autoritativa (coherencia RDS/DNS + semáforo) la hace el wizard.
     _validateClient() {
         const errors = {};
-        if (!(this.state.domain || "").trim()) {
-            errors.domain = "Poné el dominio del entorno (ej.: forum.primate.cloud).";
+        if (this.state.sslip_domain) {
+            if (!this.state.elastic_ip) {
+                errors.sslip_domain =
+                    "El dominio sslip.io automático necesita la IP fija.";
+            }
+        } else if (!(this.state.domain || "").trim()) {
+            errors.domain = "Poné el dominio del entorno (ej.: forum.primate.cloud) " +
+                "o marcá «Dominio sslip.io automático».";
         }
         if (this.isRds) {
             if (!(this.state.rds_identifier || "").trim()) {

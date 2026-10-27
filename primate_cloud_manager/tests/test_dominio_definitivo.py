@@ -410,3 +410,82 @@ class TestDominioDefinitivo(TransactionCase):
             self.inst.action_open_attach_domain_wizard()
         with self.assertRaises(UserError):
             self.inst.job_attach_domain(NUEVO)
+
+    # ============================================ sslip.io automático (28-oct)
+    def _montar_con_sslip(self, params, ssl_result="active"):
+        """Corre la instalación con todo AWS/SSM mockeado y devuelve qué
+        dominio recibió el install y con cuál se pidió el HTTPS."""
+        visto = {}
+
+        def eip():
+            self.machine.public_ip = "100.57.183.141"
+            return "100.57.183.141"
+
+        def install(ssm, machine, instance, p, region, domain, is_default):
+            visto["install"] = domain
+
+        def ssl(instance, change_id=None):
+            visto["ssl"] = instance.main_url
+            return ssl_result
+
+        Env = type(self.server)
+        with mock.patch.object(type(self.machine), "_pcm_ensure_elastic_ip",
+                               side_effect=eip), \
+                mock.patch.object(type(self.account), "_get_aws_service",
+                                  return_value=mock.Mock()), \
+                mock.patch.object(Env, "_provision_database",
+                                  return_value="localhost"), \
+                mock.patch.object(Env, "_ensure_server_bootstrap"), \
+                mock.patch.object(Env, "_materialize_multiodoo_layout"), \
+                mock.patch.object(Env, "_provision_run_instance_install",
+                                  side_effect=install), \
+                mock.patch.object(Env, "_provision_ssl", side_effect=ssl):
+            ok = self.server.job_install_instance(params)
+        return ok, visto
+
+    def test_sslip_automatico_arma_el_dominio_y_emite_https_al_terminar(self):
+        ok, visto = self._montar_con_sslip({
+            "db_mode": "local_pg", "elastic_ip": True, "sslip_domain": True,
+            "ssl_auto": True, "domain": False})
+        dominio = "ensayo.100-57-183-141.sslip.io"
+        self.assertTrue(ok)
+        self.assertEqual(visto["install"], dominio)
+        self.assertEqual(visto["ssl"], dominio)
+        self.assertEqual(self.inst.main_url, dominio)
+        self.assertEqual(self.server.state, "active")
+
+    def test_sin_sslip_automatico_usa_el_dominio_dado(self):
+        ok, visto = self._montar_con_sslip({
+            "db_mode": "local_pg", "elastic_ip": True,
+            "domain": "erp.cliente.com", "ssl_auto": True})
+        self.assertEqual(visto["install"], "erp.cliente.com")
+
+    def _wizard(self, **vals):
+        self.server.state = "draft"
+        base = {
+            "environment_id": self.server.id, "region": "us-east-1",
+            "image_id": "ami-1", "instance_type": "t3.xlarge",
+            "db_mode": "local_pg", "db_name": "ensayo",
+            "security_group_ids": "sg-1", "subnet_id": "subnet-1",
+            "create_dns": False, "elastic_ip": True,
+        }
+        base.update(vals)
+        return self.env["primate.cloud.provision.wizard"].create(base)
+
+    def test_wizard_sslip_exige_ip_fija_y_sin_route53(self):
+        with self.assertRaises(UserError):
+            self._wizard(sslip_domain=True, elastic_ip=False).action_provision()
+        with self.assertRaises(UserError):
+            self._wizard(sslip_domain=True, create_dns=True,
+                         hosted_zone_id="Z1").action_provision()
+        with self.assertRaises(UserError):
+            self._wizard(domain=False).action_provision()
+
+    def test_wizard_sslip_encola_sin_dominio(self):
+        wiz = self._wizard(sslip_domain=True, ssl_auto=True)
+        with mock.patch.object(type(self.server), "_enqueue_provision") as enq:
+            wiz.action_provision()
+        params = enq.call_args[0][0]
+        self.assertTrue(params["sslip_domain"])
+        self.assertTrue(params["ssl_auto"] is not False)
+        self.assertTrue(self.server._load_provision_config()["sslip_domain"])

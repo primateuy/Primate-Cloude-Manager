@@ -1073,6 +1073,14 @@ class PrimateCloudEnvironment(models.Model):
                 bus.provision_step(self.env, self,
                                    _("Asignando la IP fija (Elastic IP)…"))
                 machine._pcm_ensure_elastic_ip()
+            # Dominio sslip.io automático: se arma con la IP ya fija, así el
+            # vhost, web.base.url y el certificado del paso 5 nacen con él.
+            # Un reintento llega a la misma IP fija → al mismo dominio.
+            if params.get("sslip_domain"):
+                domain = self._sslip_domain(machine, instance_rec)
+                self.message_post(body=_(
+                    "Dominio provisorio: %s (sslip.io con la IP fija, sin "
+                    "registro DNS).") % domain)
 
             # 1. Base de datos (RDS / PostgreSQL local / ninguna) --------------
             if resume:
@@ -1152,6 +1160,28 @@ class PrimateCloudEnvironment(models.Model):
                                "https://%s" % domain if ssl_result == "active"
                                else domain)))
         return True
+
+    def _sslip_domain(self, machine, instance):
+        """``<instancia>.<ip-con-guiones>.sslip.io`` con la IP pública actual.
+
+        sslip.io devuelve la IP que lleva el nombre: resuelve sin registro
+        DNS, y Let's Encrypt lo valida como cualquier dominio.
+        """
+        self.ensure_one()
+        ip = (machine.public_ip or "").strip()
+        if not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
+            raise UserError(_(
+                "El servidor no tiene IP pública para armar el dominio "
+                "sslip.io."))
+        return "%s.%s.sslip.io" % (self._sslip_name(instance),
+                                   ip.replace(".", "-"))
+
+    def _sslip_name(self, instance=None):
+        """Primer tramo del dominio sslip.io: el slug de la instancia."""
+        self.ensure_one()
+        instance = instance if instance is not None else self.primary_instance_id
+        return (instance.slug if instance else "") or re.sub(
+            r"[^a-z0-9-]+", "-", (self.name or "odoo").lower()).strip("-")
 
     def action_retry_install(self):
         """Reintenta la instalación del Odoo sobre el servidor YA creado.

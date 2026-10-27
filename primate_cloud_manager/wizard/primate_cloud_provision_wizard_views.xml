@@ -18,7 +18,8 @@
                         <field name="region"/>
                     </group>
                     <group>
-                        <field name="domain" placeholder="forum.primate.cloud"/>
+                        <field name="domain" placeholder="forum.primate.cloud"
+                               invisible="sslip_domain" required="not sslip_domain"/>
                         <field name="admin_password" password="True"/>
                     </group>
                 </group>
@@ -79,7 +80,9 @@
                     <page string="DNS" name="dns">
                         <group>
                             <field name="elastic_ip"/>
-                            <field name="create_dns"/>
+                            <field name="sslip_domain"/>
+                            <field name="ssl_auto"/>
+                            <field name="create_dns" invisible="sslip_domain"/>
                             <field name="hosted_zone_id" invisible="not create_dns"
                                    required="create_dns"/>
                             <field name="ttl" invisible="not create_dns"/>

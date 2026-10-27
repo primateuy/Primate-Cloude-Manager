@@ -44,7 +44,12 @@
                     </PcmField>
                 </div>
                 <div class="o_pcm_form_row">
-                    <PcmField label="'Dominio'" required="true"
+                    <PcmField t-if="state.sslip_domain" label="'Dominio'"
+                              help="'Lo arma PCM con la IP fija (ver DNS).'">
+                        <input class="o_pcm_input" type="text" disabled="disabled"
+                               t-att-value="state.sslipName + '.&lt;ip&gt;.sslip.io'"/>
+                    </PcmField>
+                    <PcmField t-else="" label="'Dominio'" required="true"
                               error="state.errors.domain"
                               help="'Ej.: forum.primate.cloud'">
                         <input class="o_pcm_input" type="text"
@@ -233,16 +238,23 @@
                         <span>IP fija (Elastic IP con la etiqueta de PCM: un stop/start no la cambia; sslip.io y el registro A dependen de ella)</span>
                     </label>
                     <label class="o_pcm_form_check">
+                        <input type="checkbox" t-att-checked="state.sslip_domain"
+                               t-on-change="(ev) => this.toggle('sslip_domain', ev)"/>
+                        <span>Dominio sslip.io automático (&lt;instancia&gt;.&lt;ip&gt;.sslip.io con la IP fija: resuelve sin registro DNS y el HTTPS sale al terminar el montaje)</span>
+                    </label>
+                    <div t-if="state.errors.sslip_domain" class="o_pcm_field_err"
+                         t-out="state.errors.sslip_domain"/>
+                    <label class="o_pcm_form_check">
                         <input type="checkbox" t-att-checked="state.ssl_auto"
                                t-on-change="(ev) => this.toggle('ssl_auto', ev)"/>
                         <span>Emitir HTTPS al terminar (Let's Encrypt, apenas el dominio apunte acá)</span>
                     </label>
-                    <label class="o_pcm_form_check">
+                    <label t-if="!state.sslip_domain" class="o_pcm_form_check">
                         <input type="checkbox" t-att-checked="state.create_dns"
                                t-on-change="(ev) => this.toggle('create_dns', ev)"/>
                         <span>Crear registro DNS en Route 53 para el dominio</span>
                     </label>
-                    <t t-if="state.create_dns">
+                    <t t-if="state.create_dns and !state.sslip_domain">
                         <div class="o_pcm_form_row">
                             <PcmField label="'Hosted Zone ID'" required="true"
                                       error="state.errors.hosted_zone_id">

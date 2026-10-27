@@ -25,7 +25,7 @@ PERSISTED_FIELDS = [
     "create_dns", "hosted_zone_id", "ttl", "admin_password", "elastic_ip",
     # «Emitir HTTPS al terminar» también se recuerda: un montaje con dominio
     # provisorio (después pasa a sslip.io) se deja preparado con HTTPS apagado.
-    "ssl_auto",
+    "ssl_auto", "sslip_domain",
 ]
 
 
@@ -42,8 +42,9 @@ class PrimateCloudProvisionWizard(models.TransientModel):
         related="environment_id.account_id", string="Cuenta AWS", readonly=True
     )
     region = fields.Selection(AWS_REGIONS, string="Región", required=True)
+    # Obligatorio salvo con «Dominio sslip.io automático» (lo valida _validate).
     domain = fields.Char(
-        string="Dominio principal", required=True, help="Ej.: forum.primate.cloud"
+        string="Dominio principal", help="Ej.: forum.primate.cloud"
     )
 
     # --- Cómputo (EC2) ---
@@ -91,6 +92,12 @@ class PrimateCloudProvisionWizard(models.TransientModel):
              "servidor: sslip.io, el registro A y el certificado dependen de "
              "esa IP, y un stop/start no la cambia. Se libera al terminar el "
              "servidor.")
+    sslip_domain = fields.Boolean(
+        string="Dominio sslip.io automático",
+        help="PCM arma el dominio con la IP fija apenas la asigna: "
+             "<instancia>.<ip-con-guiones>.sslip.io. Resuelve solo (sin "
+             "registro DNS) y el HTTPS sale al terminar el montaje. El "
+             "dominio definitivo se suma después sin cortar el servicio.")
     create_dns = fields.Boolean(string="Crear registro DNS", default=True)
     ssl_auto = fields.Boolean(
         string="Emitir HTTPS al terminar", default=True,
@@ -217,6 +224,7 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             "backup_retention_days": self.backup_retention_days,
             # IP fija + DNS
             "elastic_ip": self.elastic_ip,
+            "sslip_domain": self.sslip_domain,
             "create_dns": self.create_dns,
             "ssl_auto": self.ssl_auto,
             "hosted_zone_id": self.hosted_zone_id,
@@ -246,6 +254,20 @@ class PrimateCloudProvisionWizard(models.TransientModel):
                 raise UserError(_("RDS: indicá el identificador de la base."))
             if not (self.db_password or "").strip():
                 raise UserError(_("RDS: indicá la contraseña maestra de la base."))
+        if self.sslip_domain:
+            if not self.elastic_ip:
+                raise UserError(_(
+                    "El dominio sslip.io automático necesita la IP fija: sin "
+                    "ella, un stop/start cambia la IP y el dominio deja de "
+                    "apuntar al servidor."))
+            if self.create_dns:
+                raise UserError(_(
+                    "Con el dominio sslip.io automático no se crea registro en "
+                    "Route 53: desmarcá «Crear registro DNS»."))
+        elif not (self.domain or "").strip():
+            raise UserError(_(
+                "Poné el dominio principal o marcá «Dominio sslip.io "
+                "automático»."))
         if self.create_dns and not (self.hosted_zone_id or "").strip():
             raise UserError(_("Para crear DNS, indicá el Hosted Zone ID de Route 53."))
 

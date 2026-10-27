@@ -457,6 +457,9 @@ class TestEnvironmentProvision(TransactionCase):
         self.assertIs(d["elastic_ip"], True)
         self.assertIs(d["create_dns"], False)
         self.assertIs(d["ssl_auto"], False)
+        # La vista previa sslip.io usa el mismo nombre que el job.
+        self.assertEqual(d["sslip_name"], self.env_rec._sslip_name())
+        self.assertTrue(d["sslip_name"])
 
     def test_provision_wizard_rds_sin_password_falla(self):
         wiz = self.env["primate.cloud.provision.wizard"].create({

@@ -1204,7 +1204,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             "db_password", "pg_version", "rds_identifier", "rds_instance_class",
             "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
             "hosted_zone_id", "ttl", "region_status", "region_detail",
-            "elastic_ip", "ssl_auto",
+            "elastic_ip", "ssl_auto", "sslip_domain",
         ]
         data = {f: (wiz[f] if wiz[f] not in (None,) else False) for f in char_int_bool}
         region_labels = dict(Wizard._fields["region_status"].selection)
@@ -1216,6 +1216,9 @@ class PrimateCloudDashboard(models.AbstractModel):
         data.update({
             "environment_id": env_id,
             "environment_name": env.display_name,
+            # Vista previa del dominio sslip.io automático (mismo armado que
+            # el job): <slug>.<ip>.sslip.io.
+            "sslip_name": env._sslip_name(),
             "account_id": wiz.account_id.id or False,
             "account_name": wiz.account_id.display_name or "",
             "region_status_label": region_labels.get(wiz.region_status, ""),
