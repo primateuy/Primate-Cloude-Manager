@@ -6,7 +6,8 @@
 # us-east-1, DESPUÉS de desplegar el stack pcm-prerequisitos.yaml.
 #
 # QUÉ NO HACE: no crea, modifica ni borra nada. Usa sólo lecturas
-# (sts get-caller-identity, ec2 describe-*, rds describe-*) y el Policy
+# (sts get-caller-identity, ec2 describe-*, rds describe-*, iam get-policy*)
+# y el Policy
 # Simulator de IAM (simulate-principal-policy), que EVALÚA las policies de un
 # usuario contra una acción hipotética sin ejecutarla.
 #
@@ -30,10 +31,14 @@
 #   4. pcm-prod-prov no toca instancias SIN la llave.
 #   5. pcm-prod-prov no agrega ni borra la llave en recursos existentes.
 #   6. pcm-prod-prov sí crea una instancia CON la llave (y no sin ella), opera
-#      las suyas, sube dumps sólo a incoming/ de su bucket de ESTA cuenta y
-#      sólo lee el parámetro público de la AMI de Ubuntu.
+#      las suyas, sube dumps sólo a incoming/ de su bucket de ESTA cuenta,
+#      sólo lee el parámetro público de la AMI de Ubuntu, y reserva/libera
+#      Elastic IPs sólo con la llave.
 #   7. pcm-ssm-role (el rol de las EC2 de PCM): lee/escribe sólo en los
 #      buckets pcm-<uso>-<cuenta> de ESTA cuenta.
+#   8. Route 53: si el stack se desplegó con ZonaDns/NombresDns, pcm-prod-prov
+#      crea registros A SÓLO con esos nombres y en esa zona. Sin zona
+#      configurada se informa y no cuenta como problema (el dominio va a mano).
 #
 # Las pruebas de IAM usan ARNs hipotéticos (i-0000000000ajena0, «otro-bucket»):
 # el simulador no necesita que existan. «denegado» = implicitDeny o
@@ -239,6 +244,16 @@ prueba "6h. lee el parámetro público de la AMI de Ubuntu" permitido "$ARN_PROV
     "ssm:GetParameter"
 prueba "6i. no lee parámetros de la cuenta (SecureString)" denegado "$ARN_PROV" \
     "arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/cualquier/clave" "ssm:GetParameter"
+EIP_NUEVA="arn:aws:ec2:${REGION}:${ACCOUNT}:elastic-ip/*"
+EIP_EXISTENTE="arn:aws:ec2:${REGION}:${ACCOUNT}:elastic-ip/eipalloc-00000000000ajena"
+prueba "6j. reserva una Elastic IP con la llave" permitido "$ARN_PROV" "$EIP_NUEVA" \
+    "ec2:AllocateAddress" "${CTX_PIDE_LLAVE[@]}"
+prueba "6k. no reserva una Elastic IP sin la llave" denegado "$ARN_PROV" "$EIP_NUEVA" \
+    "ec2:AllocateAddress" "ContextKeyName=aws:RequestTag/primate:client,ContextKeyValues=x,ContextKeyType=string"
+prueba "6l. libera una Elastic IP suya (con la llave)" permitido "$ARN_PROV" "$EIP_EXISTENTE" \
+    "ec2:ReleaseAddress" "${CTX_CON_LLAVE[@]}"
+prueba "6m. no libera una Elastic IP ajena (sin la llave)" denegado "$ARN_PROV" "$EIP_EXISTENTE" \
+    "ec2:ReleaseAddress"
 linea
 
 # --- 7. pcm-ssm-role: sólo los buckets de PCM de esta cuenta --------------------
@@ -251,6 +266,66 @@ prueba "7b. no escribe en un bucket que no es de PCM" denegado "$ARN_ROL" \
 prueba "7c. no escribe en un bucket pcm-* de OTRA cuenta" denegado "$ARN_ROL" \
     "arn:aws:s3:::pcm-backups-${ACCOUNT}${SUFIJO}/x.dump" "s3:PutObject" \
     "${CTX_CUENTA_AJENA[@]}"
+linea
+
+# --- 8. Route 53: sólo si el stack tiene ZonaDns/NombresDns ---------------------
+# La zona y los nombres se leen de la policy desplegada (no del stack: así no
+# importa cómo se llame). Sin el statement de DNS, PCM no toca Route 53.
+echo "8. Route 53 (${PROV_USER}): registros A sólo con los nombres permitidos"
+POLICY_PROV_ARN="arn:aws:iam::${ACCOUNT}:policy/pcm-prod-provision${SUFIJO}"
+VERSION_PROV="$(aws iam get-policy --policy-arn "$POLICY_PROV_ARN" \
+                --query 'Policy.DefaultVersionId' --output text 2>/dev/null)"
+DNS_STMT="Statement[?Sid=='DnsSoloNombresDePCMEnLaZonaReal']"
+ZONA_RES=""
+NOMBRES_DNS=""
+if [ -n "$VERSION_PROV" ] && [ "$VERSION_PROV" != "None" ]; then
+    ZONA_RES="$(aws iam get-policy-version --policy-arn "$POLICY_PROV_ARN" \
+                --version-id "$VERSION_PROV" --output text \
+                --query "PolicyVersion.Document.${DNS_STMT}.Resource | [0]" 2>/dev/null)"
+    NOMBRES_DNS="$(aws iam get-policy-version --policy-arn "$POLICY_PROV_ARN" \
+                --version-id "$VERSION_PROV" --output text \
+                --query "PolicyVersion.Document.${DNS_STMT}.Condition.\"ForAllValues:StringLike\".\"route53:ChangeResourceRecordSetsNormalizedRecordNames\" | [0]" \
+                2>/dev/null)"
+fi
+if [ -z "$VERSION_PROV" ] || [ "$VERSION_PROV" = "None" ]; then
+    anotar FALLA "8. leer la policy pcm-prod-provision${SUFIJO}" \
+        "iam get-policy no respondió (¿falta iam:GetPolicy?)"
+elif [ -z "$ZONA_RES" ] || [ "$ZONA_RES" = "None" ]; then
+    echo "  Route 53: sin zona configurada (PCM no crea DNS; dominio a mano)"
+    RESUMEN+=("$(printf '%-6s %s' "INFO" "8. Route 53 sin zona: el dominio se agrega a mano")")
+else
+    # Primer patrón permitido → un nombre de prueba dentro (el comodín se
+    # reemplaza) y otro claramente fuera.
+    PATRON="$(printf '%s' "$NOMBRES_DNS" | tr '\t' '\n' | head -1)"
+    NOMBRE_DENTRO="$(printf '%s' "$PATRON" | sed 's/\*/pcm-prueba/g')"
+    NOMBRE_FUERA="no-es-de-pcm.otro-dominio.invalid"
+    ZONA_OTRA="arn:aws:route53:::hostedzone/ZOTRAZONA00000"
+    echo "  zona: ${ZONA_RES##*/} · nombres permitidos: $(printf '%s' "$NOMBRES_DNS" | tr '\t' ' ')"
+    ctx_dns() {   # ctx_dns <nombre> <tipo>
+        printf '%s\n' \
+            "ContextKeyName=route53:ChangeResourceRecordSetsNormalizedRecordNames,ContextKeyValues=$1,ContextKeyType=stringList" \
+            "ContextKeyName=route53:ChangeResourceRecordSetsRecordTypes,ContextKeyValues=$2,ContextKeyType=stringList" \
+            "ContextKeyName=route53:ChangeResourceRecordSetsActions,ContextKeyValues=UPSERT,ContextKeyType=stringList"
+    }
+    CTX_A_DENTRO=()
+    while IFS= read -r c; do CTX_A_DENTRO+=("$c"); done < <(ctx_dns "$NOMBRE_DENTRO" A)
+    CTX_A_FUERA=()
+    while IFS= read -r c; do CTX_A_FUERA+=("$c"); done < <(ctx_dns "$NOMBRE_FUERA" A)
+    CTX_TXT_DENTRO=()
+    while IFS= read -r c; do CTX_TXT_DENTRO+=("$c"); done < <(ctx_dns "$NOMBRE_DENTRO" TXT)
+    CTX_CNAME_DENTRO=()
+    while IFS= read -r c; do CTX_CNAME_DENTRO+=("$c"); done < <(ctx_dns "$NOMBRE_DENTRO" CNAME)
+    prueba "8a. registro A con un nombre permitido (${NOMBRE_DENTRO})" permitido "$ARN_PROV" \
+        "$ZONA_RES" "route53:ChangeResourceRecordSets" "${CTX_A_DENTRO[@]}"
+    prueba "8b. registro A con un nombre fuera de la lista" denegado "$ARN_PROV" \
+        "$ZONA_RES" "route53:ChangeResourceRecordSets" "${CTX_A_FUERA[@]}"
+    prueba "8c. registro TXT (aunque el nombre esté permitido)" denegado "$ARN_PROV" \
+        "$ZONA_RES" "route53:ChangeResourceRecordSets" "${CTX_TXT_DENTRO[@]}"
+    prueba "8d. registro CNAME (aunque el nombre esté permitido)" denegado "$ARN_PROV" \
+        "$ZONA_RES" "route53:ChangeResourceRecordSets" "${CTX_CNAME_DENTRO[@]}"
+    prueba "8e. otra zona de la cuenta" denegado "$ARN_PROV" \
+        "$ZONA_OTRA" "route53:ChangeResourceRecordSets" "${CTX_A_DENTRO[@]}"
+fi
 linea
 
 echo "RESUMEN"

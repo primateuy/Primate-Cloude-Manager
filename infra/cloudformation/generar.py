@@ -12,9 +12,12 @@ Transformaciones al generar:
     OPCIONAL, vacío por defecto (producción no lo completa); sirve para
     desplegar el stack en una cuenta que ya tiene recursos con estos nombres
     (la sandbox), sin tocarlos.
-  - Se QUITAN los statements opcionales que dependen de algo que la plantilla
-    no crea: la zona de Route 53 (Barraca Julia va sin create_dns) y el bucket
-    de salida del discovery. Quitar un Allow sólo reduce permisos.
+  - El statement de Route 53 (``DnsSoloNombresDePCMEnLaZonaReal``) queda
+    CONDICIONAL: sólo existe si se completan los parámetros ``ZonaDns`` (Hosted
+    Zone ID) y ``NombresDns`` (nombres permitidos). Vacíos = PCM no toca Route
+    53 y el dominio se agrega a mano. Dos reglas exigen los dos juntos.
+  - Se QUITA el statement opcional del bucket de salida del discovery (la
+    plantilla no crea ese bucket). Quitar un Allow sólo reduce permisos.
 
 Uso:
   python3 infra/cloudformation/generar.py           # escribe las plantillas
@@ -38,8 +41,11 @@ SALIDA_SSM = os.path.join(AQUI, "pcm-ssm-readonly.yaml")
 # Statements que no van en la plantilla (dependen de recursos que no crea).
 QUITAR = {
     "pcm-prod-readonly": {"SalidaDelDiscoveryPorS3Opcional"},
-    "pcm-prod-provision": {"DnsSoloNombresDePCMEnLaZonaReal"},
+    "pcm-prod-provision": set(),
 }
+# Statement de Route 53: va condicionado a los parámetros ZonaDns/NombresDns.
+SID_DNS = "DnsSoloNombresDePCMEnLaZonaReal"
+CONDICION_DNS = "HayZonaDns"
 REGION = "us-east-1"
 BUCKET = "pcm-dumps-${AWS::AccountId}${Sufijo}"
 # Todos los buckets de PCM de ESTA cuenta: pcm-<uso>-<cuenta>[sufijo].
@@ -60,11 +66,36 @@ def _sub(valor):
     return valor
 
 
+def _dns_condicional(stmt):
+    """El statement de Route 53 con los parámetros de la plantilla, envuelto
+    en Fn::If: sin ZonaDns no existe (AWS::NoValue)."""
+    texto = json.dumps(stmt)
+    if (texto.count("<ZONE_ID>") != 1
+            or texto.count("<NOMBRES_DNS_DE_PCM>") != 1):
+        raise SystemExit("%s: se esperaba un <ZONE_ID> y un "
+                         "<NOMBRES_DNS_DE_PCM>" % SID_DNS)
+    stmt = json.loads(texto)
+    if stmt["Resource"] != "arn:aws:route53:::hostedzone/<ZONE_ID>":
+        raise SystemExit("%s: Resource inesperado %r" % (SID_DNS, stmt["Resource"]))
+    stmt["Resource"] = {"Fn::Sub": "arn:aws:route53:::hostedzone/${ZonaDns}"}
+    nombres = stmt["Condition"]["ForAllValues:StringLike"]
+    clave = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
+    if nombres.get(clave) != ["<NOMBRES_DNS_DE_PCM>"]:
+        raise SystemExit("%s: condición de nombres inesperada" % SID_DNS)
+    nombres[clave] = {"Fn::Split": [",", {"Ref": "NombresDns"}]}
+    return {"Fn::If": [CONDICION_DNS, stmt, {"Ref": "AWS::NoValue"}]}
+
+
 def _policy(ruta, nombre):
     with open(ruta) as fh:
         doc = json.load(fh)
-    doc["Statement"] = [s for s in doc["Statement"]
-                        if s["Sid"] not in QUITAR[nombre]]
+    statements = []
+    for stmt in doc["Statement"]:
+        if stmt["Sid"] in QUITAR[nombre]:
+            continue
+        statements.append(_dns_condicional(stmt) if stmt["Sid"] == SID_DNS
+                          else stmt)
+    doc["Statement"] = statements
     texto = json.dumps(doc)
     sobrante = [p for p in ("<ZONE_ID>", "<NOMBRES_DNS_DE_PCM>",
                             "<BUCKET_SALIDA_DISCOVERY>") if p in texto]
@@ -82,6 +113,51 @@ PARAMETRO_SUFIJO = {
             "OPCIONAL. Vacío en producción. Se agrega al final de todos los "
             "nombres (p. ej. -cfn) para desplegar en una cuenta que ya tiene "
             "recursos con estos nombres, sin tocarlos."),
+    },
+}
+
+
+PARAMETROS_DNS = {
+    "ZonaDns": {
+        "Type": "String",
+        "Default": "",
+        "AllowedPattern": "^(Z[A-Z0-9]+)?$",
+        "Description": (
+            "OPCIONAL. Hosted Zone ID de Route 53 donde PCM puede crear los "
+            "registros A de sus servidores (ej. Z0123456789ABC). Vacío = PCM "
+            "no toca Route 53: el dominio se agrega a mano en la consola. Si "
+            "se completa, NombresDns es obligatorio."),
+    },
+    "NombresDns": {
+        "Type": "String",
+        "Default": "",
+        "AllowedPattern": "^([a-z0-9*][a-z0-9.*-]*(,[a-z0-9*][a-z0-9.*-]*)*)?$",
+        "Description": (
+            "OPCIONAL (obligatorio si hay ZonaDns). Nombres que PCM puede "
+            "crear/actualizar/borrar en esa zona, en minúsculas, separados por "
+            "coma, sin punto final; admite comodín (ej. *.erp.ejemplo.com). "
+            "Sólo registros A."),
+    },
+}
+
+REGLAS_DNS = {
+    "NombresDnsSiHayZona": {
+        "RuleCondition": {"Fn::Not": [{"Fn::Equals": [{"Ref": "ZonaDns"}, ""]}]},
+        "Assertions": [{
+            "Assert": {"Fn::Not": [{"Fn::Equals": [{"Ref": "NombresDns"}, ""]}]},
+            "AssertDescription": (
+                "Con ZonaDns hay que completar NombresDns: los nombres que "
+                "PCM puede tocar en esa zona (sin ellos no se otorga nada)."),
+        }],
+    },
+    "ZonaDnsSiHayNombres": {
+        "RuleCondition": {"Fn::Not": [{"Fn::Equals": [{"Ref": "NombresDns"}, ""]}]},
+        "Assertions": [{
+            "Assert": {"Fn::Not": [{"Fn::Equals": [{"Ref": "ZonaDns"}, ""]}]},
+            "AssertDescription": (
+                "NombresDns sin ZonaDns no sirve: completá los dos o dejá los "
+                "dos vacíos."),
+        }],
     },
 }
 
@@ -110,8 +186,12 @@ def prerrequisitos():
             "policies pcm-prod-readonly / pcm-prod-provision y sus dos usuarios "
             "IAM (sin consola, sin access keys). Generada por "
             "infra/cloudformation/generar.py: no editar a mano."),
-        "Parameters": PARAMETRO_SUFIJO,
+        "Parameters": dict(PARAMETRO_SUFIJO, **PARAMETROS_DNS),
+        "Conditions": {
+            CONDICION_DNS: {"Fn::Not": [{"Fn::Equals": [{"Ref": "ZonaDns"}, ""]}]},
+        },
         "Rules": {
+            **REGLAS_DNS,
             "SoloEnUsEast1": {
                 "Assertions": [{
                     "Assert": {"Fn::Equals": [{"Ref": "AWS::Region"}, REGION]},
@@ -310,7 +390,10 @@ CABECERA_PRE = """\
 #                       operar sólo esos.
 #
 # CÓMO SE DESPLIEGA: CloudFormation → Create stack → Upload a template file →
-# dejar «Sufijo» VACÍO (todo sale de los pseudo-parámetros de la cuenta) → tildar
+# dejar «Sufijo» VACÍO (todo sale de los pseudo-parámetros de la cuenta) →
+# «ZonaDns» y «NombresDns»: vacíos si PCM NO va a crear registros DNS (el
+# dominio se agrega a mano en Route 53); completos (los dos) para que PCM cree
+# SÓLO registros A con esos nombres en esa zona → tildar
 # «I acknowledge … IAM resources with custom names» (CAPABILITY_NAMED_IAM).
 # Solo en us-east-1 (regla «SoloEnUsEast1»). Para otras regiones con
 # servidores a leer: pcm-ssm-readonly.yaml (sólo el documento SSM).
@@ -406,6 +489,10 @@ COMENTARIO_SID = {
     "ReglasSoloEnElSecurityGroupDePCM": "Abrir puertos sólo en SGs con la llave.",
     "ElasticIpPropia": "Reservar Elastic IPs sólo con la llave.",
     "AsociarEipSoloEntreRecursosDePCM": "Asociar EIP sólo entre recursos con la llave.",
+    "LiberarEipSoloDePCM":
+        "Liberar sólo Elastic IPs con la llave (al terminar un servidor de PCM).",
+    "DnsSoloNombresDePCMEnLaZonaReal":
+        "Sólo con ZonaDns/NombresDns: registros A con esos nombres en esa zona.",
     "PasarSoloElRolDeSSMDePCM": "Sólo puede pasarle a una EC2 el rol pcm-ssm-role.",
     "ShellDeInstalacionDocumento":
         "El documento de shell para instalar Odoo (la instancia se limita abajo).",

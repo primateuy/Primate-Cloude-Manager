@@ -33,7 +33,10 @@
 #                       operar sólo esos.
 #
 # CÓMO SE DESPLIEGA: CloudFormation → Create stack → Upload a template file →
-# dejar «Sufijo» VACÍO (todo sale de los pseudo-parámetros de la cuenta) → tildar
+# dejar «Sufijo» VACÍO (todo sale de los pseudo-parámetros de la cuenta) →
+# «ZonaDns» y «NombresDns»: vacíos si PCM NO va a crear registros DNS (el
+# dominio se agrega a mano en Route 53); completos (los dos) para que PCM cree
+# SÓLO registros A con esos nombres en esa zona → tildar
 # «I acknowledge … IAM resources with custom names» (CAPABILITY_NAMED_IAM).
 # Solo en us-east-1 (regla «SoloEnUsEast1»). Para otras regiones con
 # servidores a leer: pcm-ssm-readonly.yaml (sólo el documento SSM).
@@ -54,7 +57,54 @@ Parameters:
     AllowedPattern: ^(-[a-z0-9]{1,12})?$
     Description: OPCIONAL. Vacío en producción. Se agrega al final de todos los nombres (p. ej. -cfn)
       para desplegar en una cuenta que ya tiene recursos con estos nombres, sin tocarlos.
+  ZonaDns:
+    Type: String
+    Default: ''
+    AllowedPattern: ^(Z[A-Z0-9]+)?$
+    Description: 'OPCIONAL. Hosted Zone ID de Route 53 donde PCM puede crear los registros A de sus servidores
+      (ej. Z0123456789ABC). Vacío = PCM no toca Route 53: el dominio se agrega a mano en la consola. Si
+      se completa, NombresDns es obligatorio.'
+  NombresDns:
+    Type: String
+    Default: ''
+    AllowedPattern: ^([a-z0-9*][a-z0-9.*-]*(,[a-z0-9*][a-z0-9.*-]*)*)?$
+    Description: OPCIONAL (obligatorio si hay ZonaDns). Nombres que PCM puede crear/actualizar/borrar
+      en esa zona, en minúsculas, separados por coma, sin punto final; admite comodín (ej. *.erp.ejemplo.com).
+      Sólo registros A.
+Conditions:
+  HayZonaDns:
+    Fn::Not:
+    - Fn::Equals:
+      - Ref: ZonaDns
+      - ''
 Rules:
+  NombresDnsSiHayZona:
+    RuleCondition:
+      Fn::Not:
+      - Fn::Equals:
+        - Ref: ZonaDns
+        - ''
+    Assertions:
+    - Assert:
+        Fn::Not:
+        - Fn::Equals:
+          - Ref: NombresDns
+          - ''
+      AssertDescription: 'Con ZonaDns hay que completar NombresDns: los nombres que PCM puede tocar en
+        esa zona (sin ellos no se otorga nada).'
+  ZonaDnsSiHayNombres:
+    RuleCondition:
+      Fn::Not:
+      - Fn::Equals:
+        - Ref: NombresDns
+        - ''
+    Assertions:
+    - Assert:
+        Fn::Not:
+        - Fn::Equals:
+          - Ref: ZonaDns
+          - ''
+      AssertDescription: 'NombresDns sin ZonaDns no sirve: completá los dos o dejá los dos vacíos.'
   SoloEnUsEast1:
     Assertions:
     - Assert:
@@ -1357,6 +1407,7 @@ Resources:
           - ec2:DescribeInstanceTypes
           - ec2:DescribeKeyPairs
           - ec2:DescribeRouteTables
+          - ec2:DescribeInternetGateways
           - route53:GetHostedZone
           - route53:GetChange
           - route53:ListResourceRecordSets
@@ -1461,6 +1512,20 @@ Resources:
           Condition:
             StringEquals:
               aws:ResourceTag/primate:managed_by: pcm
+        - Sid: AsociarEipEnLaInterfazDeLaMaquina
+          Effect: Allow
+          Action: ec2:AssociateAddress
+          Resource:
+            Fn::Sub: arn:aws:ec2:*:${AWS::AccountId}:network-interface/*
+        # Liberar sólo Elastic IPs con la llave (al terminar un servidor de PCM).
+        - Sid: LiberarEipSoloDePCM
+          Effect: Allow
+          Action: ec2:ReleaseAddress
+          Resource:
+            Fn::Sub: arn:aws:ec2:*:${AWS::AccountId}:elastic-ip/*
+          Condition:
+            StringEquals:
+              aws:ResourceTag/primate:managed_by: pcm
         # Sólo puede pasarle a una EC2 el rol pcm-ssm-role.
         - Sid: PasarSoloElRolDeSSMDePCM
           Effect: Allow
@@ -1484,6 +1549,28 @@ Resources:
           Condition:
             StringEquals:
               ssm:resourceTag/primate:managed_by: pcm
+        - Fn::If:
+          - HayZonaDns
+          # Sólo con ZonaDns/NombresDns: registros A con esos nombres en esa zona.
+          - Sid: DnsSoloNombresDePCMEnLaZonaReal
+            Effect: Allow
+            Action: route53:ChangeResourceRecordSets
+            Resource:
+              Fn::Sub: arn:aws:route53:::hostedzone/${ZonaDns}
+            Condition:
+              ForAllValues:StringLike:
+                route53:ChangeResourceRecordSetsNormalizedRecordNames:
+                  Fn::Split:
+                  - ','
+                  - Ref: NombresDns
+              ForAllValues:StringEquals:
+                route53:ChangeResourceRecordSetsRecordTypes:
+                - A
+                route53:ChangeResourceRecordSetsActions:
+                - CREATE
+                - UPSERT
+                - DELETE
+          - Ref: AWS::NoValue
         # Crear buckets pcm-<uso>-<esta cuenta> (backups).
         - Sid: CrearBucketsDePCM
           Effect: Allow

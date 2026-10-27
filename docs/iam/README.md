@@ -98,8 +98,8 @@ hasta que un admin la corrija a mano.
 | Placeholder | Valor |
 |---|---|
 | `<ACCOUNT_ID>` | ID de la cuenta productiva |
-| `<ZONE_ID>` | Hosted Zone ID real del dominio (ej. `Z0…`) |
-| `<NOMBRES_DNS_DE_PCM>` | Nombre(s) que crea PCM, normalizados en minúsculas, con comodín si hace falta. Para mañana: el dominio de Barraca Julia (ej. `barraca-julia.primate.cloud`). **Solo** esos nombres se pueden crear/actualizar/borrar. |
+| `<ZONE_ID>` | Hosted Zone ID real del dominio (ej. `Z0…`). **En la plantilla de CloudFormation es el parámetro opcional `ZonaDns`**: vacío = el statement de DNS no existe y PCM no toca Route 53 (el dominio se agrega a mano). |
+| `<NOMBRES_DNS_DE_PCM>` | Nombre(s) que crea PCM, normalizados en minúsculas, con comodín si hace falta (ej. `*.erp.ejemplo.com`). **Solo** esos nombres se pueden crear/actualizar/borrar. **En la plantilla es el parámetro `NombresDns`** (separados por coma); obligatorio si hay `ZonaDns` (dos reglas de la plantilla exigen los dos juntos). |
 | `<BUCKET_SALIDA_DISCOVERY>` | Opcional: bucket para la salida completa del discovery (si no se usa, borrar ese statement). |
 
 ## Paso único (lo hace un admin, no PCM): crear el documento SSM

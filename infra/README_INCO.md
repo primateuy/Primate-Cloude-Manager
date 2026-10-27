@@ -15,6 +15,43 @@ necesita en la cuenta, para revisarlo y desplegarlo sin el resto del código:
 Ninguno contiene secretos, números de cuenta, IPs ni nombres de clientes:
 todo sale de los pseudo-parámetros de la cuenta donde se despliega.
 
+**En corto:**
+
+- **Probada desplegada.** Esta misma versión de la plantilla se desplegó en
+  una **cuenta de pruebas** (con el parámetro `Sufijo`) y se usó para un
+  **montaje y una importación reales** con los dos usuarios que crea (§0).
+- **La escritura en Route 53 es opcional y viene apagada.** Con los
+  parámetros `ZonaDns`/`NombresDns` vacíos (el default) PCM no escribe en
+  Route 53. Si se completan, queda acotada a **una zona** y a los nombres de
+  **un subdominio** (ej. `*.erp.ejemplo.com`), sólo registros A (§2).
+- **La plantilla pesa ~81 KB**: se sube **por consola o desde S3**, no con
+  `--template-body` (tope 51.200 bytes; §9).
+
+---
+
+## 0. Cómo se probó
+
+En una cuenta de pruebas, con el stack desplegado (`Sufijo` de prueba) y las
+access keys de los dos usuarios cargadas en PCM:
+
+| Qué | Usuario | Resultado |
+|---|---|---|
+| Montaje de un servidor nuevo: red, EC2 con la llave, **Elastic IP**, instalación de Odoo | `pcm-prod-prov` | OK, sin AccessDenied |
+| HTTPS (Let's Encrypt) sobre `<nombre>.<ip>.sslip.io` | `pcm-prod-prov` | OK |
+| Subida y restore de un dump desde `pcm-dumps-<cuenta>` (el dump se borra al terminar) | `pcm-prod-prov` | OK |
+| Importación de solo lectura en tres regiones: el servidor de PCM no se importa; los detenidos y las regiones sin documento quedan con su motivo | `pcm-prod-ro` | OK, sin AccessDenied |
+| Documento de lectura (3 pasos) sobre el servidor nuevo | `pcm-prod-ro` | OK, gemelo completo |
+| Registro A en Route 53 (zona de prueba, nombres acotados) | `pcm-prod-prov` | OK |
+| Terminación del servidor y liberación de su Elastic IP | `pcm-prod-prov` | OK |
+
+`verificar.sh` en esa cuenta: todo OK salvo la prueba 2 («hay recursos con la
+llave»), esperable porque la cuenta de pruebas ya tenía servidores de PCM. En
+una cuenta sin servidores de PCM tiene que dar **TODO OK**.
+
+Durante la prueba hizo falta **un** ajuste de permisos
+(`ec2:DescribeInternetGateways`, para revisar la red antes de montar), ya
+incluido en esta versión.
+
 ---
 
 ## 1. El modelo de seguridad
@@ -77,6 +114,24 @@ PCM valida el nombre antes de usarlo.
 nombres (por ejemplo `-cfn`). Sirve para probar el stack en una cuenta que ya
 tiene recursos con estos nombres, sin tocarlos.
 
+**Parámetros `ZonaDns` y `NombresDns`** (opcionales, van juntos):
+
+- **Vacíos** (recomendado mientras no se decida otra cosa): PCM **no toca
+  Route 53**. Los servidores se publican con `<nombre>.<ip>.sslip.io` y el
+  dominio definitivo lo crea un administrador a mano en la consola; PCM sólo
+  verifica que resuelva a la IP del servidor antes de usarlo.
+- **Completos**: `ZonaDns` es el Hosted Zone ID donde PCM puede crear
+  registros (ej. `Z0123456789ABC`) y `NombresDns` la lista de nombres que
+  puede crear, actualizar o borrar ahí (minúsculas, separados por coma, con
+  comodín: ej. `*.erp.ejemplo.com`, es decir, los nombres de un subdominio).
+  Sólo registros **A**, sólo esos nombres, sólo esa zona.
+- En los dos casos, pasar un servidor de `sslip.io` a su dominio definitivo
+  **no corta el servicio**: PCM monta el dominio nuevo en paralelo (nginx +
+  certificado + verificación) y recién con todo verificado retira el de
+  sslip.io. Si algo falla, el servidor sigue en sslip.io con su HTTPS.
+- Dos reglas de la plantilla rechazan el despliegue si se completa uno solo de
+  los dos.
+
 ---
 
 ## 3. `pcm-prod-readonly` — cada permiso y por qué
@@ -106,9 +161,12 @@ tiene recursos con estos nombres, sin tocarlos.
 | `CicloDeVidaSoloDeLoDePCM` | Allow | Arrancar, parar, reiniciar, terminar y modificar **sólo** instancias con la llave | Operar lo propio. Terminar exige en PCM una confirmación en 3 pasos. |
 | `SecurityGroupPropioEtiquetado` / `SecurityGroupEnLaVpc` | Allow | Crear un security group con la llave, dentro de una VPC existente | El SG `pcm-managed` (80/443). |
 | `ReglasSoloEnElSecurityGroupDePCM` | Allow | Abrir puertos sólo en security groups con la llave | Nunca en uno ajeno. |
-| `ElasticIpPropia` / `AsociarEipSoloEntreRecursosDePCM` | Allow | Reservar y asociar Elastic IP sólo entre recursos con la llave | IP fija opcional. |
+| `ElasticIpPropia` / `AsociarEipSoloEntreRecursosDePCM` | Allow | Reservar una Elastic IP **con** la llave y asociarla sólo entre recursos con la llave | IP fija de cada servidor nuevo: PCM la reserva por defecto en el montaje, para que un stop/start no cambie la IP (el dominio y el certificado dependen de ella). |
+| `AsociarEipEnLaInterfazDeLaMaquina` | Allow | `AssociateAddress` sobre la interfaz de red de la máquina | AWS también evalúa la interfaz de red al asociar por instancia. Solo no alcanza para nada: la Elastic IP y la máquina tienen que tener la llave (statement anterior). |
+| `LiberarEipSoloDePCM` | Allow | `ReleaseAddress` sólo de Elastic IPs con la llave | Al terminar un servidor de PCM se libera su IP fija (una EIP sin usar se sigue cobrando). Nunca una ajena. |
 | `PasarSoloElRolDeSSMDePCM` | Allow | `iam:PassRole` sólo de `pcm-ssm-role` y sólo hacia EC2 | La EC2 nueva lleva ese rol y ningún otro. |
 | `ShellDeInstalacionDocumento` + `ShellDeInstalacionSoloEnMaquinasDePCM` | Allow | `ssm:SendCommand` con `AWS-RunShellScript` **sólo** sobre instancias con la llave | Instalar y operar Odoo en los servidores nuevos. Nunca en uno ajeno. |
+| `DnsSoloNombresDePCMEnLaZonaReal` | Allow | **Sólo si se completan `ZonaDns`/`NombresDns`**: `ChangeResourceRecordSets` en esa zona, sólo registros A, sólo esos nombres | Crear el registro del dominio de un servidor nuevo. Con los parámetros vacíos este statement no existe. |
 | `CrearBucketsDePCM` | Allow | Crear buckets `pcm-<uso>-<cuenta>` | Bucket de backups. |
 | `BucketsDePCMDeEstaCuenta` / `ObjetosDeLosBucketsDePCM` | Allow | Listar, lifecycle, leer y borrar objetos en esos buckets, sólo de esta cuenta | Backups, retención y limpieza del dump ya restaurado. |
 | `SubirDumpsSoloAlBucketDePCM` | Allow | `PutObject` sólo en `incoming/` de `pcm-dumps-<cuenta>`, de esta cuenta | Subir el dump a restaurar con este mismo usuario. |
@@ -120,9 +178,11 @@ tiene recursos con estos nombres, sin tocarlos.
 
 - **Nada sobre lo que ya existe en la cuenta**: ni arrancar, parar, terminar,
   modificar, etiquetar ni correr comandos (salvo el documento de lectura).
-- **Ninguna escritura en Route 53.** La plantilla no incluye el permiso de DNS
-  (el montaje actual usa `<nombre>.<ip>.sslip.io`). Los registros DNS reales
-  los crea un administrador.
+- **Ninguna escritura en Route 53 con `ZonaDns` vacío** (el montaje usa
+  `<nombre>.<ip>.sslip.io` y el dominio real lo crea un administrador). Con
+  `ZonaDns`/`NombresDns` completos, sólo registros A de esos nombres en esa
+  zona: ni otros tipos, ni otras zonas, ni crear o borrar zonas.
+- **No libera ni mueve Elastic IPs ajenas**: sólo las que nacieron con la llave.
 - **No amplía discos.** No tiene `ec2:ModifyVolume`: lo hace un administrador
   (procedimiento: `modify-volume` + `growpart` + `resize2fs`, sin reinicio).
 - **Nada de IAM** (salvo pasar `pcm-ssm-role` a una EC2 nueva), ni sesiones
@@ -149,8 +209,10 @@ tiene recursos con estos nombres, sin tocarlos.
   instancias Odoo (medido: más de ~7 con 25 repos cada una) entra lo que
   cabe y PCM marca el resto como **«gemelo incompleto»**, visible y con el
   motivo. Lo que falta se completa por otra vía.
-- **Sin Elastic IP en el montaje actual.** Si un servidor nuevo se detiene y
-  arranca, cambia su IP pública.
+- **Elastic IP por servidor.** Cada servidor nuevo lleva su Elastic IP (con
+  la llave), así la IP no cambia con un stop/start. Si un servidor se borra
+  por fuera de PCM, su Elastic IP queda reservada (y cobrándose) hasta que un
+  administrador la libere.
 
 ---
 
@@ -164,6 +226,11 @@ tiene recursos con estos nombres, sin tocarlos.
   las consultas manuales.
 - **CloudWatch.** `GetMetricData` de las métricas de los servidores: US$0,01
   cada 1.000 métricas consultadas. Centavos por mes.
+- **IPv4 pública / Elastic IP.** AWS cobra US$0,005 por hora cada IPv4
+  pública (unos US$3,60 por mes), sea Elastic IP o la IP automática de la
+  instancia: la Elastic IP asociada no agrega costo frente a la automática.
+  Una Elastic IP **sin asociar** también se cobra: PCM la libera al terminar
+  el servidor.
 - **S3.** Lo que ocupen los dumps (en `incoming/` se borran solos a los 7
   días) y los backups que se configuren.
 - **SSM Run Command, IAM y CloudFormation:** sin costo.
@@ -205,21 +272,31 @@ filestore, nginx con sus certificados, y los crontabs con los secretos tapados.
    Esperado: `NoSuchEntity`, `InvalidDocument` o `Not Found` en todos. Si algo
    existe: no se pisa; se decide antes (o se usa el parámetro `Sufijo`).
 
-   **Tamaño de la plantilla.** Pesa más de 51.200 bytes (el documento SSM lleva
-   el script de lectura completo). Ese tope es sólo del CLI con
-   `--template-body`. **Por consola no aplica**: al elegir *Upload a template
+   **Tamaño de la plantilla.** `pcm-prerequisitos.yaml` pesa **~81 KB** (el
+   documento SSM lleva el script de lectura completo): se sube **por consola**
+   (*Upload a template file*) **o desde S3** (*Amazon S3 URL*, o
+   `--template-url` por CLI), **no con `--template-body`**, cuyo tope es
+   51.200 bytes. **Por consola el tope no aplica**: al elegir *Upload a template
    file*, CloudFormation sube la plantilla a un bucket S3 propio
    (`cf-templates-<algo>-<región>`), con tope de 1 MB, y la valida ahí mismo
    (un error de sintaxis aparece antes de crear nada). **Ese bucket lo crea
    CloudFormation, no PCM**, y queda en la cuenta: se puede borrar después.
 2. CloudFormation → **Create stack** → *Upload a template file* →
    `pcm-prerequisitos.yaml` → nombre `pcm-prerequisitos` → **Sufijo vacío** →
-   tildar *I acknowledge that AWS CloudFormation might create IAM resources
+   **ZonaDns y NombresDns vacíos** (salvo que se haya decidido que PCM cree el
+   DNS: ver §2) → tildar *I acknowledge that AWS CloudFormation might create IAM resources
    with custom names* → Create. La plantilla se niega a desplegarse fuera de
    us-east-1.
 3. Otras regiones con servidores a inventariar: un stack con
-   `pcm-ssm-readonly.yaml` en cada una.
-4. CloudShell: `bash verificar.sh` → tiene que terminar en **TODO OK**.
+   `pcm-ssm-readonly.yaml` en cada una. Pesa **~56 KB**: también se sube por
+   consola o desde S3, no con `--template-body`.
+4. CloudShell: `bash verificar.sh` → tiene que terminar en **TODO OK**. Prueba,
+   con el simulador de IAM (sin ejecutar nada), que la cuenta de lectura no
+   modifica nada; que la de montaje no toca lo que no tiene la llave, crea
+   sólo con la llave, reserva y libera sólo Elastic IPs propias y sube dumps
+   sólo a su bucket; y, si el stack tiene `ZonaDns`, que sólo crea registros A
+   con los nombres permitidos en esa zona. Sin `ZonaDns` informa «Route 53:
+   sin zona configurada (PCM no crea DNS; dominio a mano)», que no es un error.
 5. Access keys de `pcm-prod-ro` y `pcm-prod-prov` (IAM → Users → Security
    credentials → Create access key → *Application running outside AWS*) para
    cargarlas en PCM.
@@ -229,7 +306,9 @@ filestore, nginx con sus certificados, y los crontabs con los secretos tapados.
 1. Borrar en la consola las **access keys** de `pcm-prod-ro` y `pcm-prod-prov`
    (CloudFormation no borra un usuario que tiene keys creadas a mano).
 2. Terminar las EC2 montadas por PCM (o quitarles el instance profile
-   `pcm-ssm-role`), si se quiere borrar también el rol.
+   `pcm-ssm-role`), si se quiere borrar también el rol. Si se terminan desde
+   PCM, PCM libera sus Elastic IPs; si se terminan desde la consola, liberar
+   a mano las Elastic IPs con la etiqueta `primate:managed_by = pcm`.
 3. CloudFormation → el stack `pcm-prerequisitos` → **Delete**. Se borran el
    documento SSM, el rol, el instance profile, las dos policies y los dos
    usuarios.

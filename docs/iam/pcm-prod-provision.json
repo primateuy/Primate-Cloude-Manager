@@ -20,6 +20,7 @@
         "ec2:DescribeInstanceTypes",
         "ec2:DescribeKeyPairs",
         "ec2:DescribeRouteTables",
+        "ec2:DescribeInternetGateways",
         "route53:GetHostedZone",
         "route53:GetChange",
         "route53:ListResourceRecordSets",
@@ -146,6 +147,23 @@
         "arn:aws:ec2:*:<ACCOUNT_ID>:elastic-ip/*",
         "arn:aws:ec2:*:<ACCOUNT_ID>:instance/*"
       ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/primate:managed_by": "pcm"
+        }
+      }
+    },
+    {
+      "Sid": "AsociarEipEnLaInterfazDeLaMaquina",
+      "Effect": "Allow",
+      "Action": "ec2:AssociateAddress",
+      "Resource": "arn:aws:ec2:*:<ACCOUNT_ID>:network-interface/*"
+    },
+    {
+      "Sid": "LiberarEipSoloDePCM",
+      "Effect": "Allow",
+      "Action": "ec2:ReleaseAddress",
+      "Resource": "arn:aws:ec2:*:<ACCOUNT_ID>:elastic-ip/*",
       "Condition": {
         "StringEquals": {
           "aws:ResourceTag/primate:managed_by": "pcm"
