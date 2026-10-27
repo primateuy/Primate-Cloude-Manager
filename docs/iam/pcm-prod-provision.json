@@ -216,6 +216,15 @@
       ]
     },
     {
+      "Sid": "SubirDumpsSoloAlBucketDePCM",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::pcm-dumps-<ACCOUNT_ID>/incoming/*"
+    },
+    {
       "Sid": "NadieTocaLaLlaveDePropiedadEnRecursosExistentes",
       "Effect": "Deny",
       "Action": [

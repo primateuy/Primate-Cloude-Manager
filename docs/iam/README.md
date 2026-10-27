@@ -7,6 +7,24 @@ Dos policies, en **dos usuarios IAM distintos** y **dos cuentas en PCM**:
 | `pcm-prod-ro` | `pcm-prod-readonly.json` | «Prod — solo lectura» (normal) | Desde el enlace: inventario, importación y gemelo. |
 | `pcm-prod-prov` | `pcm-prod-provision.json` | «Prod — aprovisionamiento», con **Solo aprovisionamiento** marcado | Recién para montar Barraca Julia. |
 
+### Despliegue: CloudFormation (recomendado, 2026-10-27)
+
+`infra/cloudformation/pcm-prerequisitos.yaml` crea todo en un stack, sin
+reemplazar nada a mano (pseudo-parámetros): documento SSM, rol/instance
+profile `pcm-ssm-role`, bucket `pcm-dumps-<cuenta>`, las dos managed policies
+y los dos usuarios (cada uno con SOLO su policy, sin consola, sin access
+keys). Se **genera** desde estos JSON con `infra/cloudformation/generar.py`
+(no se edita a mano; `--check` falla si quedó vieja). Al generar se quitan los
+statements opcionales que dependen de algo que la plantilla no crea:
+`DnsSoloNombresDePCMEnLaZonaReal` (sin Route 53) y
+`SalidaDelDiscoveryPorS3Opcional`. Verificación posterior:
+`infra/cloudshell/verificar.sh` en CloudShell.
+
+`pcm-prod-provision` incluye `SubirDumpsSoloAlBucketDePCM`: `s3:PutObject` y
+`s3:AbortMultipartUpload` **solo** sobre `pcm-dumps-<cuenta>/incoming/*`, para
+que `infra/subir_dump.sh` suba el dump con ese mismo usuario (perfil
+`pcm-prod-provision`).
+
 ### Por qué dos usuarios y no las dos policies en uno
 
 IAM autoriza `ssm:SendCommand` evaluando **cada recurso por separado** (el
