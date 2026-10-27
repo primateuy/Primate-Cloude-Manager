@@ -1461,6 +1461,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             "aws_account_id": acc.aws_account_id or "",
             "default_region": region_labels.get(acc.default_region, acc.default_region or ""),
             "auth_method": auth_labels.get(acc.auth_method, acc.auth_method or ""),
+            "provision_only": bool(acc.provision_only),
             "last_sync_date": fields.Datetime.to_string(acc.last_sync_date) or "",
             "notes": acc.notes or "",
             "environments": [{

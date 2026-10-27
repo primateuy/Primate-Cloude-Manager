@@ -63,6 +63,7 @@
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Account ID</span><span class="o_pcm_mono" t-out="d.aws_account_id or '—'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Región por defecto</span><span t-out="d.default_region or '—'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Método de autenticación</span><span t-out="d.auth_method or '—'"/></div>
+                        <div class="o_pcm_kv"><span class="o_pcm_muted">Solo aprovisionamiento</span><span t-out="d.provision_only ? 'Sí — no importa ni ve lo ajeno' : 'No'"/></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Último sync</span><span t-out="d.last_sync_date or '—'"/></div>
                     </div>
                     <div class="o_pcm_card" t-if="d.notes">

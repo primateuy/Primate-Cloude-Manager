@@ -587,6 +587,17 @@ class TestOrigenDeLoSincronizado(TransactionCase):
             guard.check("rds", "delete_db_instance",
                         {"DBInstanceIdentifier": "cliente-prod-db"})
 
+    def test_detalle_de_cuenta_muestra_solo_aprovisionamiento(self):
+        """La ficha de la cuenta en la app dice si es «Solo aprovisionamiento»
+        (antes no se veía en ningún lado de la app)."""
+        Account = self.env["primate.cloud.account"]
+        Dash = self.env["primate.cloud.dashboard"]
+        prov = Account.create({"name": "Prod PROV", "default_region": "us-east-1",
+                               "provision_only": True})
+        ro = Account.create({"name": "Prod RO", "default_region": "us-east-1"})
+        self.assertTrue(Dash.get_account_detail(prov.id)["provision_only"])
+        self.assertFalse(Dash.get_account_detail(ro.id)["provision_only"])
+
     def test_cuenta_solo_aprovisionamiento_no_importa_lo_ajeno(self):
         prov = self.env["primate.cloud.account"].create({
             "name": "Prod PROV", "default_region": "us-east-1",
