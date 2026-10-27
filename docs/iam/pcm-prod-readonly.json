@@ -30,6 +30,7 @@
         "cloudwatch:GetMetricStatistics",
         "cloudwatch:ListMetrics",
         "ce:GetCostAndUsage",
+        "ce:GetCostForecast",
         "ssm:DescribeInstanceInformation",
         "ssm:GetCommandInvocation",
         "ssm:ListCommands",
@@ -44,7 +45,7 @@
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [
-        "arn:aws:ssm:*:<ACCOUNT_ID>:document/pcm-readonly-discovery",
+        "arn:aws:ssm:*:<ACCOUNT_ID>:document/pcm-readonly-discovery<SUFIJO>",
         "arn:aws:ec2:*:<ACCOUNT_ID>:instance/*"
       ]
     },

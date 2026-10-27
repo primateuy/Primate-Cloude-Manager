@@ -7,7 +7,11 @@ Fuente de verdad ÚNICA (no se editan las plantillas a mano):
   - primate_cloud_manager/data/ssm/pcm-readonly-discovery.json → documento SSM
 
 Transformaciones al generar:
-  - ``<ACCOUNT_ID>`` → ``${AWS::AccountId}`` (Fn::Sub): nadie reemplaza nada a mano.
+  - ``<ACCOUNT_ID>`` → ``${AWS::AccountId}`` y ``<SUFIJO>`` → ``${Sufijo}``
+    (Fn::Sub): nadie reemplaza nada a mano. ``Sufijo`` es un parámetro
+    OPCIONAL, vacío por defecto (producción no lo completa); sirve para
+    desplegar el stack en una cuenta que ya tiene recursos con estos nombres
+    (la sandbox), sin tocarlos.
   - Se QUITAN los statements opcionales que dependen de algo que la plantilla
     no crea: la zona de Route 53 (Barraca Julia va sin create_dns) y el bucket
     de salida del discovery. Quitar un Allow sólo reduce permisos.
@@ -37,7 +41,9 @@ QUITAR = {
     "pcm-prod-provision": {"DnsSoloNombresDePCMEnLaZonaReal"},
 }
 REGION = "us-east-1"
-BUCKET = "pcm-dumps-${AWS::AccountId}"
+BUCKET = "pcm-dumps-${AWS::AccountId}${Sufijo}"
+# Todos los buckets de PCM de ESTA cuenta: pcm-<uso>-<cuenta>[sufijo].
+BUCKETS_PCM = "pcm-*-${AWS::AccountId}${Sufijo}"
 
 
 def _sub(valor):
@@ -46,10 +52,11 @@ def _sub(valor):
         return {k: _sub(v) for k, v in valor.items()}
     if isinstance(valor, list):
         return [_sub(v) for v in valor]
-    if isinstance(valor, str) and "<ACCOUNT_ID>" in valor:
+    if isinstance(valor, str) and ("<ACCOUNT_ID>" in valor or "<SUFIJO>" in valor):
         if "${" in valor:
             raise SystemExit("no se puede Fn::Sub sobre %r" % valor)
-        return {"Fn::Sub": valor.replace("<ACCOUNT_ID>", "${AWS::AccountId}")}
+        return {"Fn::Sub": valor.replace("<ACCOUNT_ID>", "${AWS::AccountId}")
+                .replace("<SUFIJO>", "${Sufijo}")}
     return valor
 
 
@@ -66,13 +73,26 @@ def _policy(ruta, nombre):
     return _sub(doc)
 
 
+PARAMETRO_SUFIJO = {
+    "Sufijo": {
+        "Type": "String",
+        "Default": "",
+        "AllowedPattern": "^(-[a-z0-9]{1,12})?$",
+        "Description": (
+            "OPCIONAL. Vacío en producción. Se agrega al final de todos los "
+            "nombres (p. ej. -cfn) para desplegar en una cuenta que ya tiene "
+            "recursos con estos nombres, sin tocarlos."),
+    },
+}
+
+
 def _documento():
     with open(DOC_SSM) as fh:
         contenido = json.load(fh)
     return {
         "Type": "AWS::SSM::Document",
         "Properties": {
-            "Name": "pcm-readonly-discovery",
+            "Name": {"Fn::Sub": "pcm-readonly-discovery${Sufijo}"},
             "DocumentType": "Command",
             "DocumentFormat": "JSON",
             "UpdateMethod": "NewVersion",
@@ -90,6 +110,7 @@ def prerrequisitos():
             "policies pcm-prod-readonly / pcm-prod-provision y sus dos usuarios "
             "IAM (sin consola, sin access keys). Generada por "
             "infra/cloudformation/generar.py: no editar a mano."),
+        "Parameters": PARAMETRO_SUFIJO,
         "Rules": {
             "SoloEnUsEast1": {
                 "Assertions": [{
@@ -106,7 +127,7 @@ def prerrequisitos():
             "RolSSM": {
                 "Type": "AWS::IAM::Role",
                 "Properties": {
-                    "RoleName": "pcm-ssm-role",
+                    "RoleName": {"Fn::Sub": "pcm-ssm-role${Sufijo}"},
                     "Description": "PCM: rol de las EC2 que monta PCM (agente SSM + "
                                    "subir/bajar dumps en buckets pcm-*).",
                     "AssumeRolePolicyDocument": {
@@ -125,10 +146,15 @@ def prerrequisitos():
                         "PolicyDocument": {
                             "Version": "2012-10-17",
                             "Statement": [{
-                                "Sid": "PcmS3BackupObjects",
+                                "Sid": "ObjetosDeLosBucketsDePCMDeEstaCuenta",
                                 "Effect": "Allow",
                                 "Action": ["s3:PutObject", "s3:GetObject"],
-                                "Resource": "arn:aws:s3:::pcm-*/*",
+                                "Resource": {"Fn::Sub": (
+                                    "arn:${AWS::Partition}:s3:::" + BUCKETS_PCM
+                                    + "/*")},
+                                "Condition": {"StringEquals": {
+                                    "aws:ResourceAccount": {
+                                        "Ref": "AWS::AccountId"}}},
                             }],
                         },
                     }],
@@ -137,7 +163,7 @@ def prerrequisitos():
             "PerfilSSM": {
                 "Type": "AWS::IAM::InstanceProfile",
                 "Properties": {
-                    "InstanceProfileName": "pcm-ssm-role",
+                    "InstanceProfileName": {"Fn::Sub": "pcm-ssm-role${Sufijo}"},
                     "Roles": [{"Ref": "RolSSM"}],
                 },
             },
@@ -197,7 +223,7 @@ def prerrequisitos():
             "PolicyReadonly": {
                 "Type": "AWS::IAM::ManagedPolicy",
                 "Properties": {
-                    "ManagedPolicyName": "pcm-prod-readonly",
+                    "ManagedPolicyName": {"Fn::Sub": "pcm-prod-readonly${Sufijo}"},
                     "Description": "PCM: inventario, importacion y gemelo de SOLO LECTURA.",
                     "PolicyDocument": _policy(POLICY_RO, "pcm-prod-readonly"),
                 },
@@ -205,7 +231,7 @@ def prerrequisitos():
             "PolicyProvision": {
                 "Type": "AWS::IAM::ManagedPolicy",
                 "Properties": {
-                    "ManagedPolicyName": "pcm-prod-provision",
+                    "ManagedPolicyName": {"Fn::Sub": "pcm-prod-provision${Sufijo}"},
                     "Description": "PCM: montar SOLO lo nuevo (etiquetado primate:managed_by=pcm).",
                     "PolicyDocument": _policy(POLICY_PROV, "pcm-prod-provision"),
                 },
@@ -213,14 +239,14 @@ def prerrequisitos():
             "UsuarioReadonly": {
                 "Type": "AWS::IAM::User",
                 "Properties": {
-                    "UserName": "pcm-prod-ro",
+                    "UserName": {"Fn::Sub": "pcm-prod-ro${Sufijo}"},
                     "ManagedPolicyArns": [{"Ref": "PolicyReadonly"}],
                 },
             },
             "UsuarioProvision": {
                 "Type": "AWS::IAM::User",
                 "Properties": {
-                    "UserName": "pcm-prod-prov",
+                    "UserName": {"Fn::Sub": "pcm-prod-prov${Sufijo}"},
                     "ManagedPolicyArns": [{"Ref": "PolicyProvision"}],
                 },
             },
@@ -242,6 +268,7 @@ def ssm_readonly():
             "PCM - documento SSM de solo lectura pcm-readonly-discovery, para "
             "regiones con servidores a importar distintas de us-east-1. "
             "Generada por infra/cloudformation/generar.py: no editar a mano."),
+        "Parameters": PARAMETRO_SUFIJO,
         "Resources": {"DocumentoLecturaPCM": _documento()},
         "Outputs": {"DocumentoSSM": {"Value": {"Ref": "DocumentoLecturaPCM"}}},
     }
@@ -258,7 +285,10 @@ CABECERA_PRE = """\
 #      correr en un servidor que NO montó PCM. Es un script fijo, sin
 #      parámetros, de solo lectura (inventario de los Odoo del servidor).
 #   2. Rol e instance profile «pcm-ssm-role»: el rol que llevan las EC2 que
-#      SÍ monta PCM (agente SSM + subir/bajar dumps en buckets pcm-*).
+#      SÍ monta PCM (agente SSM + subir/bajar dumps y backups en los buckets
+#      pcm-<uso>-<cuenta> de ESTA cuenta). Limitación conocida: es UN rol
+#      para todos los servidores de PCM, así que cualquiera de ellos puede
+#      leer los dumps y backups de los demás (ver README_INCO.md).
 #   3. Bucket «pcm-dumps-<cuenta>» (us-east-1): dumps a restaurar. Privado,
 #      Block Public Access completo, cifrado SSE-S3, sin versionado, solo TLS;
 #      lo de incoming/ se borra solo a los 7 días.
@@ -280,7 +310,7 @@ CABECERA_PRE = """\
 #                       operar sólo esos.
 #
 # CÓMO SE DESPLIEGA: CloudFormation → Create stack → Upload a template file →
-# sin parámetros (todo sale de los pseudo-parámetros de la cuenta) → tildar
+# dejar «Sufijo» VACÍO (todo sale de los pseudo-parámetros de la cuenta) → tildar
 # «I acknowledge … IAM resources with custom names» (CAPABILITY_NAMED_IAM).
 # Solo en us-east-1 (regla «SoloEnUsEast1»). Para otras regiones con
 # servidores a leer: pcm-ssm-readonly.yaml (sólo el documento SSM).
@@ -319,7 +349,9 @@ COMENTARIO_RECURSO = {
     "RolSSM": [
         "Rol de las EC2 que monta PCM. AmazonSSMManagedInstanceCore habilita el",
         "agente SSM (PCM nunca usa SSH); la inline permite subir/bajar dumps y",
-        "backups en buckets pcm-*. No lo usan los servidores importados."],
+        "backups SÓLO en los buckets pcm-<uso>-<cuenta> de esta cuenta",
+        "(aws:ResourceAccount). No lo usan los servidores importados.",
+        "LIMITACIÓN: un solo rol para todos los servidores de PCM."],
     "PerfilSSM": [
         "Instance profile con el mismo nombre del rol (es lo que se le pasa a",
         "RunInstances; pcm-prod-prov sólo puede pasar este rol)."],
@@ -379,9 +411,15 @@ COMENTARIO_SID = {
         "El documento de shell para instalar Odoo (la instancia se limita abajo).",
     "ShellDeInstalacionSoloEnMaquinasDePCM":
         "...y sólo sobre instancias con la llave: nunca sobre un servidor ajeno.",
-    "BucketsDeBackupDePCM": "Buckets pcm-*: crear, listar, leer, borrar y lifecycle.",
+    "AmiPublicaDeCanonical":
+        "Sólo el parámetro PÚBLICO de Canonical con la AMI de Ubuntu (nada de la cuenta).",
+    "CrearBucketsDePCM": "Crear buckets pcm-<uso>-<esta cuenta> (backups).",
+    "BucketsDePCMDeEstaCuenta":
+        "Listar y lifecycle SÓLO en buckets pcm-<uso>-<cuenta> que sean de ESTA cuenta.",
+    "ObjetosDeLosBucketsDePCM":
+        "Leer y borrar objetos SÓLO en esos buckets de esta cuenta (aws:ResourceAccount).",
     "SubirDumpsSoloAlBucketDePCM":
-        "Subir dumps SÓLO a incoming/ del bucket pcm-dumps-<cuenta>.",
+        "Subir dumps SÓLO a incoming/ del bucket pcm-dumps-<cuenta>, de esta cuenta.",
 }
 
 
@@ -426,6 +464,12 @@ def main():
                 fh.write(texto)
             print("escrita %s (%d bytes)" % (os.path.relpath(ruta, RAIZ),
                                             len(texto.encode())))
+        # validate-template / create-stack con --template-body aceptan hasta
+        # 51.200 bytes (la consola sube a S3 y admite más).
+        if len(texto.encode()) > 51200:
+            raise SystemExit("%s pesa %d bytes: supera los 51.200 de "
+                             "--template-body" % (os.path.basename(ruta),
+                                                   len(texto.encode())))
     if desactualizadas:
         raise SystemExit("plantillas desactualizadas: %s — correr generar.py"
                          % ", ".join(desactualizadas))

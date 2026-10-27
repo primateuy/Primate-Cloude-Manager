@@ -389,7 +389,11 @@ class PrimateCloudAccount(models.Model):
     @api.model
     def _cron_pull_costs(self):
         """Cron diario: encola el pull de costos de cada cuenta conectada."""
-        for account in self.search([("connection_state", "=", "connected")]):
+        # La cuenta «Solo aprovisionamiento» es la MISMA cuenta AWS que la de
+        # lectura: consultar sus costos los duplicaría (y se pagaría dos
+        # veces). Los costos los trae sólo la cuenta de lectura.
+        for account in self.search([("connection_state", "=", "connected"),
+                                    ("provision_only", "=", False)]):
             account.with_delay(
                 description=_("Costos: %s") % account.name
             ).job_pull_costs()
@@ -397,6 +401,11 @@ class PrimateCloudAccount(models.Model):
     def action_pull_costs(self):
         """Botón: encola el pull de costos, respetando la guarda de frescura."""
         self.ensure_one()
+        if self.provision_only:
+            raise UserError(_(
+                "Esta cuenta es «Solo aprovisionamiento»: los costos de la "
+                "cuenta AWS los trae la cuenta de lectura (si no, se "
+                "duplicarían)."))
         self.with_delay(
             description=_("Costos: %s") % self.name
         ).job_pull_costs()

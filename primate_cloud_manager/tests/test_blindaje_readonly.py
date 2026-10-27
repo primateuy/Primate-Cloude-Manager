@@ -618,3 +618,68 @@ class TestOrigenDeLoSincronizado(TransactionCase):
             {"account_id": prov.id, "regions": "us-east-1"})
         with self.assertRaises(UserError):
             corrida.job_import_servers(commit=False)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestPermisosAcotadosPorCuenta(TransactionCase):
+    """2026-10-27: los buckets de PCM son pcm-<uso>-<cuenta> (la IAM los acota
+    con aws:ResourceAccount), el instance profile es configurable y la cuenta
+    «Solo aprovisionamiento» no trae costos (los duplicaría)."""
+
+    def setUp(self):
+        super().setUp()
+        self.account = self.env["primate.cloud.account"].create({
+            "name": "Prod", "default_region": "us-east-1",
+            "aws_account_id": "111122223333"})
+        partner = self.env["res.partner"].create({"name": "Cliente"})
+        project = self.env["primate.cloud.project"].create({
+            "name": "Cliente", "account_id": self.account.id,
+            "partner_id": partner.id})
+        self.env_rec = self.env["primate.cloud.environment"].create({
+            "name": "srv", "project_id": project.id,
+            "account_id": self.account.id, "state": "active"})
+
+    def test_bucket_de_esta_cuenta(self):
+        valido = self.env_rec._pcm_bucket_valido
+        self.assertEqual(valido("pcm-dumps-111122223333", "x"),
+                         "pcm-dumps-111122223333")
+        self.assertTrue(valido("pcm-backups-111122223333-cfn", "x"))
+        with self.assertRaises(UserError):
+            valido("dumps-111122223333", "x")            # sin pcm-
+        with self.assertRaises(UserError):
+            valido("pcm-backups", "x")                    # sin la cuenta
+        with self.assertRaises(UserError):
+            valido("pcm-backups-999988887777", "x")       # otra cuenta
+
+    def test_restore_rechaza_bucket_de_otra_cuenta(self):
+        with self.assertRaises(UserError):
+            self.env_rec._restore_origen_normalizado({
+                "origin": {"type": "s3_uri",
+                           "uri": "s3://pcm-dumps-999988887777/incoming/x.zip"}})
+
+    def test_instance_profile_configurable(self):
+        from odoo.addons.primate_cloud_manager.models.primate_cloud_region_setup import (
+            pcm_ssm_profile)
+        self.assertEqual(pcm_ssm_profile(self.env), "pcm-ssm-role")
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.ssm_instance_profile", "pcm-ssm-role-cfn")
+        self.assertEqual(pcm_ssm_profile(self.env), "pcm-ssm-role-cfn")
+
+    def test_cuenta_de_aprovisionamiento_no_trae_costos(self):
+        Account = self.env["primate.cloud.account"]
+        prov = Account.create({"name": "Prod PROV", "default_region": "us-east-1",
+                               "provision_only": True})
+        (self.account | prov).write({"connection_state": "connected"})
+        encoladas = []
+        original = type(Account).with_delay
+
+        def espia(rec, *a, **k):
+            encoladas.extend(rec.ids)
+            return original(rec, *a, **k)
+
+        with mock.patch.object(type(Account), "with_delay", espia):
+            Account._cron_pull_costs()
+        self.assertIn(self.account.id, encoladas)
+        self.assertNotIn(prov.id, encoladas)
+        with self.assertRaises(UserError):
+            prov.action_pull_costs()

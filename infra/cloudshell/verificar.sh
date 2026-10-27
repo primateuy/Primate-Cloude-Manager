@@ -30,7 +30,10 @@
 #   4. pcm-prod-prov no toca instancias SIN la llave.
 #   5. pcm-prod-prov no agrega ni borra la llave en recursos existentes.
 #   6. pcm-prod-prov sí crea una instancia CON la llave (y no sin ella), opera
-#      las suyas y sube dumps sólo a incoming/ de su bucket.
+#      las suyas, sube dumps sólo a incoming/ de su bucket de ESTA cuenta y
+#      sólo lee el parámetro público de la AMI de Ubuntu.
+#   7. pcm-ssm-role (el rol de las EC2 de PCM): lee/escribe sólo en los
+#      buckets pcm-<uso>-<cuenta> de ESTA cuenta.
 #
 # Las pruebas de IAM usan ARNs hipotéticos (i-0000000000ajena0, «otro-bucket»):
 # el simulador no necesita que existan. «denegado» = implicitDeny o
@@ -40,13 +43,17 @@
 # iam:SimulatePrincipalPolicy y los Describe de EC2/RDS). Bash 3.2+.
 # Al final: OK/FALLA por prueba y «TODO OK» (exit 0) o «HAY PROBLEMAS» (exit 1).
 #
-# Uso:  bash verificar.sh            (usuarios por defecto: pcm-prod-ro / pcm-prod-prov)
-#       RO_USER=x PROV_USER=y REGION=us-east-1 bash verificar.sh
+# Uso:  bash verificar.sh            (nombres por defecto: pcm-prod-ro, pcm-prod-prov,
+#                                     pcm-ssm-role, pcm-readonly-discovery)
+#       SUFIJO=-cfn bash verificar.sh  (si el stack se desplegó con el parámetro Sufijo)
+#       REGION=us-east-1 bash verificar.sh
 # =============================================================================
 set -uo pipefail
 
-RO_USER="${RO_USER:-pcm-prod-ro}"
-PROV_USER="${PROV_USER:-pcm-prod-prov}"
+SUFIJO="${SUFIJO:-}"
+RO_USER="${RO_USER:-pcm-prod-ro${SUFIJO}}"
+PROV_USER="${PROV_USER:-pcm-prod-prov${SUFIJO}}"
+ROL="${ROL:-pcm-ssm-role${SUFIJO}}"
 REGION="${REGION:-us-east-1}"
 LLAVE="primate:managed_by"
 
@@ -57,11 +64,18 @@ if [ -z "$ACCOUNT" ] || [ "$ACCOUNT" = "None" ]; then
 fi
 ARN_RO="arn:aws:iam::${ACCOUNT}:user/${RO_USER}"
 ARN_PROV="arn:aws:iam::${ACCOUNT}:user/${PROV_USER}"
+ARN_ROL="arn:aws:iam::${ACCOUNT}:role/${ROL}"
 INST_AJENA="arn:aws:ec2:${REGION}:${ACCOUNT}:instance/i-0000000000ajena0"
 INST_NUEVA="arn:aws:ec2:${REGION}:${ACCOUNT}:instance/*"
-DOC_LECTURA="arn:aws:ssm:${REGION}:${ACCOUNT}:document/pcm-readonly-discovery"
+DOC_LECTURA="arn:aws:ssm:${REGION}:${ACCOUNT}:document/pcm-readonly-discovery${SUFIJO}"
 DOC_SHELL="arn:aws:ssm:${REGION}::document/AWS-RunShellScript"
-BUCKET="pcm-dumps-${ACCOUNT}"
+BUCKET="pcm-dumps-${ACCOUNT}${SUFIJO}"
+# El simulador no completa aws:ResourceAccount solo: se le pasa, la propia y una
+# ajena. La ajena es un número de 12 dígitos distinto, derivado de la propia
+# (sólo existe dentro del simulador: no se consulta ninguna otra cuenta).
+CUENTA_AJENA="$(printf '%s' "$ACCOUNT" | tr '0-9' '1-90')"
+CTX_CUENTA_PROPIA=("ContextKeyName=aws:ResourceAccount,ContextKeyValues=${ACCOUNT},ContextKeyType=string")
+CTX_CUENTA_AJENA=("ContextKeyName=aws:ResourceAccount,ContextKeyValues=${CUENTA_AJENA},ContextKeyType=string")
 
 CTX_CON_LLAVE=("ContextKeyName=aws:ResourceTag/${LLAVE},ContextKeyValues=pcm,ContextKeyType=string")
 CTX_PIDE_LLAVE=("ContextKeyName=aws:TagKeys,ContextKeyValues=${LLAVE},ContextKeyType=stringList"
@@ -212,9 +226,31 @@ prueba "6c. RunInstances SIN la llave" denegado "$ARN_PROV" "$INST_NUEVA" \
 prueba "6d. opera su propia instancia (con la llave)" permitido "$ARN_PROV" "$INST_AJENA" \
     "ec2:StartInstances ec2:StopInstances" "${CTX_CON_LLAVE[@]}"
 prueba "6e. sube el dump a incoming/ de su bucket" permitido "$ARN_PROV" \
-    "arn:aws:s3:::${BUCKET}/incoming/barraca-julia/dump.zip" "s3:PutObject"
+    "arn:aws:s3:::${BUCKET}/incoming/cliente/dump.zip" "s3:PutObject" \
+    "${CTX_CUENTA_PROPIA[@]}"
 prueba "6f. no sube a otro bucket" denegado "$ARN_PROV" \
-    "arn:aws:s3:::otro-bucket/incoming/dump.zip" "s3:PutObject"
+    "arn:aws:s3:::otro-bucket/incoming/dump.zip" "s3:PutObject" \
+    "${CTX_CUENTA_PROPIA[@]}"
+prueba "6g. no sube a un bucket con el mismo nombre de OTRA cuenta" denegado "$ARN_PROV" \
+    "arn:aws:s3:::${BUCKET}/incoming/cliente/dump.zip" "s3:PutObject" \
+    "${CTX_CUENTA_AJENA[@]}"
+prueba "6h. lee el parámetro público de la AMI de Ubuntu" permitido "$ARN_PROV" \
+    "arn:aws:ssm:${REGION}::parameter/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id" \
+    "ssm:GetParameter"
+prueba "6i. no lee parámetros de la cuenta (SecureString)" denegado "$ARN_PROV" \
+    "arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/cualquier/clave" "ssm:GetParameter"
+linea
+
+# --- 7. pcm-ssm-role: sólo los buckets de PCM de esta cuenta --------------------
+echo "7. ${ROL}: lee y escribe sólo en los buckets de PCM de ESTA cuenta"
+prueba "7a. lee y escribe en pcm-backups-<cuenta>" permitido "$ARN_ROL" \
+    "arn:aws:s3:::pcm-backups-${ACCOUNT}${SUFIJO}/pcm-backups/x.dump" \
+    "s3:GetObject s3:PutObject" "${CTX_CUENTA_PROPIA[@]}"
+prueba "7b. no escribe en un bucket que no es de PCM" denegado "$ARN_ROL" \
+    "arn:aws:s3:::otro-bucket/x.dump" "s3:PutObject" "${CTX_CUENTA_PROPIA[@]}"
+prueba "7c. no escribe en un bucket pcm-* de OTRA cuenta" denegado "$ARN_ROL" \
+    "arn:aws:s3:::pcm-backups-${ACCOUNT}${SUFIJO}/x.dump" "s3:PutObject" \
+    "${CTX_CUENTA_AJENA[@]}"
 linea
 
 echo "RESUMEN"

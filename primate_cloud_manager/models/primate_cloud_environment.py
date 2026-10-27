@@ -695,10 +695,10 @@ class PrimateCloudEnvironment(models.Model):
         if setup.status != "ok":
             raise UserError(setup.detail or _("La región no está lista para "
                                               "aprovisionar."))
-        from .primate_cloud_region_setup import PCM_SSM_ROLE
+        from .primate_cloud_region_setup import pcm_ssm_profile
         filled = dict(params)
         if not profile:
-            filled["instance_profile"] = PCM_SSM_ROLE
+            filled["instance_profile"] = pcm_ssm_profile(self.env)
         if not subnet:
             filled["subnet_id"] = setup.subnet_id
         if not sg:
@@ -2925,6 +2925,7 @@ class PrimateCloudEnvironment(models.Model):
             raise UserError(_(
                 "No hay bucket S3 para el dump: indicá el bucket de "
                 "transferencia o asigná al origen una política con bucket."))
+        origin._pcm_bucket_valido(bucket, _("dump del staging"))
         s3 = aws_s3.AwsS3Service(origin.account_id._get_aws_service())
         s3.ensure_bucket(bucket, region=region)
         source = origin._run_database_backup(
@@ -3062,6 +3063,26 @@ class PrimateCloudEnvironment(models.Model):
         )
 
     @api.model
+    def _pcm_bucket_valido(self, bucket, uso):
+        """Los permisos de S3 están acotados a los buckets de PCM DE ESTA
+        CUENTA: ``pcm-<uso>-<cuenta>`` (con sufijo opcional), con condición
+        aws:ResourceAccount. Se valida antes de empezar, con mensaje claro,
+        en vez de un AccessDenied a mitad del job."""
+        bucket = (bucket or "").strip()
+        cuenta = (self.account_id.aws_account_id or "").strip()
+        if not bucket.startswith("pcm-"):
+            raise UserError(_(
+                "El bucket «%(b)s» (%(uso)s) no empieza con «pcm-»: los "
+                "permisos de S3 de PCM sólo alcanzan a los buckets "
+                "pcm-<uso>-<cuenta>.", b=bucket, uso=uso))
+        if cuenta and ("-%s" % cuenta) not in bucket:
+            raise UserError(_(
+                "El bucket «%(b)s» (%(uso)s) no lleva el número de cuenta "
+                "(%(c)s): los permisos de S3 de PCM sólo alcanzan a los "
+                "buckets pcm-<uso>-%(c)s de esta cuenta. Usá, por ejemplo, "
+                "pcm-backups-%(c)s.", b=bucket, uso=uso, c=cuenta))
+        return bucket
+
     @api.model
     def _ssm_long_timeout(self):
         """Tope (s) de los comandos SSM largos: restore y backup.
@@ -3483,6 +3504,7 @@ class PrimateCloudEnvironment(models.Model):
         bucket = policy.s3_bucket
         prefix = (policy.s3_prefix or "pcm-backups").strip("/")
         try:
+            self._pcm_bucket_valido(bucket, _("backups"))
             # Bucket + regla de retención (lifecycle: AWS borra solo lo vencido).
             s3 = aws_s3.AwsS3Service(account._get_aws_service())
             s3.ensure_bucket(bucket, region=region)
@@ -4233,6 +4255,10 @@ class PrimateCloudEnvironment(models.Model):
                     "permisos de S3 están acotados a los buckets pcm-*, así "
                     "que ni PCM ni la instancia pueden leer ahí. Subí el dump "
                     "a un bucket pcm-* y reintentá.", bucket=bucket))
+            # Y de ESTA cuenta (pcm-<uso>-<cuenta>): la IAM lo exige con
+            # aws:ResourceAccount (2026-10-27).
+            if len(self) == 1:
+                self._pcm_bucket_valido(bucket, _("dump a restaurar"))
             return {"type": tipo, "uri": uri, "format": fmt,
                     "bucket": bucket, "key": key}
 

@@ -16,6 +16,15 @@ from ..services import aws_base, aws_discovery, aws_ec2
 
 # Nombre convenido del instance profile/rol (runbook). El auto-path lo asume.
 PCM_SSM_ROLE = "pcm-ssm-role"
+# Parámetro para usar otro nombre (el stack de CloudFormation admite un
+# sufijo, p. ej. para probarlo en una cuenta que ya tiene pcm-ssm-role).
+PCM_SSM_ROLE_PARAM = "pcm.ssm_instance_profile"
+
+
+def pcm_ssm_profile(env):
+    """Nombre del instance profile de las EC2 de PCM (default pcm-ssm-role)."""
+    return (env["ir.config_parameter"].sudo().get_param(PCM_SSM_ROLE_PARAM)
+            or PCM_SSM_ROLE).strip()
 # TTL del caché para estados OK (no hostigar la API cuando todo está verde).
 CACHE_TTL_HOURS = 1
 
@@ -70,7 +79,8 @@ class PrimateCloudRegionSetup(models.Model):
         """
         for rec in self:
             try:
-                result = rec._discovery().discover_region(rec.region, PCM_SSM_ROLE)
+                result = rec._discovery().discover_region(
+                    rec.region, pcm_ssm_profile(self.env))
                 rec._apply_discovery(result)
             except Exception as error:  # noqa: BLE001 - error legible, no rompe
                 rec.write({
@@ -106,9 +116,9 @@ class PrimateCloudRegionSetup(models.Model):
         lines = []
         if "profile" in missing:
             lines.append(_(
-                "Falta el instance profile 'pcm-ssm-role' (o no es pasable) en "
-                "esta cuenta. Corré el paso IAM del onboarding antes de "
-                "aprovisionar."))
+                "Falta el instance profile del rol de PCM (o no es pasable) en "
+                "esta cuenta. Corré el paso IAM del onboarding (o el stack "
+                "pcm-prerequisitos) antes de aprovisionar."))
         if "vpc" in missing:
             if vpc.get("ambiguous"):
                 lines.append(_(
