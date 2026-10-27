@@ -192,6 +192,11 @@ class PrimateCloudProvisionWizard(models.TransientModel):
                 (env.name or "db").lower().replace(" ", "-").replace("_", "-")
             )
 
+    @api.onchange("sslip_domain")
+    def _onchange_sslip_domain(self):
+        if self.sslip_domain:
+            self.create_dns = False
+
     def _prepare_params(self):
         """Construye el dict que consume la cadena ``job_provision_server``."""
         self.ensure_one()
@@ -260,10 +265,9 @@ class PrimateCloudProvisionWizard(models.TransientModel):
                     "El dominio sslip.io automático necesita la IP fija: sin "
                     "ella, un stop/start cambia la IP y el dominio deja de "
                     "apuntar al servidor."))
-            if self.create_dns:
-                raise UserError(_(
-                    "Con el dominio sslip.io automático no se crea registro en "
-                    "Route 53: desmarcá «Crear registro DNS»."))
+            # Con sslip.io no hay Route 53 (la pantalla oculta la opción):
+            # gana sslip.io y el registro DNS queda apagado.
+            self.create_dns = False
         elif not (self.domain or "").strip():
             raise UserError(_(
                 "Poné el dominio principal o marcá «Dominio sslip.io "

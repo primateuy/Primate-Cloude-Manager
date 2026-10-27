@@ -148,6 +148,12 @@ export class EnvForm extends Component {
 
     toggle(field, ev) {
         this.state[field] = ev.target.checked;
+        // Con sslip.io automático no hay Route 53: la casilla se oculta, así
+        // que se apaga acá (si no, la validación pedía una zona invisible).
+        if (field === "sslip_domain" && ev.target.checked) {
+            this.state.create_dns = false;
+            this.state.errors = { ...this.state.errors, hosted_zone_id: "" };
+        }
     }
 
     async verifyRegion() {
@@ -210,7 +216,8 @@ export class EnvForm extends Component {
                 errors.db_password = "RDS: indicá la contraseña maestra de la base.";
             }
         }
-        if (this.state.create_dns && !(this.state.hosted_zone_id || "").trim()) {
+        if (this.state.create_dns && !this.state.sslip_domain
+                && !(this.state.hosted_zone_id || "").trim()) {
             errors.hosted_zone_id =
                 "Para crear DNS, indicá el Hosted Zone ID de Route 53.";
         }

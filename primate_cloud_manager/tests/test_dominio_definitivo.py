@@ -217,6 +217,31 @@ class TestDominioDefinitivo(TransactionCase):
             "eipalloc-1", region="us-east-1")
         self.assertFalse(self.machine.eip_allocation_id)
 
+    def test_reintento_con_la_eip_ya_liberada_la_limpia_en_pcm(self):
+        """Corrida real 27-oct: el 1er intento liberó la IP en AWS y su commit
+        se perdió (choque con un sync concurrente); el reintento la encuentra
+        inexistente y PCM tiene que quedar igual que AWS, con rastro."""
+        self.machine.eip_allocation_id = "eipalloc-1"
+        fake = self._ec2_falso(address={
+            "public_ip": IP, "allocation_id": "eipalloc-1",
+            "tags": {"primate:managed_by": "pcm"}})
+        fake.terminate_instance.return_value = "req-2"
+        fake.get_instance.return_value = {"instance_state": "terminated"}
+        fake.get_address.return_value = None     # ya no existe en AWS
+        with mock.patch.object(type(self.machine), "_get_ec2_service",
+                               return_value=fake), \
+                mock.patch.object(type(self.machine), "_notify_user_done"), \
+                mock.patch("time.sleep", return_value=None):
+            self.machine.job_lifecycle("ec2_terminate")
+        fake.release_address.assert_not_called()
+        self.assertFalse(self.machine.eip_allocation_id)
+        log = self.env["primate.cloud.operation.log"].search([
+            ("action_type", "=", "eip_release"),
+            ("resource_id", "=", self.machine.id)])
+        self.assertTrue(log)
+        self.assertIn("ya no existe en AWS",
+                      self.machine.message_ids.sorted("id")[-1].body)
+
     def test_terminar_no_libera_una_eip_ajena(self):
         fake = self._ec2_falso(address={
             "public_ip": IP, "allocation_id": "eipalloc-ajena", "tags": {}})
@@ -453,6 +478,22 @@ class TestDominioDefinitivo(TransactionCase):
         self.assertEqual(visto["ssl"], dominio)
         self.assertEqual(self.inst.main_url, dominio)
         self.assertEqual(self.server.state, "active")
+        # El chatter del ENTORNO cuenta el montaje en orden (runbook §6.2).
+        cuerpos = [m.body for m in self.server.message_ids.sorted("id")]
+        claves = ["IP fija (Elastic IP) 100.57.183.141 asociada",
+                  "Dominio provisorio: %s" % dominio,
+                  "Entorno aprovisionado y activo en %s" % dominio,
+                  "HTTPS activo: https://%s" % dominio]
+        posiciones = [next(i for i, c in enumerate(cuerpos) if k in c)
+                      for k in claves]
+        self.assertEqual(posiciones, sorted(posiciones))
+
+    def test_sslip_sin_certificado_lo_dice_en_el_chatter(self):
+        self._montar_con_sslip({
+            "db_mode": "local_pg", "elastic_ip": True, "sslip_domain": True,
+            "ssl_auto": True}, ssl_result="certbot_failed")
+        ultimo = self.server.message_ids.sorted("id")[-1].body
+        self.assertIn("Sin HTTPS todavía", ultimo)
 
     def test_sin_sslip_automatico_usa_el_dominio_dado(self):
         ok, visto = self._montar_con_sslip({
@@ -476,10 +517,16 @@ class TestDominioDefinitivo(TransactionCase):
         with self.assertRaises(UserError):
             self._wizard(sslip_domain=True, elastic_ip=False).action_provision()
         with self.assertRaises(UserError):
-            self._wizard(sslip_domain=True, create_dns=True,
-                         hosted_zone_id="Z1").action_provision()
-        with self.assertRaises(UserError):
             self._wizard(domain=False).action_provision()
+
+    def test_wizard_sslip_apaga_route53_aunque_venga_marcado(self):
+        """El form arranca con «Crear registro DNS» marcado y lo oculta al
+        marcar sslip.io: no puede quedar pidiendo una zona invisible
+        (corrida real del 27-oct, el botón no hacía nada)."""
+        wiz = self._wizard(sslip_domain=True, create_dns=True)
+        with mock.patch.object(type(self.server), "_enqueue_provision") as enq:
+            wiz.action_provision()
+        self.assertIs(enq.call_args[0][0]["create_dns"], False)
 
     def test_wizard_sslip_encola_sin_dominio(self):
         wiz = self._wizard(sslip_domain=True, ssl_auto=True)

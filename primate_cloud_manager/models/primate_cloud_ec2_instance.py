@@ -2149,6 +2149,20 @@ class PrimateCloudEc2Instance(models.Model):
             while True:
                 address = service.get_address(allocation_id, region=self.region)
                 if not address:
+                    # Ya no existe en AWS: un intento anterior la liberó y
+                    # su commit se perdió (corrida real 27-oct: el job chocó
+                    # con un sync concurrente y queue_job lo reintentó). Se
+                    # deja PCM igual que AWS, con su rastro.
+                    if self.eip_allocation_id == allocation_id:
+                        self.eip_allocation_id = False
+                    self.message_post(body=_(
+                        "IP fija %s: ya no existe en AWS (quedó liberada).")
+                        % allocation_id)
+                    self._log("eip_release",
+                              name=_("Liberar IP fija: %s") % self.name,
+                              error_message=_(
+                                  "%s ya no existía en AWS: se limpia en PCM.")
+                              % allocation_id)
                     return True
                 if (address.get("tags") or {}).get(aws_base.MANAGED_BY_TAG) \
                         != aws_base.MANAGED_BY_VALUE:

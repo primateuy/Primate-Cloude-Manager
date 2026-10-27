@@ -1072,7 +1072,12 @@ class PrimateCloudEnvironment(models.Model):
             if params.get("elastic_ip", True):
                 bus.provision_step(self.env, self,
                                    _("Asignando la IP fija (Elastic IP)…"))
-                machine._pcm_ensure_elastic_ip()
+                ip_fija = machine._pcm_ensure_elastic_ip()
+                # El chatter del ENTORNO cuenta el montaje entero, en orden
+                # (la máquina tiene además su propio aviso).
+                self.message_post(body=_(
+                    "IP fija (Elastic IP) %s asociada al servidor.")
+                    % (ip_fija or machine.public_ip or "?"))
             # Dominio sslip.io automático: se arma con la IP ya fija, así el
             # vhost, web.base.url y el certificado del paso 5 nacen con él.
             # Un reintento llega a la misma IP fija → al mismo dominio.
@@ -1155,6 +1160,16 @@ class PrimateCloudEnvironment(models.Model):
                 self.message_post(body=_(
                     "El paso HTTPS falló (%s): la instancia quedó en HTTP y "
                     "el reintento automático sigue.") % error)
+            else:
+                if ssl_result == "active":
+                    self.message_post(body=_(
+                        "HTTPS activo: https://%s (Let's Encrypt).") % domain)
+                else:
+                    self.message_post(body=_(
+                        "Sin HTTPS todavía en %(d)s (%(r)s): la instancia "
+                        "sirve por HTTP y el reintento automático sigue "
+                        "(o «Activar HTTPS ahora»).",
+                        d=domain, r=instance_rec.ssl_last_error or ssl_result))
         bus.provision_done(self.env, self, ok=True,
                            message=_("Entorno activo en %(url)s.", url=(
                                "https://%s" % domain if ssl_result == "active"
