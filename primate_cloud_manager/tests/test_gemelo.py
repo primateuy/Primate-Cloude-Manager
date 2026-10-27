@@ -712,6 +712,39 @@ class TestCloudpepperImport(TransactionCase):
             [("environment_id", "=", env_rec.id)]).mapped("version")), 2)
         self.assertEqual(len(env_rec.instance_ids.filtered("conf_path")), 2)
 
+    def test_gemelo_por_ssh_de_un_servidor_aws_sin_ssm_va_a_ese_servidor(self):
+        """«Sin acceso SSM»: el .json de gemelo_cloudpepper.sh se carga sobre
+        el servidor AWS ya importado, sin crear otro entorno."""
+        server = self.env["primate.cloud.environment"].with_context(
+            pcm_import_sync=True).create({
+                "name": "aws-sin-ssm", "account_id": self.account.id,
+                "project_id": self.env[
+                    "primate.cloud.server.import"]._proyecto_centinela().id,
+                "env_type": "production", "state": "active",
+                "pcm_origin": "imported_aws"})
+        machine = self.env["primate.cloud.ec2.instance"].create({
+            "name": "aws-sin-ssm", "account_id": self.account.id,
+            "environment_id": server.id, "aws_instance_id": "i-nossm",
+            "instance_state": "running", "region": "us-east-2"})
+        server.ec2_instance_id = machine
+        machine.with_context(pcm_import_sync=True).sudo().write(
+            {"management_state": "adopted_readonly"})
+        antes = self.env["primate.cloud.environment"].search_count([])
+        wiz = self.env["primate.cloud.external.import.wizard"].create({
+            "environment_id": server.id,
+            "twin_file": base64.b64encode(
+                json.dumps(_twin_dos_instancias()).encode()),
+            "twin_filename": "aws-sin-ssm.json"})
+        wiz.action_import()
+        self.assertEqual(
+            self.env["primate.cloud.environment"].search_count([]), antes)
+        snaps = self.env["primate.cloud.twin.snapshot"].search(
+            [("environment_id", "=", server.id)])
+        self.assertEqual(len(snaps), 2)
+        self.assertEqual(snaps.machine_id, machine)
+        self.assertEqual(server.pcm_origin, "imported_aws")
+        self.assertEqual(machine.management_state, "adopted_readonly")
+
     def test_lo_importado_de_cloudpepper_no_se_toca(self):
         env_rec = self._importar()
         inst = env_rec.instance_ids.filtered("conf_path")[:1]

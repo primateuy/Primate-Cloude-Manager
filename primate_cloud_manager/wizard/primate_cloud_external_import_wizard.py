@@ -29,9 +29,11 @@ class PrimateCloudExternalImportWizard(models.TransientModel):
         help="Cómo se va a llamar el entorno en PCM (ej.: cp-clientes-1).")
     environment_id = fields.Many2one(
         "primate.cloud.environment", string="Entorno existente",
-        domain=[("pcm_origin", "=", "imported_cloudpepper")],
+        domain=[("pcm_origin", "in", ("imported_cloudpepper", "imported_aws"))],
         help="Para RE-capturar: una versión nueva del snapshot del mismo "
-             "servidor. Vacío = servidor nuevo.")
+             "servidor. También un servidor de AWS ya importado que quedó "
+             "«Sin acceso SSM»: su gemelo sacado por ssh se carga acá, sobre "
+             "el mismo servidor (sin duplicarlo). Vacío = servidor nuevo.")
     project_id = fields.Many2one(
         "primate.cloud.project", string="Proyecto (cliente)",
         help="Vacío = «sin clasificar»; las instancias se clasifican después.")
@@ -79,7 +81,16 @@ class PrimateCloudExternalImportWizard(models.TransientModel):
                 "state": "active",
                 "pcm_origin": "imported_cloudpepper",
             })
-        snapshots = env_rec.with_context(pcm_import_sync=True)._twin_apply(twin)
+        # Servidor de AWS ya importado sin acceso SSM: el gemelo va a SU
+        # máquina (mismo camino que la captura por SSM). PCM no le agrega
+        # rol ni agente: solo se carga lo que se leyó por ssh.
+        machine = env_rec.ec2_instance_id or env_rec.ec2_instance_ids[:1]
+        if env_rec.pcm_origin == "imported_aws" and machine:
+            snapshots = machine.with_context(
+                pcm_import_sync=True)._twin_apply(twin)
+        else:
+            snapshots = env_rec.with_context(
+                pcm_import_sync=True)._twin_apply(twin)
         alertas = sum(snapshots.mapped("alert_count"))
         env_rec.message_post(body=_(
             "Gemelo importado desde archivo (%(prov)s, host «%(host)s»): "

@@ -15,6 +15,9 @@
                     salida: no se copia ni se escribe nada en el servidor.
                     Subí acá el <code>gemelo.txt</code>.
                     Lo importado queda en <b>solo lectura</b>, sin excepción.
+                    Un servidor de AWS ya importado que quedó «Sin acceso SSM»
+                    se elige en «Entorno existente»: su gemelo se carga sobre
+                    ese servidor, sin duplicarlo.
                 </div>
                 <group>
                     <field name="provider"/>

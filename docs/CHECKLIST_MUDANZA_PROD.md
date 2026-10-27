@@ -38,7 +38,7 @@ blureados en el montaje).
 | 3 | Regiones extra: `pcm-ssm-readonly.yaml` donde haya servidores a importar | YO | [§3](#3--regiones-extra-yo) |
 | 4 | Keys: crear en IAM, cargar en PCM, «Validar conexión», perfil de aws cli | YO · PCM | [§4](#4--access-keys-yo--pcm) |
 | 5 | Dump: `subir_dump.sh` | YO | [§5](#5--dump-de-barraca-julia-yo) |
-| 6 | Montaje de bj-uat: aprovisionar → sslip.io + HTTPS → restore → checks | PCM · YO | [§6](#6--montaje-de-bj-uat-pcm-con-pcm-prod-prov) |
+| 6 | Montaje de bj-uat: aprovisionar (termina en sslip.io con HTTPS) → restore → checks | PCM · YO | [§6](#6--montaje-de-bj-uat-pcm-con-pcm-prod-prov) |
 | 7 | Importación de solo lectura, **fuera de horario** (AWS por PCM + Cloudpepper por ssh) | PCM · YO | [§7](#7--importación-de-solo-lectura-fuera-de-horario) |
 | 8 | Cierre: bitácora, grupo destructivo, aviso a INCO, limpieza | YO · CC | [§8](#8--cierre-y-aviso-a-inco) |
 
@@ -54,7 +54,9 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
       definitivo, secretos fuera de queue_job, Access Key ID enmascarada.
 - [x] **Cuentas AWS sin credenciales**: **«pcm-prod-ro»** (lectura) y
       **«pcm-prod-prov»** («Solo aprovisionamiento: Sí»), las dos us-east-1,
-      método Access Key, estado Borrador.
+      método Access Key, estado Borrador. Cada una con su **«Usuario IAM
+      esperado»** (`pcm-prod-ro` / `pcm-prod-prov`): «Validar conexión» falla si
+      las keys responden con otro usuario.
 - [x] **Parámetros sin sufijo**: `pcm.ssm_instance_profile = pcm-ssm-role`,
       `pcm.readonly_discovery_document = pcm-readonly-discovery`,
       `pcm.ssl_use_le_staging = False` (Let's Encrypt **producción**). El
@@ -64,9 +66,9 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
       Julia, el entorno `bj-uat` y su instancia, en Borrador.
 - [x] **Formulario de bj-uat precargado** (cuenta pcm-prod-prov): us-east-1 ·
       t3.xlarge · disco 100 GB (gp3) · Ubuntu 24.04 · PostgreSQL local, base
-      `bj_uat` · IP fija marcada · sin Route 53 · **«Emitir HTTPS al terminar»
-      apagado** · dominio provisorio `bj-uat.pcm.invalid` · instancia
-      `bj-uat`. Entorno tipo **Staging**, Odoo 19 Community, sin repos (sin
+      `bj_uat` · IP fija marcada · **«Dominio sslip.io automático» marcado** ·
+      **«Emitir HTTPS al terminar» marcado** · sin Route 53 · instancia
+      `bj-uat`. El montaje termina solo en `https://bj-uat.<ip>.sslip.io`. Entorno tipo **Staging**, Odoo 19 Community, sin repos (sin
       LocalizacionUy), con el aviso de UAT en el chatter.
 - [x] **Dump**: sha256 recalculado = `SHA256SUMS.txt`; checklist de
       neutralización **re-chequeado leyendo el `dump.sql` dentro del zip**:
@@ -227,7 +229,8 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
    Cuentas AWS** → clic en la cuenta → botón **«Editar»** → pegar en
    **«Access Key ID»** y **«Secret Access Key»** → **«Guardar»** → botón
    **«Validar conexión»**. Tiene que quedar **«Conectada»** con el **AWS
-   Account ID** completo (12 dígitos, el de Primate).
+   Account ID** completo (12 dígitos, el de Primate) y **«Respondió (ARN)»** =
+   `arn:aws:iam::<cuenta>:user/<el usuario de la tabla>`.
 
    | Usuario IAM | Cuenta en PCM | Además |
    |---|---|---|
@@ -235,8 +238,10 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
    | `pcm-prod-prov` | **«pcm-prod-prov»** | la ficha dice **«Solo aprovisionamiento: Sí — no importa ni ve lo ajeno»**; las **mismas** keys van al perfil de aws cli (4.3) |
 
    Si se cruzan (las de lectura en la de aprovisionamiento o al revés),
-   «Validar conexión» igual conecta: el control es mirar que el usuario de la
-   key coincida con el nombre de la cuenta antes de pegar.
+   «Validar conexión» **falla**: la cuenta queda en **Error** con «Las keys
+   responden como «pcm-prod-ro» (…), pero esta cuenta espera «pcm-prod-prov».
+   ¿Están cruzadas?». Se pegan las correctas y se vuelve a validar. El usuario
+   esperado es el campo **«Usuario IAM esperado»** de cada cuenta (ya cargado).
 3. [ ] YO · **Perfil de aws cli** para subir el dump (keys de `pcm-prod-prov`),
    en tu Mac:
 
@@ -260,7 +265,8 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
    infra/subir_dump.sh ~/dumps/barracajulia/pcm_produccion/bj_v19_neutralizada_pcm_2026-10-27.zip
    ```
 
-   Chequea que el perfil sea `pcm-prod-prov`, que el sha256 local coincida con
+   Imprime «Respondió: <ARN>» y frena si no es el usuario `pcm-prod-prov`
+   (variable `USUARIO_ESPERADO`); chequea que el sha256 local coincida con
    `SHA256SUMS.txt` (`60251a0c…a5a429`), sube con progreso a
    `s3://pcm-dumps-<cuenta>/incoming/barraca-julia/bj_v19_neutralizada_pcm_2026-10-27.zip`
    y al final verifica tamaño y sha256 en S3. Termina en **«LISTO»** e imprime
@@ -274,17 +280,31 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
 1. [ ] PCM · Entornos → **`bj-uat`** (Staging, en Borrador) →
    **«Aprovisionar»**. El formulario ya viene **precargado** (ver «Preparado
    el 27-oct»); revisá que diga cuenta **pcm-prod-prov**, us-east-1,
-   t3.xlarge, 100, Ubuntu 24.04, base `bj_uat`, IP fija marcada, Route 53 y
-   «Emitir HTTPS» **apagados**. Lo único que falta:
+   t3.xlarge, 100, Ubuntu 24.04, base `bj_uat`, **IP fija**, **«Dominio
+   sslip.io automático»** y **«Emitir HTTPS al terminar»** marcados, Route 53
+   apagado. Lo único que falta:
    - **«Verificar región»** → verde (security group, subred y perfil
      `pcm-ssm-role`; el SG `pcm-managed` lo crea PCM si falta);
    - **contraseña admin** (master del `odoo.conf`; guardala en el llavero);
-   - **Aprovisionar**. El volumen sale gp3 (AMI de Canonical `ebs-gp3`). La IP
-     que muestra el servidor al terminar ya es la fija.
-2. [ ] PCM · Con la IP: **«Gestionar»** → **URL principal** =
-   `bj-uat.<ip-con-guiones>.sslip.io` → Guardar. PCM reescribe el vhost y
-   emite HTTPS (Let's Encrypt producción). Esperar **«HTTPS activo»** (en el
-   ensayo: 30 s). Con la IP fija, un stop/start ya no rompe sslip.io.
+   - **Aprovisionar**. El volumen sale gp3 (AMI de Canonical `ebs-gp3`).
+2. [ ] PCM · **Todo solo, sin botones**: PCM crea la EC2, asigna la IP fija,
+   arma el dominio **`bj-uat.<ip-con-guiones>.sslip.io`** con esa IP (sslip.io
+   resuelve solo, sin registro DNS), instala Odoo con nginx para ese nombre
+   y, al terminar, emite el certificado (Let's Encrypt **producción**) y lo
+   verifica con un GET https real. Qué ver, en orden, en el chatter del
+   entorno:
+   - «IP fija (Elastic IP) <ip> asociada…»;
+   - «Dominio provisorio: bj-uat.<ip>.sslip.io (sslip.io con la IP fija…)»;
+   - «Entorno aprovisionado y activo en bj-uat.<ip>.sslip.io»;
+   - el aviso final dice **«Entorno activo en https://bj-uat.<ip>.sslip.io»**
+     y la instancia muestra el badge **«HTTPS activo»** (en el ensayo, el
+     paso HTTPS tardó 30 s).
+
+   Abrí `https://bj-uat.<ip>.sslip.io/web/login`: **candado válido**, emisor
+   Let's Encrypt (no «(STAGING)»), y `http://` redirige a `https://`. Con la IP
+   fija, un stop/start no rompe sslip.io ni el certificado.
+   **«Activar HTTPS ahora» solo se usa si el aviso final dice el dominio SIN
+   https** (badge «Sin HTTPS» con el motivo): ver «Plan B si SSL falla».
 3. [ ] PCM · **«Restaurar desde un dump…»** (panel lateral): origen «Key S3
    manual» = la ruta que imprimió `subir_dump.sh` · formato: detectar ·
    **Eliminar el dump de S3 al finalizar: sí** · base destino `bj_uat` ·
@@ -356,9 +376,15 @@ certbot con la propagación confirmada; tope 6 intentos y 24 h esperando).
    regiones con recursos**. Todo entra `adopted_readonly`, con el entorno
    marcado «Importado de AWS». **bj-uat no se importa**: el reporte lo lista en
    «Ya gestionados por PCM (no se importan)» (es lo esperado).
-2. [ ] YO · Reporte → **«Sin acceso SSM»**: a esos servidores **no se les
-   agrega** nada (sería modificarlos); su gemelo va por ssh como los de
-   Cloudpepper (agregalos a la lista del paso siguiente). Una región en
+2. [ ] YO · Reporte → **«Sin acceso SSM»**: son los servidores AWS que ya
+   existían **sin agente SSM o sin un rol** (instance profile) que le permita
+   hablar con SSM. Entran igual al inventario, en solo lectura, pero **sin
+   gemelo**. **PCM no les agrega ningún rol** ni instala nada: eso sería
+   modificarlos. Su gemelo se saca **por ssh con `infra/gemelo_cloudpepper.sh`**,
+   igual que Cloudpepper: agregalos a `~/.pcm_produccion/cloudpepper_servidores.txt`
+   y, al subir el `.json` en «Importar servidor de Cloudpepper», elegí **ese
+   servidor en «Entorno existente»** (así el gemelo queda sobre el servidor AWS
+   importado, sin crear otro). Una región en
    «Regiones sin documento de lectura» = falta el stack del paso 3 ahí.
 3. [ ] PCM · El gemelo se captura en la importación; «Capturar gemelo (solo
    lectura)» para re-capturar. Si un servidor con muchos Odoo da «la salida
@@ -375,7 +401,7 @@ certbot con la propagación confirmada; tope 6 intentos y 24 h esperando).
      entrar **sin preguntar nada** (clave cargada, host conocido o nuevo).
    - **modo**: `root` si entrás como root; `sudo` si el usuario tiene **sudo
      sin contraseña** (si la pide, ese servidor falla y se sigue).
-   - Sumá los servidores AWS que salieron «Sin acceso SSM» en 7.1.
+   - Sumá los servidores AWS que salieron «Sin acceso SSM» en 7.2.
    - Probá cada destino antes con `ssh <destino> true` (no debe pedir nada).
 2. [ ] YO · En la raíz del repo: `infra/gemelo_cloudpepper.sh`. Recorre todos
    por ssh en solo lectura (el script viaja por la entrada y el gemelo vuelve
@@ -383,6 +409,8 @@ certbot con la propagación confirmada; tope 6 intentos y 24 h esperando).
    **`~/pcm_gemelos/<fecha>/<alias>.json`**. Resumen OK/FALLA por servidor.
 3. [ ] PCM · Inventario → **«Importar servidor de Cloudpepper»** → nombre =
    el alias → subir el `.json`. Queda marcado «Importado de Cloudpepper».
+   Para un servidor AWS «Sin acceso SSM»: en vez del nombre, elegirlo en
+   **«Entorno existente»** y subir su `.json`.
 
 ### Revisión del gemelo (por instancia, pestaña «Gemelo») — YO
 - [ ] Cada Odoo del servidor aparece como instancia propia y con su base.
