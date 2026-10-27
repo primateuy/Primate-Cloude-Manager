@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 # armar_entregable_inco.sh — arma entregables/inco/pcm_permisos_<fecha>.zip
-# con lo que revisa INCO: las dos plantillas, verificar.sh y README_INCO.md.
+# con lo que revisa INCO: las dos plantillas, verificar.sh y README_INCO.md
+# (también en PDF).
 #
 # Antes de cerrar el zip, verifica que las plantillas estén al día con el
 # repo (generar.py --check) y que NINGÚN archivo tenga números de cuenta,
@@ -60,6 +61,10 @@ for f in "${ARCHIVOS[@]}"; do
     cp "$f" "$TMP/pcm_permisos_${FECHA}/"
 done
 chmod 755 "$TMP/pcm_permisos_${FECHA}/verificar.sh"
+# El README también en PDF (mismo contenido, ya revisado arriba).
+"$PY" infra/readme_a_pdf.py infra/README_INCO.md \
+    "$TMP/pcm_permisos_${FECHA}/README_INCO.pdf"
+echo "✓ README_INCO.pdf"
 (cd "$TMP" && zip -q -r -X "pcm_permisos_${FECHA}.zip" "pcm_permisos_${FECHA}")
 mv "$TMP/pcm_permisos_${FECHA}.zip" "$ZIP"
 echo "✓ $ZIP"

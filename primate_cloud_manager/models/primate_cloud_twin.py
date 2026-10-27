@@ -66,7 +66,7 @@ def readonly_document_content():
 
     return {
         "schemaVersion": "2.2",
-        "description": "PCM: discovery de SOLO LECTURA (inventario F2 + "
+        "description": "PCM: discovery de SOLO LECTURA (inventario + "
                        "gemelo exacto, en tres pasos). Sin parámetros. No "
                        "escribe nada en el servidor. Único SendCommand "
                        "permitido por la policy pcm-prod-readonly.",

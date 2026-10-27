@@ -1,9 +1,9 @@
 # Permisos de PCM en la cuenta AWS — guía para revisión
 
-**PCM (Primate Cloud Manager)** es el módulo de Odoo con el que Primate
-gobierna sus servidores Odoo en AWS: inventario, montaje de servidores nuevos,
-restauración de bases, HTTPS y costos. Este paquete trae todo lo que PCM
-necesita en la cuenta, para revisarlo y desplegarlo sin el resto del código:
+**PCM (Primate Cloud Manager)** es el módulo de Odoo con el que gobernamos
+nuestros servidores Odoo en AWS: inventario, montaje de servidores nuevos,
+restauración de bases, HTTPS y costos. Les mandamos todo lo que PCM necesita
+en la cuenta, para revisarlo y desplegarlo sin el resto del código:
 
 | Archivo | Qué es |
 |---|---|
@@ -17,9 +17,9 @@ todo sale de los pseudo-parámetros de la cuenta donde se despliega.
 
 **En corto:**
 
-- **Probada desplegada.** Esta misma versión de la plantilla se desplegó en
-  una **cuenta de pruebas** (con el parámetro `Sufijo`) y se usó para un
-  **montaje y una importación reales** con los dos usuarios que crea (§0).
+- **La probamos desplegada.** Desplegamos esta misma versión de la plantilla
+  en **nuestra cuenta de pruebas** (con el parámetro `Sufijo`) y la usamos para
+  un **montaje y una importación reales** con los dos usuarios que crea (§0).
 - **La escritura en Route 53 es opcional y viene apagada.** Con los
   parámetros `ZonaDns`/`NombresDns` vacíos (el default) PCM no escribe en
   Route 53. Si se completan, queda acotada a **una zona** y a los nombres de
@@ -31,8 +31,8 @@ todo sale de los pseudo-parámetros de la cuenta donde se despliega.
 
 ## 0. Cómo se probó
 
-En una cuenta de pruebas, con el stack desplegado (`Sufijo` de prueba) y las
-access keys de los dos usuarios cargadas en PCM:
+En nuestra cuenta de pruebas, con el stack desplegado (`Sufijo` de prueba) y
+las access keys de los dos usuarios cargadas en PCM:
 
 | Qué | Usuario | Resultado |
 |---|---|---|
@@ -44,11 +44,12 @@ access keys de los dos usuarios cargadas en PCM:
 | Registro A en Route 53 (zona de prueba, nombres acotados) | `pcm-prod-prov` | OK |
 | Terminación del servidor y liberación de su Elastic IP | `pcm-prod-prov` | OK |
 
-`verificar.sh` en esa cuenta: todo OK salvo la prueba 2 («hay recursos con la
-llave»), esperable porque la cuenta de pruebas ya tenía servidores de PCM. En
-una cuenta sin servidores de PCM tiene que dar **TODO OK**.
+Corrimos `verificar.sh` en esa cuenta: dio todo OK salvo la prueba 2 («hay
+recursos con la llave»), esperable porque nuestra cuenta de pruebas ya tenía
+servidores de PCM. En una cuenta sin servidores de PCM tiene que dar **TODO
+OK**.
 
-Durante la prueba hizo falta **un** ajuste de permisos
+Durante la prueba tuvimos que hacer **un** ajuste de permisos
 (`ec2:DescribeInternetGateways`, para revisar la red antes de montar), ya
 incluido en esta versión.
 
@@ -95,7 +96,7 @@ las crea un administrador en la consola y las carga en PCM (cifradas).
 
 | Recurso | Nombre | Para qué |
 |---|---|---|
-| Documento SSM | `pcm-readonly-discovery` | El **único** comando que PCM puede correr en un servidor que no montó. Script fijo, sin parámetros, de solo lectura (ver §5). |
+| Documento SSM | `pcm-readonly-discovery` | El **único** comando que PCM puede correr en un servidor que no montó. Script fijo, sin parámetros, de solo lectura (ver §8). |
 | Rol IAM + instance profile | `pcm-ssm-role` | El rol que llevan las EC2 que **monta** PCM: agente SSM (`AmazonSSMManagedInstanceCore`; PCM no usa SSH) y lectura/escritura de dumps y backups en los buckets de PCM de esta cuenta. Los servidores existentes no lo usan. |
 | Bucket S3 | `pcm-dumps-<cuenta>` | Dumps a restaurar. Privado, Block Public Access completo, cifrado SSE-S3, **sin versionado**, sólo TLS. Lo que está en `incoming/` se borra solo a los 7 días; los multipart incompletos, a 1 día. Política **Retain**: borrar el stack no borra el bucket. |
 | Managed policy | `pcm-prod-readonly` | Ver §3. |
@@ -199,8 +200,8 @@ tiene recursos con estos nombres, sin tocarlos.
 - **Rol compartido entre servidores de PCM.** `pcm-ssm-role` es uno solo para
   todas las EC2 que monta PCM. Cualquiera de esos servidores puede leer los
   dumps y backups de los demás clientes que estén en los buckets de PCM. No
-  afecta a los servidores existentes, que no lo usan. Opciones evaluadas para
-  más adelante: un prefijo por instancia con condición en la policy, o URLs
+  afecta a los servidores existentes, que no lo usan. Opciones que evaluamos
+  para más adelante: un prefijo por instancia con condición en la policy, o URLs
   prefirmadas generadas por PCM para cada transferencia.
 - **Inventario dentro de servidores grandes.** La salida de cada paso de un
   comando SSM se lee hasta 24.000 caracteres. Por eso el documento va en tres
@@ -208,7 +209,10 @@ tiene recursos con estos nombres, sin tocarlos.
   gemelo sale **un registro por instancia**: en un servidor con muchas
   instancias Odoo (medido: más de ~7 con 25 repos cada una) entra lo que
   cabe y PCM marca el resto como **«gemelo incompleto»**, visible y con el
-  motivo. Lo que falta se completa por otra vía.
+  motivo. Lo que falta lo completamos corriendo el mismo script de solo
+  lectura por ssh desde nuestra máquina
+  (`ssh <host> 'sudo bash -s' < pcm_readonly_discovery.sh`), sin copiar nada
+  al servidor.
 - **Elastic IP por servidor.** Cada servidor nuevo lleva su Elastic IP (con
   la llave), así la IP no cambia con un stop/start. Si un servidor se borra
   por fuera de PCM, su Elastic IP queda reservada (y cobrándose) hasta que un
@@ -266,7 +270,8 @@ filestore, nginx con sus certificados, y los crontabs con los secretos tapados.
    aws iam get-user --user-name pcm-prod-ro                   2>&1 | tail -1
    aws iam get-user --user-name pcm-prod-prov                 2>&1 | tail -1
    aws ssm describe-document --name pcm-readonly-discovery    2>&1 | tail -1
-   aws s3api head-bucket --bucket pcm-dumps-$(aws sts get-caller-identity --query Account --output text) 2>&1 | tail -1
+   CUENTA=$(aws sts get-caller-identity --query Account --output text)
+   aws s3api head-bucket --bucket pcm-dumps-$CUENTA            2>&1 | tail -1
    ```
 
    Esperado: `NoSuchEntity`, `InvalidDocument` o `Not Found` en todos. Si algo

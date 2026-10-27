@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Discovery de instancias Odoo en un servidor importado (F2).
+"""Discovery de instancias Odoo en un servidor importado.
 
 =============================================================================
 CONTRATO: SÓLO LECTURA. Este script corre por SSM, como root, en servidores

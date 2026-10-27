@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pcm_readonly_discovery.sh — Gemelo exacto (punto 3, 2026-10-22).
+# pcm_readonly_discovery.sh — Gemelo exacto.
 #
 # SOLO LECTURA por construcción: comandos fijos de consulta, SIN parámetros,
 # sin escribir NADA en el servidor (la salida va por stdout, gzip+base64).
@@ -146,7 +146,7 @@ def conf_de_argv(trozos):
 def units_odoo():
     """{conf_path real: datos de la unit} de las units systemd de Odoo.
 
-    Mismo criterio que el inventario F2 (units cuyo nombre contiene «odoo»),
+    Mismo criterio que el inventario (units cuyo nombre contiene «odoo»),
     y el conf sale del ExecStart: así entra un Odoo con el conf fuera de
     /etc/odoo. Se consulta UNA vez por servidor."""
     mapa = {}

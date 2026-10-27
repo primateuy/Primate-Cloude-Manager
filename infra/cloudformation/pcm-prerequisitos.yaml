@@ -129,7 +129,7 @@ Resources:
       UpdateMethod: NewVersion
       Content:
         schemaVersion: '2.2'
-        description: 'PCM: discovery de SOLO LECTURA (inventario F2 + gemelo exacto, en tres pasos). Sin
+        description: 'PCM: discovery de SOLO LECTURA (inventario + gemelo exacto, en tres pasos). Sin
           parámetros. No escribe nada en el servidor. Único SendCommand permitido por la policy pcm-prod-readonly.'
         parameters: {}
         mainSteps:
@@ -143,7 +143,7 @@ Resources:
             - python3 - <<'PCM_F2_PY'
             - '#!/usr/bin/env python3'
             - '# -*- coding: utf-8 -*-'
-            - '"""Discovery de instancias Odoo en un servidor importado (F2).'
+            - '"""Discovery de instancias Odoo en un servidor importado.'
             - ''
             - =============================================================================
             - 'CONTRATO: SÓLO LECTURA. Este script corre por SSM, como root, en servidores'
@@ -307,7 +307,7 @@ Resources:
             runCommand:
             - '#!/bin/bash'
             - export PCM_TWIN_MODO=gemelo
-            - '# pcm_readonly_discovery.sh — Gemelo exacto (punto 3, 2026-10-22).'
+            - '# pcm_readonly_discovery.sh — Gemelo exacto.'
             - '#'
             - '# SOLO LECTURA por construcción: comandos fijos de consulta, SIN parámetros,'
             - '# sin escribir NADA en el servidor (la salida va por stdout, gzip+base64).'
@@ -455,7 +455,7 @@ Resources:
             - 'def units_odoo():'
             - '    """{conf_path real: datos de la unit} de las units systemd de Odoo.'
             - ''
-            - '    Mismo criterio que el inventario F2 (units cuyo nombre contiene «odoo»),'
+            - '    Mismo criterio que el inventario (units cuyo nombre contiene «odoo»),'
             - '    y el conf sale del ExecStart: así entra un Odoo con el conf fuera de'
             - '    /etc/odoo. Se consulta UNA vez por servidor."""'
             - '    mapa = {}'
@@ -707,7 +707,7 @@ Resources:
             runCommand:
             - '#!/bin/bash'
             - export PCM_TWIN_MODO=venvs
-            - '# pcm_readonly_discovery.sh — Gemelo exacto (punto 3, 2026-10-22).'
+            - '# pcm_readonly_discovery.sh — Gemelo exacto.'
             - '#'
             - '# SOLO LECTURA por construcción: comandos fijos de consulta, SIN parámetros,'
             - '# sin escribir NADA en el servidor (la salida va por stdout, gzip+base64).'
@@ -855,7 +855,7 @@ Resources:
             - 'def units_odoo():'
             - '    """{conf_path real: datos de la unit} de las units systemd de Odoo.'
             - ''
-            - '    Mismo criterio que el inventario F2 (units cuyo nombre contiene «odoo»),'
+            - '    Mismo criterio que el inventario (units cuyo nombre contiene «odoo»),'
             - '    y el conf sale del ExecStart: así entra un Odoo con el conf fuera de'
             - '    /etc/odoo. Se consulta UNA vez por servidor."""'
             - '    mapa = {}'
