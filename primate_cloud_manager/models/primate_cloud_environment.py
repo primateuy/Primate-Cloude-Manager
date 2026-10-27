@@ -4792,12 +4792,32 @@ class PrimateCloudEnvironment(models.Model):
             'say "PCM_ERROR: falta rsync en la instancia"; exit 1; }',
             # unzip -l: la última línea trae el total de bytes descomprimidos.
             '  UNZ=$(unzip -l "$FNAME" | tail -1 | awk \'{print $1}\')',
-            '  NEED2=$(( ${UNZ:-0} / 1048576 * 12 / 10 + 1 ))',
+            '  SQLB=$(unzip -l "$FNAME" | awk \'$4 == "dump.sql" {print $1}\')',
+            '  FSB=$(( ${UNZ:-0} - ${SQLB:-0} ))',
+            # Espacio en DOS medidas (2026-10-27, cierra el gate del BACKLOG):
+            # (1) descomprimir: lo extraído +10 %, con el zip todavía en disco;
+            # (2) el PICO del restore, con el zip ya borrado: mientras carga,
+            #     lo extraído + la base (1,7 × dump.sql; Barraca Julia midió
+            #     1,61); al copiar el filestore, filestore ×2 + base (el
+            #     dump.sql ya se borró). +10 %. PCM monta todo en el volumen
+            #     raíz: /var/tmp, PostgreSQL y el data_dir comparten disco.
+            '  NEED2=$(( ${UNZ:-0} / 1048576 * 11 / 10 + 1 ))',
+            '  P1=$(( ${UNZ:-0} + ${SQLB:-0} * 17 / 10 ))',
+            '  P2=$(( FSB * 2 + ${SQLB:-0} * 17 / 10 ))',
+            '  PICO=$(( (P1 > P2 ? P1 : P2) / 1048576 * 11 / 10 + 1 ))',
+            '  ZIPMB=0',
+            '  [ -n "$DL" ] && ZIPMB=$(( $(stat -c %s "$DL") / 1048576 ))',
             "  FREE2=$(df -Pm /var/tmp | awk 'NR==2 {print $4}')",
+            '  say "PCM_SPACE libre=${FREE2}MB descomprimir=${NEED2}MB '
+            'pico=${PICO}MB zip=${ZIPMB}MB"',
             '  if [ "$FREE2" -lt "$NEED2" ]; then '
             'say "PCM_ERROR: espacio insuficiente para descomprimir el zip '
             '(${FREE2} MB < ${NEED2} MB; descomprimido ${UNZ:-0} bytes)"; '
             "exit 1; fi",
+            '  if [ $(( FREE2 + ZIPMB )) -lt "$PICO" ]; then '
+            'say "PCM_ERROR: espacio insuficiente para el restore: el pico '
+            '(descomprimido + base cargada + copia del filestore) necesita '
+            '~${PICO} MB y hay $(( FREE2 + ZIPMB )) MB"; exit 1; fi',
             # Se EXTRAE y se VERIFICA acá, ANTES de parar Odoo y dropear:
             # un zip corrupto o que no es un backup de Odoo tiene que fallar
             # sin haber tocado la base. El pre-backup queda como red para los
@@ -4812,6 +4832,10 @@ class PrimateCloudEnvironment(models.Model):
             '  if [ ! -f "$WORK/x/dump.sql" ]; then '
             'say "PCM_ERROR: el zip no tiene dump.sql (no es un backup de '
             'Odoo)"; exit 1; fi',
+            # Extraído y verificado: el zip bajado ya no hace falta (la key
+            # de S3 sigue ahí hasta que el restore salga bien). Baja el pico
+            # en el tamaño del zip (Barraca Julia: 10,5 GiB).
+            '  if [ -n "$DL" ]; then rm -f "$DL"; say "PCM_ZIP_BORRADO"; fi',
             # Con el dump.sql ya extraído, la versión de origen sale de su
             # header sin volver a descomprimir.
             '  SRC_VER=$(head -n 200 "$WORK/x/dump.sql" | '
@@ -4885,6 +4909,9 @@ class PrimateCloudEnvironment(models.Model):
             # orden, en una sola conexión).
             '  sudo -u postgres psql -q -d %s -c %s -f "$WORK/x/dump.sql"'
             % (db, set_role),
+            # Cargado: el dump.sql tampoco hace falta, y así no coincide con
+            # la copia del filestore (Barraca Julia: 11,9 GiB menos de pico).
+            '  rm -f "$WORK/x/dump.sql"',
             "else",
             '  sudo -u postgres psql -q -d %s -c %s -f "$FNAME"' % (db, set_role),
             "fi",

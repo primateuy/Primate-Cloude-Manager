@@ -125,6 +125,30 @@ class TestRestoreNeutralizaAntesDeArrancar(TransactionCase):
         self.assertLess(unzip, chmod)
         self.assertLess(chmod, carga)
 
+    def test_pico_de_disco_bajo_y_chequeado(self):
+        """2026-10-27 (disco de 100 GB de INCO): el zip se borra apenas se
+        extrae y verifica, el dump.sql apenas se carga, y el chequeo de
+        espacio cuenta el pico real (extraído + base, o filestore ×2 + base),
+        no sólo lo extraído."""
+        _catalogo, externo = self._scripts()
+        verificado = externo.index("el zip no tiene dump.sql")
+        borra_zip = externo.index('rm -f "$DL"; say "PCM_ZIP_BORRADO"')
+        stop = externo.index("systemctl stop odoo-bj")
+        carga = re.search(r'psql -q -d \S+ -c .*? -f "\$WORK/x/dump.sql"',
+                          externo).start()
+        borra_sql = externo.index('rm -f "$WORK/x/dump.sql"')
+        rsync = externo.index("rsync -a --delete")
+        self.assertLess(verificado, borra_zip)
+        self.assertLess(borra_zip, stop)      # antes del punto de no retorno
+        self.assertLess(carga, borra_sql)
+        self.assertLess(borra_sql, rsync)
+        # El chequeo del pico corta ANTES del stop, con su propio mensaje.
+        pico = externo.index("espacio insuficiente para el restore")
+        self.assertLess(pico, stop)
+        for pedazo in ('SQLB=$(unzip -l "$FNAME"', "SQLB:-0} * 17 / 10",
+                       "FSB * 2", "PCM_SPACE"):
+            self.assertIn(pedazo, externo)
+
     def test_job_fallido_muestra_la_cola_del_log(self):
         ok, _script, log = self._job(
             "PCM_DROP_STARTED\n/var/tmp/x/dump.sql: Permission denied",
