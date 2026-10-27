@@ -54,12 +54,35 @@ estimación, no una medición; el ensayo va a dar el número real. Para el ensay
 Arreglo propuesto: sumar al `NEED2` el tamaño descomprimido del filestore más un estimado de la
 base (p. ej. 1,5 × `dump.sql`), y chequear `df` del volumen de PG, no sólo el de `/var/tmp`.
 
+**✅ 2026-10-27 — RESUELTO** (al pasar Barraca Julia UAT a 100 GB por INCO): el chequeo
+cuenta el PICO real — lo extraído + la base (1,7 × `dump.sql`; BJ midió 1,61) mientras
+carga, o filestore ×2 + base al copiar — con +10 %, y corta ANTES del stop con un
+mensaje propio. Además el pico bajó: el zip se borra apenas se extrae y verifica, y el
+`dump.sql` apenas se carga. Barraca Julia medida: zip 10,46 GiB, descomprimido 20,81
+(SQL 11,94 + filestore 8,87), base cargada 19,19 → pico ~41 GiB + ~7 de sistema en un
+disco de 100 GB (antes del cambio: ~60 + 7).
+
 ## 📋 Para el reporte del ensayo de Barraca Julia
 
 - **El pre-backup va a ser trivial en esta corrida**: el destino es un servidor recién
   aprovisionado, sin base previa, así que no hay nada que respaldar antes del drop. El peso real
   del pre-backup (que va a S3 con retención de 7 días, `pcm.pre_restore_retention_days`) **se
   mide recién en el primer restore sobre una base existente**. No registrarlo como medido.
+
+## 💡 FEATURE — Ampliar el disco de una instancia desde PCM (2026-10-27)
+
+Pedido a raíz de que INCO definió 100 GB para Barraca Julia UAT. Hoy PCM **no**
+puede: no tiene la acción y `pcm-prod-provision` no incluye `ec2:ModifyVolume`.
+Procedimiento manual mientras tanto: [`docs/AMPLIAR_DISCO.md`](docs/AMPLIAR_DISCO.md).
+
+Diseño propuesto (no implementado):
+- Botón «Ampliar disco» en el servidor (sólo `pcm_origin = pcm`, nunca importados),
+  tamaño nuevo > actual; job: `ModifyVolume` → esperar `optimizing` → por SSM
+  `growpart` + `resize2fs` (detectando nvme/xvda y ext4/xfs) → `df` para verificar
+  → sync del inventario. Bitácora con antes/después.
+- IAM: `ec2:ModifyVolume` y `ec2:DescribeVolumesModifications` en la provision,
+  con condición `aws:ResourceTag/primate:managed_by = pcm` sobre `volume/*`.
+- Guardas: una modificación cada 6 h por volumen (AWS), sólo crecer.
 
 ## ⏸ POSPUESTO — Backups programados con catálogo (F3)
 
@@ -199,7 +222,18 @@ base (p. ej. 1,5 × `dump.sql`), y chequear `df` del volumen de PG, no sólo el 
   (`'violet' != 'teal'`, 1 failed of 1). Arreglo: cambiar el esperado a `violet`
   y, de paso, renombrar el test (`test_accent_default_teal` miente). No se tocó
   en F1 por estar fuera de su alcance.
+  **2026-10-27: sigue fallando en `origin/19.0`** (es la única falla de la suite con
+  sólo lo commiteado: 813/814 el 23-oct). El arreglo ya está escrito
+  (`test_accent_default_violet`) pero vive en el árbol de trabajo del bundle, sin
+  commitear: entra cuando se commitee ese trabajo, o como commit aparte con OK.
 
+
+- **`TestEnvironmentProvision.test_rds_ya_existente_se_reusa_en_retry` duerme ~2 min**
+  (visto 2026-10-27): el camino de provisión llega a `_provision_ssl`, el `GetChange` de
+  Route 53 mockeado nunca devuelve `INSYNC` y el bucle real hace 24 × `time.sleep(5)`.
+  No falla, pero la suite parece colgada (0 % de CPU, transacción ociosa). Arreglo:
+  mockear `get_change_status` → `"INSYNC"` o `time.sleep` en ese test, o apagar `ssl_auto`
+  en sus parámetros.
 
 - **Test de tags con strings literales** — `test_aws_base.py` compara las claves contra las
   constantes de `aws_base` (constante vs constante): un typo en la constante pasaría el
