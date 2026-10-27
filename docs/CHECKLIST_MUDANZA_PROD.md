@@ -108,7 +108,11 @@ se toca nada de lo que usa `pcm_demo`.
 
 1. [ ] YO · Consola de la sandbox → CloudFormation → stack `pcm-prerequisitos-cfn`
    con `pcm-prerequisitos.yaml` y **Sufijo `-cfn`**.
-2. [ ] YO · CloudShell: `SUFIJO=-cfn bash verificar.sh` → **TODO OK**.
+2. [ ] YO · CloudShell: `SUFIJO=-cfn bash verificar.sh`. **Esperado en la
+   sandbox: todo OK MENOS la prueba 2** («hay recursos con la llave»): las
+   máquinas, volúmenes, security groups y la Elastic IP que montó `pcm_demo`
+   ya tienen `primate:managed_by=pcm`, así que el resumen termina en «HAY
+   PROBLEMAS (1)». Cualquier otra FALLA sí es un problema.
 3. [ ] YO · Keys de `pcm-prod-ro-cfn` y `pcm-prod-prov-cfn` cargadas en una **base
    de prueba** (no en `pcm_produccion`), con los parámetros
    `pcm.ssm_instance_profile = pcm-ssm-role-cfn` y
@@ -128,7 +132,6 @@ se toca nada de lo que usa `pcm_demo`.
    `pcm-prerequisitos.yaml` desde «Actions → Upload file» y corré:
 
    ```bash
-   aws cloudformation validate-template --template-body file://pcm-prerequisitos.yaml
    # Nada de esto puede existir ya (si existe, el stack falla al crearlo):
    aws iam get-role --role-name pcm-ssm-role                 2>&1 | tail -1
    aws iam get-user --user-name pcm-prod-ro                  2>&1 | tail -1
@@ -136,11 +139,12 @@ se toca nada de lo que usa `pcm_demo`.
    aws s3api head-bucket --bucket pcm-dumps-$(aws sts get-caller-identity --query Account --output text) 2>&1 | tail -1
    ```
 
-   Esperado: la validación devuelve `CAPABILITY_NAMED_IAM` y las otras cuatro
-   líneas dicen `NoSuchEntity` / `Not Found`. Si algo ya existe, se frena y
-   se decide antes de seguir (no se pisa).
-   (La sandbox no tiene permiso de `ValidateTemplate`: lo validé con
-   `cfn-lint`, sin errores. Este es el primer `validate-template` real.)
+   Esperado: las cuatro líneas dicen `NoSuchEntity` / `Not Found`. Si algo ya
+   existe, se frena y se decide antes de seguir (no se pisa).
+   La plantilla pesa más de 51.200 bytes: **no** sirve `validate-template
+   --template-body` por CLI. La consola la sube a su bucket `cf-templates-…`
+   (lo crea CloudFormation, no PCM; tope 1 MB) y la valida al cargarla.
+   Revisada con `cfn-lint`, sin errores.
 2. [ ] YO · **CloudFormation → Create stack → With new resources → Upload a
    template file** → `pcm-prerequisitos.yaml` → nombre **`pcm-prerequisitos`**
    → sin parámetros → tildar **«I acknowledge that AWS CloudFormation might

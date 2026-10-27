@@ -142,10 +142,13 @@ tiene recursos con estos nombres, sin tocarlos.
   afecta a los servidores existentes, que no lo usan. Opciones evaluadas para
   más adelante: un prefijo por instancia con condición en la policy, o URLs
   prefirmadas generadas por PCM para cada transferencia.
-- **Inventario dentro de servidores grandes.** La salida de un comando SSM se
-  lee hasta 24.000 caracteres. En un servidor con muchas instancias Odoo el
-  inventario detallado puede no entrar. PCM lo marca **«gemelo incompleto»**
-  (visible, con el motivo) y se completa por otra vía.
+- **Inventario dentro de servidores grandes.** La salida de cada paso de un
+  comando SSM se lee hasta 24.000 caracteres. Por eso el documento va en tres
+  pasos (inventario, gemelo y paquetes de Python), cada uno con su tope, y el
+  gemelo sale **un registro por instancia**: en un servidor con muchas
+  instancias Odoo (medido: más de ~7 con 25 repos cada una) entra lo que
+  cabe y PCM marca el resto como **«gemelo incompleto»**, visible y con el
+  motivo. Lo que falta se completa por otra vía.
 - **Sin Elastic IP en el montaje actual.** Si un servidor nuevo se detiene y
   arranca, cambia su IP pública.
 
@@ -169,7 +172,9 @@ tiene recursos con estos nombres, sin tocarlos.
 
 ## 8. El documento de lectura, en los servidores
 
-`pcm-readonly-discovery` es un script fijo que lista los Odoo del servidor:
+`pcm-readonly-discovery` es un script fijo, en **tres pasos** (inventario,
+gemelo y paquetes de Python de cada entorno virtual), que lista los Odoo del
+servidor:
 el conf con los valores sensibles tapados, el `addons_path`, la unit de
 systemd, el commit del core, los repos git y su estado, el venv de Python
 (`pip freeze`), la versión de PostgreSQL y el tamaño de la base, el tamaño del
@@ -188,7 +193,6 @@ filestore, nginx con sus certificados, y los crontabs con los secretos tapados.
 1. CloudShell (us-east-1), solo lectura, antes de desplegar:
 
    ```bash
-   aws cloudformation validate-template --template-body file://pcm-prerequisitos.yaml
    # Ninguno de estos nombres puede existir ya (si existe, el stack falla al crearlo):
    aws iam get-role --role-name pcm-ssm-role                  2>&1 | tail -1
    aws iam get-instance-profile --instance-profile-name pcm-ssm-role 2>&1 | tail -1
@@ -198,9 +202,16 @@ filestore, nginx con sus certificados, y los crontabs con los secretos tapados.
    aws s3api head-bucket --bucket pcm-dumps-$(aws sts get-caller-identity --query Account --output text) 2>&1 | tail -1
    ```
 
-   Esperado: la validación muestra `CAPABILITY_NAMED_IAM` y el resto dice
-   `NoSuchEntity`, `InvalidDocument` o `Not Found`. Si algo existe: no se pisa;
-   se decide antes (o se usa el parámetro `Sufijo`).
+   Esperado: `NoSuchEntity`, `InvalidDocument` o `Not Found` en todos. Si algo
+   existe: no se pisa; se decide antes (o se usa el parámetro `Sufijo`).
+
+   **Tamaño de la plantilla.** Pesa más de 51.200 bytes (el documento SSM lleva
+   el script de lectura completo). Ese tope es sólo del CLI con
+   `--template-body`. **Por consola no aplica**: al elegir *Upload a template
+   file*, CloudFormation sube la plantilla a un bucket S3 propio
+   (`cf-templates-<algo>-<región>`), con tope de 1 MB, y la valida ahí mismo
+   (un error de sintaxis aparece antes de crear nada). **Ese bucket lo crea
+   CloudFormation, no PCM**, y queda en la cuenta: se puede borrar después.
 2. CloudFormation → **Create stack** → *Upload a template file* →
    `pcm-prerequisitos.yaml` → nombre `pcm-prerequisitos` → **Sufijo vacío** →
    tildar *I acknowledge that AWS CloudFormation might create IAM resources
