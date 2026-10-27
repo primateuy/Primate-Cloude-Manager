@@ -145,6 +145,18 @@ class AwsSsmService:
             waited += poll_interval
         return {"command_id": command_id, "status": "TimedOut"}
 
+    def document_exists(self, name, region=None):
+        """True/False si el documento SSM existe en la región (lectura:
+        ssm:DescribeDocument). None si no se pudo saber (otro error)."""
+        client = self._base.get_client("ssm", region=region)
+        try:
+            client.describe_document(Name=name)
+            return True
+        except Exception as error:  # noqa: BLE001
+            if "InvalidDocument" in str(error):
+                return False
+            return None
+
     _TERMINALES = ("Success", "Failed", "Cancelled", "TimedOut")
 
     def _salida_por_pasos(self, command_id, instance_id, region, steps):

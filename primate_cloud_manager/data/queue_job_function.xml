@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- La importación de servidores commitea después de CADA servidor: el
+         avance se ve en vivo y un error en el servidor 40 no revierte los 39
+         anteriores (cada uno es un upsert idempotente). queue_job prohíbe
+         commitear dentro de un job salvo que la función lo declare. Sin
+         esto la importación encolada fallaba siempre (corrida 2026-10-27). -->
+    <record id="job_function_server_import" model="queue.job.function">
+        <field name="model_id" ref="primate_cloud_manager.model_primate_cloud_server_import"/>
+        <field name="method">job_import_servers</field>
+        <field name="allow_commit" eval="True"/>
+    </record>
+</odoo>

@@ -10,10 +10,10 @@
                 <div class="alert alert-info" role="alert">
                     Trae los servidores EC2 de la cuenta y sus instancias Odoo
                     para clasificarlos después por cliente. <strong>Todo lo que
-                    entra queda en solo lectura</strong>: se puede mirar pero no
-                    operar hasta que un admin habilite la gestión de cada
-                    servidor. En los servidores sólo se ejecuta un discovery de
-                    lectura.
+                    entra queda en solo lectura permanente</strong>: se mira
+                    (gemelo) y no se opera, sin excepción. En los servidores
+                    sólo corre el documento SSM de lectura. Lo que PCM ya
+                    gestiona no se importa (se lista aparte).
                 </div>
                 <group>
                     <group string="Cuenta">

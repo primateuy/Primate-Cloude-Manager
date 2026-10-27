@@ -639,6 +639,22 @@ class TestPermisosAcotadosPorCuenta(TransactionCase):
             "name": "srv", "project_id": project.id,
             "account_id": self.account.id, "state": "active"})
 
+    def test_misma_cuenta_aws_lectura_y_aprovisionamiento(self):
+        """La misma cuenta AWS va dos veces (dos usuarios IAM): una de
+        lectura y una «Solo aprovisionamiento». Dos del mismo tipo, no."""
+        import psycopg2
+        from odoo.tools import mute_logger
+        Account = self.env["primate.cloud.account"]
+        prov = Account.create({"name": "Prod PROV", "default_region": "us-east-1",
+                               "aws_account_id": "111122223333",
+                               "provision_only": True})
+        self.assertTrue(prov)
+        with mute_logger("odoo.sql_db"), self.assertRaises(psycopg2.IntegrityError), \
+                self.env.cr.savepoint():
+            Account.create({"name": "Otra RO", "default_region": "us-east-1",
+                            "aws_account_id": "111122223333"})
+            self.env.flush_all()
+
     def test_bucket_de_esta_cuenta(self):
         valido = self.env_rec._pcm_bucket_valido
         self.assertEqual(valido("pcm-dumps-111122223333", "x"),

@@ -29,6 +29,7 @@ SSM_PING = SVC + ".aws_ssm.AwsSsmService.describe_instance_information"
 SSM_RUN = SVC + ".aws_ssm.AwsSsmService.run_script"
 # 2026-10-22: sobre importados el discovery va por el documento SSM fijo.
 SSM_DOC = SVC + ".aws_ssm.AwsSsmService.run_document"
+SSM_DOC_EXISTE = SVC + ".aws_ssm.AwsSsmService.document_exists"
 
 
 def ec2(iid, name, state="running", region="us-east-1"):
@@ -75,7 +76,8 @@ class TestF2Importacion(TransactionCase):
             "account_id": self.account.id, "regions": regions,
             "include_stopped": include_stopped, "discover": discover})
 
-    def _correr(self, corrida, por_region, pings=None, run=None):
+    def _correr(self, corrida, por_region, pings=None, run=None,
+                sin_documento=()):
         """Corre el job con AWS/SSM mockeados. ``por_region``: {region: [...]}"""
         def listar(_self, region=None):
             valor = por_region.get(region, [])
@@ -83,11 +85,64 @@ class TestF2Importacion(TransactionCase):
                 raise valor
             return valor
         lectura = mock.Mock(side_effect=run or (lambda *a, **k: discovery()))
+        def existe(_self, _name, region=None):
+            return region not in sin_documento
+
         with mock.patch(EC2_LIST, listar), \
                 mock.patch(SSM_PING, return_value=pings or {}), \
+                mock.patch(SSM_DOC_EXISTE, existe), \
                 mock.patch(SSM_RUN, lectura), mock.patch(SSM_DOC, lectura):
             corrida.job_import_servers(commit=False)
         return lectura
+
+    # ------------------------------------------------------------------
+    # 0. Lo que la sandbox mostró (2026-10-27)
+    # ------------------------------------------------------------------
+    def test_detenida_es_no_alcanzable_con_motivo(self):
+        corrida = self._corrida()
+        self._correr(corrida, {"us-east-1": [ec2("i-st", "apagada", "stopped")]},
+                     pings={"i-st": "ConnectionLost"})
+        linea = corrida.line_ids
+        self.assertEqual(linea.ssm_state, "unreachable")
+        self.assertEqual(linea.detail, "Detenida: no alcanzable por SSM.")
+        self.assertIn("detenida", linea.manual_steps)
+
+    def test_region_sin_documento_con_motivo_claro(self):
+        corrida = self._corrida(regions="us-east-1,us-east-2")
+        lectura = self._correr(
+            corrida, {"us-east-2": [ec2("i-oh", "ohio", region="us-east-2")]},
+            pings={"i-oh": "Online"}, sin_documento=("us-east-2",))
+        self.assertEqual(corrida.regions_without_document, "us-east-2")
+        linea = corrida.line_ids
+        self.assertEqual(linea.discovery_state, "not_run")
+        self.assertIn("Documento de lectura no desplegado en us-east-2",
+                      linea.detail)
+        lectura.assert_not_called()   # ni se intentó el SendCommand
+        self.assertIn("DOCUMENTO DE LECTURA NO DESPLEGADO en: us-east-2",
+                      corrida.report)
+
+    def test_lectura_no_adopta_lo_que_gestiona_pcm(self):
+        """La cuenta de lectura y la de aprovisionamiento son la MISMA cuenta
+        AWS: el servidor que montó PCM no se duplica como «importado» (el
+        cerrojo de frontera bloquearía a PCM sobre lo suyo)."""
+        prov = self.env["primate.cloud.account"].create({
+            "name": "Cuenta PROV", "default_region": "us-east-1",
+            "provision_only": True})
+        self.Ec2._register_provisioned(prov, {
+            "aws_instance_id": "i-pcm", "name": "bj-uat",
+            "instance_state": "running", "region": "us-east-1",
+            "tags": {"primate:managed_by": "pcm"}})
+        propia = ec2("i-pcm", "bj-uat")
+        propia["tags"] = {"primate:managed_by": "pcm"}
+        corrida = self._corrida()
+        self._correr(corrida, {"us-east-1": [propia]}, pings={"i-pcm": "Online"})
+        self.assertFalse(self.Ec2.search([("account_id", "=", self.account.id),
+                                          ("aws_instance_id", "=", "i-pcm")]))
+        self.assertIn("bj-uat", corrida.pcm_managed_skipped)
+        self.assertIn("YA GESTIONADOS POR PCM", corrida.report)
+        from odoo.addons.primate_cloud_manager.models.primate_cloud_readonly_guard import (
+            ReadonlyGuard)
+        self.assertNotIn("i-pcm", ReadonlyGuard.from_env(self.env).instance_ids)
 
     # ------------------------------------------------------------------
     # 1. Inofensiva por construcción
@@ -386,3 +441,17 @@ class TestF2Importacion(TransactionCase):
         self.assertEqual(corrida.state, "draft")
         self.assertIn("sa-east-1", corrida.regions)
         self.assertFalse(corrida.discover)
+
+
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestImportacionEnCola(TransactionCase):
+    """La importación commitea por servidor: su Job Function tiene que
+    declararlo o queue_job la corta (corrida 2026-10-27)."""
+
+    def test_job_function_permite_commit(self):
+        funcion = self.env.ref(
+            "primate_cloud_manager.job_function_server_import")
+        self.assertTrue(funcion.allow_commit)
+        self.assertEqual(funcion.method, "job_import_servers")
+        self.assertEqual(funcion.model_id.model, "primate.cloud.server.import")
+

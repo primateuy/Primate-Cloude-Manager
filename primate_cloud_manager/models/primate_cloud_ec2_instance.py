@@ -636,11 +636,23 @@ class PrimateCloudEc2Instance(models.Model):
         now = fields.Datetime.now()
         created = updated = 0
         records = []
+        omitidos_pcm = []
         for data in instances:
             # Cuenta de solo aprovisionamiento: lo que no creó PCM no se
             # importa (lo observa la cuenta de solo lectura).
             if account.provision_only and (data.get("tags") or {}).get(
                     "primate:managed_by") != "pcm":
+                continue
+            # Cuenta de lectura sobre una EC2 que PCM YA gestiona con otra
+            # cuenta (la de aprovisionamiento: misma cuenta AWS, dos usuarios
+            # IAM). Adoptarla la duplicaría como «importada» y el cerrojo de
+            # frontera bloquearía a PCM sobre su propio servidor (2026-10-27).
+            if not account.provision_only and (data.get("tags") or {}).get(
+                    "primate:managed_by") == "pcm" and self.search_count([
+                        ("aws_instance_id", "=", data["aws_instance_id"]),
+                        ("account_id", "!=", account.id),
+                        ("management_state", "=", "provisioned")]):
+                omitidos_pcm.append(data.get("name") or data["aws_instance_id"])
                 continue
             vals = self._aws_vals(data, now)
             existing = self.search(
@@ -667,6 +679,7 @@ class PrimateCloudEc2Instance(models.Model):
         resultado = {"created": created, "updated": updated}
         if return_records:
             resultado["records"] = records
+            resultado["omitidos_pcm"] = omitidos_pcm
         return resultado
 
     def _register_provisioned(self, account, aws_data, environment=None, os_type=None, disk_size_gb=None):

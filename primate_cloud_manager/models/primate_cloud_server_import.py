@@ -52,6 +52,14 @@ PASOS_SIN_AGENTE = (
     "NAT) o VPC endpoints de ssm, ssmmessages y ec2messages.\n"
     "  4. Volver a correr la importación: el servidor se actualiza, no se "
     "duplica.")
+PASOS_DETENIDA = (
+    "La instancia está detenida (%s): SSM no la alcanza mientras esté "
+    "apagada. PCM no la prende (lo importado no se toca). Se inventaría "
+    "volviendo a correr la importación cuando esté prendida.")
+PASOS_SIN_DOCUMENTO = (
+    "Documento de lectura no desplegado en %s: PCM no puede leer adentro de "
+    "este servidor hasta que un administrador despliegue "
+    "pcm-ssm-readonly.yaml en esa región.")
 PASOS_CONEXION_PERDIDA = (
     "El agente SSM está registrado pero no responde (%s):\n"
     "  1. Reiniciar el agente en el servidor (`sudo snap restart "
@@ -95,6 +103,10 @@ class PrimateCloudServerImport(models.Model):
     discovered_count = fields.Integer(string="Con Odoo detectado", readonly=True)
     unrecognized_count = fields.Integer(string="No reconocidos", readonly=True)
     error_count = fields.Integer(string="Con error", readonly=True)
+    regions_without_document = fields.Char(
+        string="Regiones sin documento de lectura", readonly=True)
+    pcm_managed_skipped = fields.Text(
+        string="Ya gestionados por PCM (no se importan)", readonly=True)
     twin_incomplete_count = fields.Integer(
         string="Gemelo incompleto", readonly=True)
     progress = fields.Float(string="Avance (%)", readonly=True)
@@ -212,11 +224,26 @@ class PrimateCloudServerImport(models.Model):
             if encontrados:
                 por_region.append((region, encontrados))
         self.total_servers = sum(len(e) for _r, e in por_region)
+        # El documento de lectura se despliega por región (CloudFormation):
+        # donde falta, se dice así, no como un error genérico de SSM.
+        if self.discover:
+            from .primate_cloud_twin import (DISCOVERY_DOCUMENT_DEFAULT,
+                                             DISCOVERY_DOCUMENT_PARAM)
+            documento = self.env["ir.config_parameter"].sudo().get_param(
+                DISCOVERY_DOCUMENT_PARAM, DISCOVERY_DOCUMENT_DEFAULT)
+            faltan = [region for region, _e in por_region
+                      if ssm.document_exists(documento, region=region) is False]
+            self.regions_without_document = ", ".join(faltan) or False
         self._avanzar(commit)
 
         for region, encontrados in por_region:
             sync = self.env["primate.cloud.ec2.instance"]._sync_from_aws(
                 account, encontrados, return_records=True)
+            if sync.get("omitidos_pcm"):
+                self.pcm_managed_skipped = "\n".join(filter(None, [
+                    self.pcm_managed_skipped] + [
+                        "%s (%s)" % (n, region) for n in sync["omitidos_pcm"]]))
+                self.processed += len(sync["omitidos_pcm"])
             try:
                 pings = ssm.describe_instance_information(
                     [d["aws_instance_id"] for d in encontrados], region=region)
@@ -245,15 +272,26 @@ class PrimateCloudServerImport(models.Model):
         else:
             self.updated_count += 1
         ping = pings.get(maquina.aws_instance_id)
-        online = ping == "Online"
+        online = ping == "Online" and maquina.instance_state == "running"
         maquina.write({"ssm_state": "online" if online else "unreachable",
                        "ssm_checked_at": fields.Datetime.now()})
         vals = {"ssm_state": maquina.ssm_state, "ping_status": ping or ""}
+        sin_documento = (self.regions_without_document or "").split(", ")
         if not online:
             self.unreachable_count += 1
-            vals["manual_steps"] = (PASOS_CONEXION_PERDIDA % ping if ping
-                                    else PASOS_SIN_AGENTE)
+            if maquina.instance_state != "running":
+                vals["manual_steps"] = PASOS_DETENIDA % maquina.instance_state
+                vals["detail"] = _("Detenida: no alcanzable por SSM.")
+            else:
+                vals["manual_steps"] = (PASOS_CONEXION_PERDIDA % ping if ping
+                                        else PASOS_SIN_AGENTE)
             vals["discovery_state"] = "not_run"
+            linea.write(vals)
+            return
+        if (self.discover and linea.region in sin_documento
+                and maquina.management_state == "adopted_readonly"):
+            vals.update({"discovery_state": "not_run",
+                         "detail": PASOS_SIN_DOCUMENTO % linea.region})
             linea.write(vals)
             return
         self.online_count += 1
@@ -335,6 +373,14 @@ class PrimateCloudServerImport(models.Model):
             for linea in sin_acceso:
                 partes.append("• %s (%s)\n%s" % (
                     linea.name, linea.aws_instance_id, linea.manual_steps or ""))
+        if self.regions_without_document:
+            partes.append(_(
+                "DOCUMENTO DE LECTURA NO DESPLEGADO en: %s — desplegar "
+                "pcm-ssm-readonly.yaml en esa(s) región(es) para leer "
+                "adentro de sus servidores.") % self.regions_without_document)
+        if self.pcm_managed_skipped:
+            partes.append(_("YA GESTIONADOS POR PCM (cuenta de aprovisionamiento; "
+                            "no se importan):\n") + self.pcm_managed_skipped)
         incompletos = self.line_ids.filtered(
             lambda l: "Gemelo INCOMPLETO" in (l.detail or ""))
         if incompletos:

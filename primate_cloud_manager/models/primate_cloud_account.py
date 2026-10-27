@@ -138,10 +138,27 @@ class PrimateCloudAccount(models.Model):
     )
     notes = fields.Text(string="Notas")
 
-    _aws_account_id_unique = models.Constraint(
-        "UNIQUE(aws_account_id)",
-        "Ya existe una cuenta con ese AWS Account ID.",
+    # Una cuenta AWS se carga DOS veces a propósito (2026-10-27): la de
+    # lectura (pcm-prod-ro) y la «Solo aprovisionamiento» (pcm-prod-prov),
+    # porque juntas en un usuario IAM abrirían un shell sobre lo ajeno. Lo
+    # que no se repite es el par (cuenta, tipo).
+    # Índice (no constraint): `provision_only` sin marcar es NULL, y en un
+    # UNIQUE los NULL nunca chocan; con COALESCE sí.
+    _aws_account_tipo_unique = models.UniqueIndex(
+        "(aws_account_id, COALESCE(provision_only, FALSE)) "
+        "WHERE (aws_account_id IS NOT NULL)",
+        "Ya existe una cuenta de ese tipo (lectura o solo aprovisionamiento) "
+        "con ese AWS Account ID.",
     )
+
+    def _auto_init(self):
+        # La restricción vieja (UNIQUE(aws_account_id)) impedía cargar la
+        # misma cuenta AWS como lectura y como aprovisionamiento.
+        res = super()._auto_init()
+        self.env.cr.execute(
+            "ALTER TABLE primate_cloud_account "
+            "DROP CONSTRAINT IF EXISTS primate_cloud_account_aws_account_id_unique")
+        return res
 
     # ------------------------------------------------------------------
     # Cifrado de credenciales

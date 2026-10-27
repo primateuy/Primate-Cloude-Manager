@@ -7,6 +7,8 @@ datos normalizados. No depende del ORM ni escribe en la base.
 import logging
 import time
 
+from botocore.exceptions import ClientError
+
 from . import aws_discovery
 
 _logger = logging.getLogger(__name__)
@@ -205,6 +207,21 @@ class AwsEc2Service:
             instance_id, region, timeout, poll_interval, _sleep
         )
 
+    def _get_new_instance(self, instance_id, region):
+        """``get_instance`` de una instancia RECIÉN creada.
+
+        EC2 es eventualmente consistente: segundos después de RunInstances,
+        DescribeInstances puede responder ``InvalidInstanceID.NotFound``
+        (corrida 2026-10-27). Eso no es un error: todavía no se ve. Devuelve
+        None y la espera sigue (el tope de tiempo es el de siempre).
+        """
+        try:
+            return self.get_instance(instance_id, region=region)
+        except ClientError as error:
+            if self._error_code(error) == "InvalidInstanceID.NotFound":
+                return None
+            raise
+
     def _wait_running(self, instance_id, region, timeout, poll_interval, _sleep):
         """Espera (polling) a que la instancia llegue a ``running`` y la devuelve.
 
@@ -216,7 +233,7 @@ class AwsEc2Service:
                 o si se agota el tiempo de espera.
         """
         waited = 0
-        data = self.get_instance(instance_id, region=region)
+        data = self._get_new_instance(instance_id, region)
         while waited < timeout:
             state = (data or {}).get("instance_state")
             if state == EC2_RUNNING_STATE:
@@ -228,7 +245,7 @@ class AwsEc2Service:
                 )
             _sleep(poll_interval)
             waited += poll_interval
-            data = self.get_instance(instance_id, region=region)
+            data = self._get_new_instance(instance_id, region)
         raise RuntimeError(
             "Tiempo de espera agotado esperando 'running' para %s." % instance_id
         )

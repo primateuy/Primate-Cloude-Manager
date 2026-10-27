@@ -528,9 +528,12 @@ class PrimateCloudEc2InstanceTwin(models.Model):
             # cada uno con su tope de 24.000 caracteres.
             salidas = []
             for modo in ("gemelo", "venvs"):
+                # El shebang va PRIMERO (igual que en el documento): con el
+                # export adelante, AWS-RunShellScript lo corría con sh (dash)
+                # y `set -o pipefail` cortaba todo (corrida 2026-10-27).
                 output = ssm.run_script(
                     self.aws_instance_id,
-                    "export PCM_TWIN_MODO=%s\n%s" % (modo, script),
+                    "#!/bin/bash\nexport PCM_TWIN_MODO=%s\n%s" % (modo, script),
                     region=region, comment="pcm twin (%s): %s" % (modo, self.name),
                     timeout=420, check=False)
                 if output.get("status") != "Success":
