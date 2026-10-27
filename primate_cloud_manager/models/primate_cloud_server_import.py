@@ -274,8 +274,9 @@ class PrimateCloudServerImport(models.Model):
                     sync = maquina.with_context(pcm_import_sync=True)
                     res = sync._aplicar_discovery(datos, centinela)
                     if datos.get("_twin"):
+                        # Entero o PARCIAL (formato 3): se aplica lo que llegó.
                         sync._twin_apply(datos["_twin"])
-                    elif res["estado"] == "ok":
+                    if datos.get("_twin_error") and res["estado"] == "ok":
                         # Odoo detectado pero el gemelo no llegó entero:
                         # marcado y contado, nunca en silencio.
                         maquina._twin_marcar("incomplete",

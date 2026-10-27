@@ -38,6 +38,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 
 def sh(cmd, cwd=None, timeout=30):
@@ -169,6 +170,55 @@ def units_odoo():
     return mapa
 
 
+def empaquetar(obj):
+    """JSON → gzip → base64 (una línea, sin espacios)."""
+    return base64.b64encode(gzip.compress(json.dumps(
+        obj, ensure_ascii=False, separators=(",", ":")).encode())).decode()
+
+
+def trozos(prefijo, blob, largo=4000):
+    """El blob en líneas de hasta `largo` caracteres con su prefijo."""
+    return ["%s%s" % (prefijo, blob[i:i + largo])
+            for i in range(0, len(blob), largo)] or [prefijo]
+
+
+def lineas_gemelo(twin):
+    """Salida del paso «gemelo» del documento SSM (twin_format 3).
+
+    Primero la BASE (sistema, nginx, versiones de los venvs y cuántas
+    instancias hay) y después UN REGISTRO POR INSTANCIA, cada uno cerrado
+    con su marca, de la más chica a la más grande. Si la salida se corta en
+    los 24.000 caracteres de SSM, se pierden sólo las instancias que no
+    entraron (PCM las marca como faltantes), nunca el gemelo entero."""
+    base = {k: v for k, v in twin.items() if k != "instances"}
+    base["twin_format"] = 3
+    base["n_instances"] = len(twin.get("instances") or [])
+    salida = trozos("PCM_TWIN_BASE:", empaquetar(base)) + ["PCM_TWIN_BASE_OK"]
+    registros = sorted(
+        (len(b), i, b) for i, b in
+        ((i, empaquetar(inst)) for i, inst in enumerate(twin.get("instances") or [])))
+    for _largo, i, blob in registros:
+        salida += trozos("PCM_TWIN_INST:%d:" % i, blob)
+        salida.append("PCM_TWIN_INST_OK:%d" % i)
+    salida.append("PCM_TWIN_OK")
+    return salida
+
+
+def lineas_venvs(venvs):
+    """Salida del paso «venvs»: el pip freeze de cada venv, un registro por
+    venv (de menor a mayor), con su propio tope de 24.000 caracteres."""
+    registros = sorted(
+        (len(b), j, b) for j, b in
+        ((j, empaquetar({"bin": py, "pip_freeze": datos.get("pip_freeze") or ""}))
+         for j, (py, datos) in enumerate(sorted(venvs.items()))))
+    salida = []
+    for _largo, j, blob in registros:
+        salida += trozos("PCM_TWIN_VENV:%d:" % j, blob)
+        salida.append("PCM_TWIN_VENV_OK:%d" % j)
+    salida.append("PCM_TWIN_VENVS_OK")
+    return salida
+
+
 def confs_a_leer(units, base_dir="/etc"):
     """Unión, sin duplicados (por ruta real), de los conf de las ubicaciones
     de siempre (/etc/odoo/*.conf, /etc/odoo.conf) y los que usan las units
@@ -240,6 +290,24 @@ def filestore_info(opts):
             "size_bytes": int(du[0]) if du and du[0].isdigit() else None}
 
 
+# PCM_TWIN_MODO: «todo» (default; por ssh, sin tope de salida: un solo blob
+# formato 2), «gemelo» y «venvs» (los dos pasos del documento SSM, cada uno
+# con su propio tope de 24.000 caracteres; ver lineas_gemelo/lineas_venvs).
+MODO = os.environ.get("PCM_TWIN_MODO", "todo")
+UNITS = units_odoo()
+CONFS = confs_a_leer(UNITS)
+
+if MODO == "venvs":
+    # Sólo el pip freeze de cada venv: nada de git, du ni psql.
+    venvs = {}
+    for conf_path in CONFS:
+        py = UNITS.get(os.path.realpath(conf_path), {}).get("python_bin") or ""
+        if py and py not in venvs:
+            venvs[py] = {"pip_freeze": sh("%s -m pip freeze 2>/dev/null" % py,
+                                          timeout=120)}
+    print("\n".join(lineas_venvs(venvs)))
+    sys.exit(0)
+
 twin = {
     "twin_format": 2,
     "host": sh("hostname"),
@@ -255,13 +323,12 @@ twin = {
         "cron_root": tapar_secretos(sh("crontab -l -u root 2>/dev/null")),
     },
     "instances": [],
-    # pip freeze UNA vez por venv (python_bin): varias instancias suelen
-    # compartirlo y es lo que más pesa en la salida de SSM (24.000 caracteres).
+    # Versión y pip freeze UNA vez por venv (python_bin): varias instancias
+    # suelen compartirlo y es lo que más pesa en la salida.
     "venvs": {},
 }
 
-UNITS = units_odoo()
-for conf_path in confs_a_leer(UNITS):
+for conf_path in CONFS:
     opts, masked = leer_conf(conf_path)
     addons = [p for p in (opts.get("addons_path") or "").split(",") if p]
     unit = UNITS.get(os.path.realpath(conf_path), {})
@@ -297,9 +364,10 @@ for conf_path in confs_a_leer(UNITS):
                           "note": "sin git (carpeta suelta)"})
     if venv_python and venv_python not in twin["venvs"]:
         twin["venvs"][venv_python] = {
-            "version": sh("%s --version" % venv_python),
-            "pip_freeze": sh("%s -m pip freeze 2>/dev/null" % venv_python,
-                             timeout=120)}
+            "version": sh("%s --version" % venv_python)}
+        if MODO == "todo":
+            twin["venvs"][venv_python]["pip_freeze"] = sh(
+                "%s -m pip freeze 2>/dev/null" % venv_python, timeout=120)
     twin["instances"].append({
         "conf_path": conf_path,
         "conf_masked": masked,
@@ -316,10 +384,10 @@ for conf_path in confs_a_leer(UNITS):
     })
 
 twin["nginx"] = nginx_info()
-blob = base64.b64encode(gzip.compress(
-    json.dumps(twin, ensure_ascii=False).encode())).decode()
-# En trozos de 4000 para esquivar límites de línea; el parser los re-une.
-for i in range(0, len(blob), 4000):
-    print("PCM_TWIN_B64:%s" % blob[i:i + 4000])
-print("PCM_TWIN_OK")
+if MODO == "gemelo":
+    print("\n".join(lineas_gemelo(twin)))
+else:
+    # Por ssh no hay tope: un solo blob (formato 2), en trozos de 4000.
+    print("\n".join(trozos("PCM_TWIN_B64:", empaquetar(twin))))
+    print("PCM_TWIN_OK")
 PCM_TWIN_PY

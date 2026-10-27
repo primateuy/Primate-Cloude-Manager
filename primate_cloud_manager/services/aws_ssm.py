@@ -104,7 +104,7 @@ class AwsSsmService:
     def run_document(self, instance_id, document_name, region=None,
                      comment=None, timeout=300, poll_interval=3,
                      output_s3_bucket=None, output_s3_prefix=None,
-                     _sleep=time.sleep):
+                     steps=None, _sleep=time.sleep):
         """Ejecuta un documento SSM PROPIO sin parámetros y espera la salida.
 
         El camino de los ambientes IMPORTADOS (regla dura 2026-10-22): el
@@ -129,7 +129,8 @@ class AwsSsmService:
         command_id = response["Command"]["CommandId"]
         waited = 0
         while waited < timeout:
-            output = self.get_command_output(command_id, instance_id, region)
+            output = self._salida_por_pasos(
+                command_id, instance_id, region, steps)
             if output.get("status") in ("Success", "Failed", "Cancelled",
                                         "TimedOut"):
                 output = dict(output, command_id=command_id)
@@ -144,18 +145,59 @@ class AwsSsmService:
             waited += poll_interval
         return {"command_id": command_id, "status": "TimedOut"}
 
+    _TERMINALES = ("Success", "Failed", "Cancelled", "TimedOut")
+
+    def _salida_por_pasos(self, command_id, instance_id, region, steps):
+        """Estado y salida del comando; con ``steps``, paso por paso.
+
+        GetCommandInvocation exige PluginName en documentos de varios pasos y
+        corta CADA paso en 24.000 caracteres: leerlos por separado multiplica
+        lo que entra. El estado es terminal cuando todos los pasos lo son;
+        Success sólo si todos fueron Success. Si el documento desplegado es
+        uno viejo de un solo paso (el PluginName no existe), se lee entero.
+        """
+        if not steps:
+            return self.get_command_output(command_id, instance_id, region)
+        salidas = []
+        for paso in steps:
+            try:
+                salidas.append(self.get_command_output(
+                    command_id, instance_id, region, plugin_name=paso))
+            except Exception as error:  # noqa: BLE001
+                if "InvalidPluginName" in str(error) and not salidas:
+                    return self.get_command_output(command_id, instance_id, region)
+                raise
+        estados = [o.get("status") for o in salidas]
+        if not all(e in self._TERMINALES for e in estados):
+            estado = "InProgress"
+        elif all(e == "Success" for e in estados):
+            estado = "Success"
+        else:
+            estado = next(e for e in estados if e != "Success")
+        return {
+            "status": estado,
+            "stdout": "\n".join(o.get("stdout") or "" for o in salidas),
+            "stderr": "\n".join(o.get("stderr") or "" for o in salidas
+                                if o.get("stderr")),
+            "steps": {paso: {"status": o.get("status"),
+                             "chars": len(o.get("stdout") or "")}
+                      for paso, o in zip(steps, salidas)},
+        }
+
     def _read_s3_stdout(self, bucket, prefix, command_id, instance_id,
                         region=None):
-        """Lee el stdout completo que SSM escribió en S3 (solo lectura)."""
+        """Lee el stdout completo que SSM escribió en S3 (solo lectura). Con
+        varios pasos hay un stdout por paso: se juntan en orden."""
         s3 = self._base.get_client("s3", region)
         base = "/".join(p for p in ((prefix or "").strip("/"), command_id,
                                     instance_id) if p)
         listed = s3.list_objects_v2(Bucket=bucket, Prefix=base + "/")
-        for obj in listed.get("Contents") or []:
+        partes = []
+        for obj in sorted(listed.get("Contents") or [], key=lambda o: o["Key"]):
             if obj["Key"].endswith("/stdout"):
                 body = s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"]
-                return body.read().decode("utf-8", errors="replace")
-        return ""
+                partes.append(body.read().decode("utf-8", errors="replace"))
+        return "\n".join(partes)
 
     def describe_instance_information(self, instance_ids, region=None):
         """Estado del agente SSM de un conjunto de instancias (sólo lectura).
@@ -196,16 +238,23 @@ class AwsSsmService:
                     break
         return estados
 
-    def get_command_output(self, command_id, instance_id, region=None):
+    def get_command_output(self, command_id, instance_id, region=None,
+                           plugin_name=None):
         """Recupera el resultado de un comando ya enviado.
+
+        Args:
+            plugin_name (str, optional): el paso, en documentos de varios
+                pasos (cada paso trae su propia salida, con su propio tope de
+                24.000 caracteres).
 
         Returns:
             dict: ``{"status", "stdout", "stderr", "response_code", "request_id"}``.
         """
         client = self._base.get_client("ssm", region=region)
-        result = client.get_command_invocation(
-            CommandId=command_id, InstanceId=instance_id
-        )
+        kwargs = {"CommandId": command_id, "InstanceId": instance_id}
+        if plugin_name:
+            kwargs["PluginName"] = plugin_name
+        result = client.get_command_invocation(**kwargs)
         return {
             "status": result.get("Status"),
             "stdout": result.get("StandardOutputContent", ""),

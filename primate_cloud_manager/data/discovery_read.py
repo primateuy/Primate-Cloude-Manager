@@ -24,9 +24,12 @@ allowlist, así que se OMITEN (no se enmascaran). No se ejecuta el binario de
 Odoo para saber la versión, porque eso correría código del cliente; se lee
 ``odoo/release.py`` como texto.
 
-Salida: una sola línea, ``PCM_DISCOVERY_JSON:<json>``. Las listas van acotadas
+Salida: una sola línea, ``PCM_DISCOVERY_B64:<base64(gzip(json))>`` (antes
+``PCM_DISCOVERY_JSON:<json>``; PCM acepta las dos). Las listas van acotadas
 para no pasar el tope de 24.000 caracteres de ``get_command_invocation``.
 """
+import base64
+import gzip
 import json
 import os
 import re
@@ -141,10 +144,14 @@ def bases():
 def main():
     units, error_units = units_odoo()
     dbs, error_dbs = bases()
-    print("PCM_DISCOVERY_JSON:" + json.dumps({
+    # Comprimida (gzip + base64): en el documento SSM el inventario es un
+    # paso aparte con su tope de 24.000 caracteres, y así entra holgado.
+    datos = json.dumps({
         "units": units, "units_error": error_units,
         "databases": dbs, "databases_error": error_dbs,
-    }, separators=(",", ":"), ensure_ascii=False))
+    }, separators=(",", ":"), ensure_ascii=False)
+    print("PCM_DISCOVERY_B64:" + base64.b64encode(
+        gzip.compress(datos.encode())).decode())
 
 
 if __name__ == "__main__":

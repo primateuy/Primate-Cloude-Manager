@@ -81,6 +81,83 @@ def _twin_dos_instancias():
     }
 
 
+PAQUETES = (
+    "Babel asn1crypto boto3 botocore cbor2 certifi cffi chardet cryptography "
+    "decorator docutils ebaysdk freezegun geoip2 gevent greenlet idna Jinja2 "
+    "libsass lxml lxml-html-clean MarkupSafe num2words ofxparse openpyxl "
+    "passlib Pillow polib psutil psycopg2 pydot pyOpenSSL PyPDF2 pyserial "
+    "python-dateutil python-ldap python-stdnum pytz pyusb qrcode reportlab "
+    "requests rjsmin urllib3 vobject Werkzeug xlrd XlsxWriter xlwt zeep "
+    "paramiko pycryptodome unidecode phonenumbers pdfminer.six xmlsec "
+    "zxcvbn Markdown pandas numpy openupgradelib simplejson suds-community "
+    "pysftp pyjwt oauthlib requests-oauthlib python-docx pyotp html2text "
+    "astor schwifty pydantic email-validator jsonschema attrs rpds-py "
+    "referencing typing_extensions six ply pycparser bcrypt pynacl "
+    "isodate requests-toolbelt cached-property lxml-stubs zope.event "
+    "zope.interface rsa pyasn1 google-auth cachetools xmltodict "
+    "Unidecode PyYAML holidays python-slugify text-unidecode s3transfer "
+    "jmespath packaging pyparsing chardet charset-normalizer").split()
+
+
+def _twin_realista(n_instancias, n_venvs):
+    """Servidor tipo Cloudpepper: cada instancia con ~25 repos (SHA de
+    verdad, poco comprimibles), conf largo y su venv (de n_venvs)."""
+    import random
+    azar = random.Random(42)
+
+    def sha():
+        return "".join(azar.choice("0123456789abcdef") for _ in range(40))
+
+    venvs = {}
+    for v in range(n_venvs):
+        bin_py = "/opt/odoo/venvs/odoo17-%d/bin/python3" % v
+        venvs[bin_py] = {"version": "Python 3.10.12", "pip_freeze": "\n".join(
+            "%s==%d.%d.%d" % (pkg, azar.randint(0, 9), azar.randint(0, 30),
+                              azar.randint(0, 20)) for pkg in PAQUETES)}
+    instancias = []
+    for i in range(n_instancias):
+        base = "/opt/odoo/cliente-%02d" % i
+        repos = []
+        for r in range(25):
+            ruta = "%s/addons/repo-%02d-%s" % (base, r, azar.choice(
+                ("account-financial-tools", "server-tools", "web", "l10n-uy",
+                 "custom", "reporting-engine", "sale-workflow", "stock-logistics")))
+            repos.append({"path": ruta, "remote_url": "git@github.com:org-%d/%s.git"
+                          % (i, ruta.rsplit("/", 1)[-1]), "branch": "17.0",
+                          "commit_sha": sha(), "commit_date": "2026-09-%02dT10:00:00-03:00"
+                          % (r % 28 + 1), "submodules": [], "dirty_files": r % 3,
+                          "unpushed_commits": 0, "alert_local_changes": bool(r % 3)})
+        conf = {"opcion_%02d" % k: "valor-%s" % sha()[:12] for k in range(40)}
+        conf.update({"db_name": "cliente_%02d" % i, "admin_passwd": "******",
+                     "http_port": str(8069 + i * 10),
+                     "gevent_port": str(8072 + i * 10)})
+        bin_py = list(venvs)[i % n_venvs]
+        instancias.append({
+            "conf_path": "/etc/odoo/cliente-%02d.conf" % i, "conf_masked": conf,
+            "addons_path": [r["path"] for r in repos], "workers": "4",
+            "limits": {"limit_time_real": "1200"},
+            "service": {"unit": "odoo-cliente-%02d.service" % i, "python_bin": bin_py,
+                        "odoo_bin": "/opt/odoo/src/odoo-bin", "active": "active",
+                        "enabled": "enabled"},
+            "odoo_core": {"path": "/opt/odoo/src", "release": "17.0",
+                          "commit_sha": sha(), "branch": "17.0"},
+            "odoo_enterprise": {"path": "/opt/odoo/enterprise", "commit_sha": sha(),
+                                "branch": "17.0"},
+            "python": {"bin": bin_py},
+            "database": {"db_name": "cliente_%02d" % i, "pg_version": "14.9",
+                         "db_size_bytes": azar.randint(10 ** 9, 5 * 10 ** 10)},
+            "filestore": {"path": "%s/data/filestore/cliente_%02d" % (base, i),
+                          "size_bytes": azar.randint(10 ** 9, 10 ** 10)},
+            "repos": repos})
+    return {"twin_format": 2, "host": "cp-servidor",
+            "system": {"os": "Ubuntu 22.04.4 LTS", "kernel": "5.15", "packages": {},
+                       "cron_system": "", "cron_d": [], "cron_root": ""},
+            "nginx": [{"site": "cliente-%02d" % i, "server_names": "cliente-%02d.example.com" % i,
+                       "proxy_ports": [str(8069 + i * 10)], "certificates": []}
+                      for i in range(n_instancias)],
+            "instances": instancias, "venvs": venvs}
+
+
 def _stdout_de(twin):
     blob = base64.b64encode(gzip.compress(json.dumps(twin).encode())).decode()
     lines = ["PCM_TWIN_B64:%s" % blob[i:i + 4000]
@@ -361,6 +438,114 @@ class TestGemelo(TransactionCase):
         self.assertIsNone(datos["_twin"])
         self.assertIn("PCM_TWIN_OK", datos["_twin_error"])
 
+    def _salida_por_pasos(self, twin):
+        """Lo que devolverían los pasos gemelo y venvs del documento."""
+        ns, _sh = self._funciones_del_script()
+        sin_freeze = json.loads(json.dumps(twin))
+        for datos in sin_freeze.get("venvs", {}).values():
+            datos.pop("pip_freeze", None)
+        gemelo = "\n".join(ns["lineas_gemelo"](sin_freeze))
+        venvs = "\n".join(ns["lineas_venvs"](twin.get("venvs") or {}))
+        legado = "\n".join(ns["trozos"]("PCM_TWIN_B64:", ns["empaquetar"](twin))
+                           + ["PCM_TWIN_OK"])
+        return gemelo, venvs, legado
+
+    def test_cinco_instancias_realistas_entran_en_los_pasos(self):
+        """5 instancias × 25 repos, 3 venvs de ~120 paquetes: cada paso por
+        debajo de los 24.000 de SSM, y el gemelo llega ENTERO con su pip
+        freeze. Los tamaños quedan en el mensaje (medición)."""
+        twin = _twin_realista(5, 3)
+        gemelo, venvs, legado = self._salida_por_pasos(twin)
+        medicion = "gemelo=%d venvs=%d (un solo blob: %d)" % (
+            len(gemelo), len(venvs), len(legado))
+        self.assertLess(len(gemelo), twin_mod.SSM_INLINE_LIMIT, medicion)
+        self.assertLess(len(venvs), twin_mod.SSM_INLINE_LIMIT, medicion)
+        parseado, motivo = self.machine._twin_parse_seguro(gemelo + "\n" + venvs)
+        self.assertIsNone(motivo, medicion)
+        self.assertEqual(len(parseado["instances"]), 5)
+        snaps = self.machine._twin_apply(parseado)
+        self.assertEqual(len(snaps), 5)
+        datos = json.loads(snaps[0].payload_json)["instance"]
+        self.assertIn("==", datos["python"]["pip_freeze"])
+        self.assertEqual(self.machine.twin_status, "ok")
+
+    def test_muchas_instancias_se_parte_por_instancia(self):
+        """Con 25 instancias el paso pasa los 24.000: SSM lo corta, pero lo
+        que entró llega ENTERO y lo que no queda nombrado."""
+        twin = _twin_realista(25, 4)
+        gemelo, venvs, _legado = self._salida_por_pasos(twin)
+        self.assertGreater(len(gemelo), twin_mod.SSM_INLINE_LIMIT)
+        cortado = gemelo[:twin_mod.SSM_INLINE_LIMIT]
+        parseado, motivo = self.machine._twin_parse_seguro(cortado + "\n" + venvs)
+        self.assertTrue(parseado)
+        llegaron = len(parseado["instances"])
+        self.assertTrue(0 < llegaron < 25, llegaron)
+        self.assertIn("faltan %d de 25 instancias" % (25 - llegaron), motivo)
+        # Las que llegaron están completas (25 repos cada una).
+        for inst in parseado["instances"]:
+            self.assertEqual(len(inst["repos"]), 25)
+        # Captura: aplica lo que llegó y marca PARCIAL, visible.
+        with mock.patch.object(type(self.machine), "_twin_fetch",
+                               return_value=(parseado, motivo)):
+            res = self.machine.action_capture_twin()
+        self.assertEqual(res["params"]["type"], "warning")
+        self.assertIn("PARCIAL", res["params"]["message"])
+        self.assertEqual(self.machine.twin_status, "incomplete")
+        self.assertIn("faltan", self.machine.twin_status_detail)
+
+    def test_sin_el_paso_de_venvs_se_avisa(self):
+        twin = _twin_realista(2, 1)
+        gemelo, _venvs, _legado = self._salida_por_pasos(twin)
+        parseado, motivo = self.machine._twin_parse_seguro(gemelo)
+        self.assertEqual(len(parseado["instances"]), 2)
+        self.assertIn("pip freeze", motivo)
+
+    def test_inventario_comprimido(self):
+        datos = {"units": [], "units_error": None, "databases": [],
+                 "databases_error": None}
+        linea = "PCM_DISCOVERY_B64:" + base64.b64encode(
+            gzip.compress(json.dumps(datos).encode())).decode()
+        with mock.patch.object(type(self.machine), "_run_readonly_document",
+                               return_value={"status": "Success",
+                                             "stdout": linea}):
+            resultado = self.machine._run_discovery()
+        self.assertEqual(resultado["units"], [])
+        self.assertIsNone(resultado["_twin"])
+
+    def test_run_document_lee_cada_paso(self):
+        """GetCommandInvocation por PluginName: cada paso con su salida (y su
+        tope); terminal cuando lo son todos; un documento viejo de un paso
+        se lee entero."""
+        base = mock.Mock()
+        client = mock.Mock()
+        base.get_client.return_value = client
+        client.send_command.return_value = {"Command": {"CommandId": "c1"}}
+        salidas = {"pcmInventario": "INV", "pcmGemelo": "GEM",
+                   "pcmGemeloVenvs": "VEN"}
+
+        def invocacion(**kw):
+            return {"Status": "Success",
+                    "StandardOutputContent": salidas[kw["PluginName"]]}
+
+        client.get_command_invocation.side_effect = invocacion
+        out = aws_ssm.AwsSsmService(base).run_document(
+            "i-1", "pcm-readonly-discovery", steps=twin_mod.DOCUMENT_STEPS,
+            _sleep=lambda s: None)
+        self.assertEqual(out["status"], "Success")
+        self.assertEqual(out["stdout"], "INV\nGEM\nVEN")
+        self.assertEqual(out["steps"]["pcmGemelo"]["chars"], 3)
+
+        def viejo(**kw):
+            if "PluginName" in kw:
+                raise Exception("An error occurred (InvalidPluginName)")
+            return {"Status": "Success", "StandardOutputContent": "TODO"}
+
+        client.get_command_invocation.side_effect = viejo
+        out = aws_ssm.AwsSsmService(base).run_document(
+            "i-1", "pcm-readonly-discovery", steps=twin_mod.DOCUMENT_STEPS,
+            _sleep=lambda s: None)
+        self.assertEqual(out["stdout"], "TODO")
+
     def test_script_lee_el_argv_de_systemd(self):
         """systemctl show -p ExecStart devuelve «{ path=… ; argv[]=… }»: el
         python del venv sale del argv (antes tomaba «path=…» y pip quedaba
@@ -453,10 +638,16 @@ class TestGemelo(TransactionCase):
                          "data/ssm/pcm-readonly-discovery.json desactualizado: "
                          "regeneralo con readonly_document_content()")
         self.assertEqual(commiteado["parameters"], {})
-        texto = "\n".join(
-            commiteado["mainSteps"][0]["inputs"]["runCommand"])
-        self.assertIn("PCM_DISCOVERY_JSON", texto)
-        self.assertIn("PCM_TWIN_OK", texto)
+        pasos = {p["name"]: "\n".join(p["inputs"]["runCommand"])
+                 for p in commiteado["mainSteps"]}
+        self.assertEqual(list(pasos), list(twin_mod.DOCUMENT_STEPS))
+        self.assertIn("PCM_DISCOVERY_B64", pasos["pcmInventario"])
+        self.assertIn("export PCM_TWIN_MODO=gemelo", pasos["pcmGemelo"])
+        self.assertIn("export PCM_TWIN_MODO=venvs", pasos["pcmGemeloVenvs"])
+        # Un documento SSM admite hasta 64 KB.
+        self.assertLess(len(json.dumps(commiteado, separators=(",", ":"))),
+                        64 * 1024)
+        texto = "\n".join(pasos.values())
         for patron in (r"\brm\s", r"\bmv\s", r"systemctl\s+(start|stop|"
                        r"restart|reload)", r"mktemp", r"\btee\b"):
             self.assertIsNone(re.search(patron, texto), patron)

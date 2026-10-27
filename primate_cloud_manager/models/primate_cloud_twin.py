@@ -36,6 +36,10 @@ DOCUMENT_JSON_PATH = "primate_cloud_manager/data/ssm/pcm-readonly-discovery.json
 DISCOVERY_DOCUMENT_PARAM = "pcm.readonly_discovery_document"
 DISCOVERY_DOCUMENT_DEFAULT = "pcm-readonly-discovery"
 DISCOVERY_S3_BUCKET_PARAM = "pcm.readonly_discovery_s3_bucket"
+# Pasos del documento: cada uno tiene su PROPIO tope de 24.000 caracteres en
+# GetCommandInvocation (se lee paso por paso, con PluginName).
+DOCUMENT_STEPS = ("pcmInventario", "pcmGemelo", "pcmGemeloVenvs")
+SSM_INLINE_LIMIT = 24000
 
 
 def readonly_document_content():
@@ -43,9 +47,11 @@ def readonly_document_content():
     de solo lectura de data/ (una sola fuente; un test verifica que el JSON
     commiteado en data/ssm/ esté sincronizado con esto).
 
-    SIN parámetros: no hay forma de pasarle un comando. Un solo paso con:
-      1) el discovery de F2 (línea PCM_DISCOVERY_JSON — la usa el import);
-      2) el gemelo completo (líneas PCM_TWIN_B64 + PCM_TWIN_OK).
+    SIN parámetros: no hay forma de pasarle un comando. TRES pasos, cada uno
+    con su propio tope de 24.000 caracteres de salida:
+      1) pcmInventario  — el discovery de F2 (PCM_DISCOVERY_B64, comprimido);
+      2) pcmGemelo      — el gemelo, una base + un registro por instancia;
+      3) pcmGemeloVenvs — el pip freeze de cada venv, un registro por venv.
     """
     with file_open(F2_DISCOVERY_SCRIPT_PATH) as handle:
         f2 = handle.read()
@@ -53,21 +59,27 @@ def readonly_document_content():
         twin = handle.read()
     twin_body = [line for line in twin.splitlines()
                  if not line.startswith("#!")]
-    run = (["#!/bin/bash", "set -uo pipefail",
-            "python3 - <<'PCM_F2_PY'"] + f2.splitlines()
-           + ["PCM_F2_PY"] + twin_body)
+
+    def paso(nombre, lineas):
+        return {"action": "aws:runShellScript", "name": nombre,
+                "inputs": {"timeoutSeconds": "600", "runCommand": lineas}}
+
     return {
         "schemaVersion": "2.2",
         "description": "PCM: discovery de SOLO LECTURA (inventario F2 + "
-                       "gemelo exacto). Sin parámetros. No escribe nada en "
-                       "el servidor. Único SendCommand permitido por la "
-                       "policy pcm-prod-readonly.",
+                       "gemelo exacto, en tres pasos). Sin parámetros. No "
+                       "escribe nada en el servidor. Único SendCommand "
+                       "permitido por la policy pcm-prod-readonly.",
         "parameters": {},
-        "mainSteps": [{
-            "action": "aws:runShellScript",
-            "name": "pcmReadonlyDiscovery",
-            "inputs": {"timeoutSeconds": "600", "runCommand": run},
-        }],
+        "mainSteps": [
+            paso(DOCUMENT_STEPS[0], ["#!/bin/bash", "set -uo pipefail",
+                                     "python3 - <<'PCM_F2_PY'"]
+                 + f2.splitlines() + ["PCM_F2_PY"]),
+            paso(DOCUMENT_STEPS[1], ["#!/bin/bash",
+                                     "export PCM_TWIN_MODO=gemelo"] + twin_body),
+            paso(DOCUMENT_STEPS[2], ["#!/bin/bash",
+                                     "export PCM_TWIN_MODO=venvs"] + twin_body),
+        ],
     }
 
 
@@ -377,10 +389,18 @@ class PrimateCloudEc2InstanceTwin(models.Model):
 
     @api.model
     def _twin_parse_seguro(self, stdout):
-        """(gemelo, None) si la salida trae el gemelo entero; (None, motivo)
-        si no: falta PCM_TWIN_OK (salida cortada) o el blob no decodifica."""
+        """(gemelo, motivo). ``motivo`` es None si llegó ENTERO.
+
+        - Formato 3 (documento SSM en pasos): base + un registro por
+          instancia + un registro por venv. Lo que llegó entero se usa; lo
+          que no, queda nombrado en el motivo («faltan 2 de 5 instancias»):
+          el gemelo puede volver PARCIAL, nunca corrupto.
+        - Formato 1/2 (un solo blob, el de ssh): entero o nada.
+        """
         stdout = stdout or ""
         largo = len(stdout)
+        if "PCM_TWIN_BASE:" in stdout:
+            return self._twin_parse_registros(stdout)
         if "PCM_TWIN_B64:" not in stdout:
             return None, _("la salida no trae el gemelo (%s caracteres).") % largo
         if "PCM_TWIN_OK" not in stdout:
@@ -389,9 +409,65 @@ class PrimateCloudEc2InstanceTwin(models.Model):
                 "límite inline de SSM es 24.000). Capturarlo por ssh "
                 "(infra/gemelo_cloudpepper.sh) o con salida por S3.") % largo
         try:
-            return self._twin_parse(stdout), None
+            return self._twin_parse_blob(stdout), None
         except Exception as error:  # noqa: BLE001 — se reporta, no se traga
             return None, _("el gemelo no decodifica: %s") % str(error)[:200]
+
+    @staticmethod
+    def _twin_registros(stdout, prefijo, marca_ok):
+        """{indice: objeto} de los registros «prefijo<i>:<trozo>» que trajeron
+        su «marca_ok<i>» y decodifican; los demás quedan afuera."""
+        trozos, cerrados = {}, set()
+        for linea in stdout.splitlines():
+            if linea.startswith(prefijo):
+                indice, _sep, trozo = linea[len(prefijo):].partition(":")
+                trozos.setdefault(indice, []).append(trozo)
+            elif linea.startswith(marca_ok):
+                cerrados.add(linea[len(marca_ok):].strip())
+        objetos = {}
+        for indice, partes in trozos.items():
+            if indice not in cerrados:
+                continue
+            try:
+                objetos[int(indice)] = json.loads(gzip.decompress(
+                    base64.b64decode("".join(partes))).decode())
+            except Exception:  # noqa: BLE001 — un registro roto no tumba el resto
+                continue
+        return objetos
+
+    def _twin_parse_registros(self, stdout):
+        largo = len(stdout)
+        base_trozos = [l[len("PCM_TWIN_BASE:"):] for l in stdout.splitlines()
+                       if l.startswith("PCM_TWIN_BASE:")]
+        if "PCM_TWIN_BASE_OK" not in stdout:
+            return None, _("la base del gemelo no llegó entera (%s caracteres).") % largo
+        try:
+            twin = json.loads(gzip.decompress(
+                base64.b64decode("".join(base_trozos))).decode())
+        except Exception as error:  # noqa: BLE001
+            return None, _("la base del gemelo no decodifica: %s") % str(error)[:200]
+        instancias = self._twin_registros(
+            stdout, "PCM_TWIN_INST:", "PCM_TWIN_INST_OK:")
+        total = int(twin.pop("n_instances", len(instancias)) or 0)
+        twin["instances"] = [instancias[i] for i in sorted(instancias)]
+        motivos = []
+        if len(instancias) < total:
+            motivos.append(_(
+                "faltan %(f)s de %(t)s instancias (la salida del paso se cortó "
+                "en los 24.000 caracteres de SSM; capturarlas por ssh)",
+                f=total - len(instancias), t=total))
+        venvs = self._twin_registros(
+            stdout, "PCM_TWIN_VENV:", "PCM_TWIN_VENV_OK:")
+        destino = twin.setdefault("venvs", {})
+        for datos in venvs.values():
+            destino.setdefault(datos.get("bin") or "", {})["pip_freeze"] = \
+                datos.get("pip_freeze") or ""
+        con_python = {i.get("python", {}).get("bin") for i in twin["instances"]} - {""}
+        sin_freeze = [b for b in con_python
+                      if not (destino.get(b) or {}).get("pip_freeze")]
+        if sin_freeze and "PCM_TWIN_VENVS_OK" not in stdout:
+            motivos.append(_("falta el pip freeze de %s venv(s)") % len(sin_freeze))
+        return twin, ("; ".join(motivos) or None)
 
     def action_capture_twin(self):
         """Captura el gemelo de ESTE servidor (lectura pura: permitido también
@@ -399,14 +475,25 @@ class PrimateCloudEc2InstanceTwin(models.Model):
         INCOMPLETO con el motivo, en vez de fallar sin rastro."""
         self.ensure_one()
         try:
-            twin = self._twin_fetch()
+            twin, motivo = self._twin_fetch()
         except UserError as error:
-            self._twin_marcar("incomplete", str(error))
+            twin, motivo = None, str(error)
+        if twin is None:
+            self._twin_marcar("incomplete", motivo)
             return {
                 "type": "ir.actions.client", "tag": "display_notification",
                 "params": {"type": "warning", "sticky": True,
-                           "message": _("Gemelo INCOMPLETO: %s") % error}}
+                           "message": _("Gemelo INCOMPLETO: %s") % motivo}}
         snapshots = self._twin_apply(twin)
+        if motivo:
+            # PARCIAL: lo que llegó quedó aplicado; lo que faltó, nombrado.
+            self._twin_marcar("incomplete", motivo)
+            return {
+                "type": "ir.actions.client", "tag": "display_notification",
+                "params": {"type": "warning", "sticky": True,
+                           "message": _("Gemelo PARCIAL (%(n)s instancia(s) "
+                                        "capturadas): %(m)s",
+                                        n=len(snapshots), m=motivo)}}
         self.message_post(body=_(
             "Gemelo capturado: %(n)s instancia(s) Odoo, %(a)s alerta(s).",
             n=len(snapshots), a=sum(snapshots.mapped("alert_count"))))
@@ -437,15 +524,22 @@ class PrimateCloudEc2InstanceTwin(models.Model):
         else:
             with file_open(DISCOVERY_SCRIPT_PATH) as handle:
                 script = handle.read()
-            output = ssm.run_script(
-                self.aws_instance_id, script, region=region,
-                comment="pcm twin: %s" % self.name,
-                timeout=420, check=False)
-            if output.get("status") != "Success":
-                raise UserError(_("El discovery del gemelo falló: %s")
-                                % (output.get("stderr")
-                                   or output.get("status")))
-        return self._twin_parse(output.get("stdout") or "")
+            # Mismo reparto que el documento: gemelo y venvs en dos comandos,
+            # cada uno con su tope de 24.000 caracteres.
+            salidas = []
+            for modo in ("gemelo", "venvs"):
+                output = ssm.run_script(
+                    self.aws_instance_id,
+                    "export PCM_TWIN_MODO=%s\n%s" % (modo, script),
+                    region=region, comment="pcm twin (%s): %s" % (modo, self.name),
+                    timeout=420, check=False)
+                if output.get("status") != "Success":
+                    raise UserError(_("El discovery del gemelo falló: %s")
+                                    % (output.get("stderr")
+                                       or output.get("status")))
+                salidas.append(output.get("stdout") or "")
+            output = {"stdout": "\n".join(salidas)}
+        return self._twin_parse_seguro(output.get("stdout") or "")
 
     def _run_readonly_document(self, ssm, region, comment):
         """El ÚNICO camino de lectura dentro de un servidor importado."""
@@ -455,24 +549,27 @@ class PrimateCloudEc2InstanceTwin(models.Model):
         bucket = params.get_param(DISCOVERY_S3_BUCKET_PARAM) or None
         output = ssm.run_document(
             self.aws_instance_id, document, region=region,
-            comment="%s: %s" % (comment, self.name), timeout=600,
+            comment="%s: %s" % (comment, self.name), timeout=900,
+            steps=DOCUMENT_STEPS,
             output_s3_bucket=bucket,
             output_s3_prefix="pcm-readonly-discovery" if bucket else None)
         return dict(output, document=document)
 
     @staticmethod
-    def _twin_parse(stdout):
+    def _twin_parse_blob(stdout):
+        """Formato 1/2: un solo blob PCM_TWIN_B64 + PCM_TWIN_OK."""
         chunks = [line[len("PCM_TWIN_B64:"):] for line in stdout.splitlines()
                   if line.startswith("PCM_TWIN_B64:")]
-        if not chunks or "PCM_TWIN_OK" not in stdout:
-            raise UserError(_(
-                "El discovery no devolvió el gemelo completo: la salida "
-                "inline de SSM se corta en 24.000 caracteres (servidor con "
-                "muchas instancias) o el script se interrumpió. Configurá un "
-                "bucket en «%s» para recibir la salida completa por S3.",
-                DISCOVERY_S3_BUCKET_PARAM))
         blob = "".join(chunks)
         return json.loads(gzip.decompress(base64.b64decode(blob)).decode())
+
+    def _twin_parse(self, stdout):
+        """Estricto: el gemelo o UserError con el motivo (archivos, tests).
+        Un gemelo parcial de formato 3 se devuelve igual (lo que llegó)."""
+        twin, motivo = self._twin_parse_seguro(stdout)
+        if twin is None:
+            raise UserError(_("El gemelo no llegó: %s") % motivo)
+        return twin
 
     def _twin_apply(self, twin):
         """El gemelo de ESTE servidor, volcado en su entorno."""

@@ -464,12 +464,18 @@ def main():
                 fh.write(texto)
             print("escrita %s (%d bytes)" % (os.path.relpath(ruta, RAIZ),
                                             len(texto.encode())))
-        # validate-template / create-stack con --template-body aceptan hasta
-        # 51.200 bytes (la consola sube a S3 y admite más).
-        if len(texto.encode()) > 51200:
-            raise SystemExit("%s pesa %d bytes: supera los 51.200 de "
-                             "--template-body" % (os.path.basename(ruta),
-                                                   len(texto.encode())))
+        # El tope de 51.200 bytes es SÓLO de --template-body (CLI). Por
+        # consola, CloudFormation sube la plantilla a su bucket automático
+        # (cf-templates-…) y el tope es 1 MB: se advierte, no se corta.
+        peso = len(texto.encode())
+        if peso > 1024 * 1024:
+            raise SystemExit("%s pesa %d bytes: supera 1 MB, el tope de "
+                             "CloudFormation" % (os.path.basename(ruta), peso))
+        if peso > 51200:
+            print("AVISO: %s pesa %d bytes (> 51.200): por CLI hay que usar "
+                  "--template-url; por consola se sube normal (bucket "
+                  "cf-templates-… de CloudFormation, tope 1 MB)."
+                  % (os.path.basename(ruta), peso))
     if desactualizadas:
         raise SystemExit("plantillas desactualizadas: %s — correr generar.py"
                          % ", ".join(desactualizadas))

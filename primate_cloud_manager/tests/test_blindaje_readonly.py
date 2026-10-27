@@ -230,7 +230,7 @@ class TestBlindajeImportados(TransactionCase):
         """Mirar es el propósito: el gemelo (lectura) no está bloqueado."""
         twin = {"instances": [], "nginx": [], "system": {}}
         with mock.patch.object(type(self.machine), "_twin_fetch",
-                               return_value=twin):
+                               return_value=(twin, None)):
             self.machine.action_capture_twin()
 
     # ------------------------------------------------- cerrojo de frontera

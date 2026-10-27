@@ -2,6 +2,7 @@
 """Instancia EC2: inventario (Fase 2) y acciones de operación (Fase 3)."""
 import base64
 import hashlib
+import gzip
 import json
 import logging
 import re
@@ -398,8 +399,15 @@ class PrimateCloudEc2Instance(models.Model):
                 timeout=90, agent_timeout=20, check=False)
         stdout = output.get("stdout") or ""
         for linea in stdout.splitlines():
-            if linea.startswith("PCM_DISCOVERY_JSON:"):
+            datos = None
+            if linea.startswith("PCM_DISCOVERY_B64:"):
+                # Comprimida (desde 2026-10-27): el inventario es un paso
+                # aparte del documento, con su propio tope de 24.000.
+                datos = json.loads(gzip.decompress(base64.b64decode(
+                    linea[len("PCM_DISCOVERY_B64:"):])).decode())
+            elif linea.startswith("PCM_DISCOVERY_JSON:"):
                 datos = json.loads(linea[len("PCM_DISCOVERY_JSON:"):])
+            if datos is not None:
                 # El gemelo es extra, pero si no llegó entero se DICE: el
                 # motivo viaja para marcar el servidor «gemelo incompleto».
                 datos["_twin"], datos["_twin_error"] = \
