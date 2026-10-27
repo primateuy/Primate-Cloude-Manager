@@ -25,6 +25,22 @@ statements opcionales que dependen de algo que la plantilla no crea:
 que `infra/subir_dump.sh` suba el dump con ese mismo usuario (perfil
 `pcm-prod-provision`).
 
+### Placeholders de los JSON y convención de buckets (2026-10-27)
+
+- `<ACCOUNT_ID>` → el número de cuenta; `<SUFIJO>` → **vacío** (en la plantilla
+  es el parámetro opcional `Sufijo`, para probar en una cuenta que ya tiene estos
+  nombres).
+- Buckets de PCM: **`pcm-<uso>-<cuenta>`** (`pcm-dumps-<cuenta>`,
+  `pcm-backups-<cuenta>`). Los permisos de S3 —usuario de aprovisionamiento y rol
+  `pcm-ssm-role`— se limitan a ese patrón y a buckets **de esta cuenta**
+  (`aws:ResourceAccount`): otra cuenta no puede registrar el nombre antes y
+  quedarse con nuestros backups. PCM valida el nombre antes de usarlo.
+- `ssm:GetParameter` sólo sobre `/aws/service/canonical/ubuntu/*` (la AMI pública).
+- Costos (`ce:GetCostAndUsage`, `ce:GetCostForecast`) sólo en la readonly: la cuenta
+  «Solo aprovisionamiento» no los consulta (los duplicaría).
+
+Guía completa para el proveedor de infraestructura: `infra/README_INCO.md`.
+
 ### Por qué dos usuarios y no las dos policies en uno
 
 IAM autoriza `ssm:SendCommand` evaluando **cada recurso por separado** (el

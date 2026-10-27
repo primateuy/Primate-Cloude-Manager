@@ -98,7 +98,31 @@ blureados en el montaje).
 > No usar `pcm_demo` (sandbox) para nada productivo: tiene una cuenta de
 > prueba vieja llamada «Primate Producción» con un ID ficticio (123456789012).
 
+## F1b · Ensayo de los permisos en la SANDBOX (antes de la cuenta real)
+
+La sandbox **ya tiene** `pcm-ssm-role` (lo usa `pcm_demo`): desplegar la plantilla
+tal cual fallaría ahí. Se despliega con el parámetro **`Sufijo = -cfn`**: todo
+queda con nombres paralelos (`pcm-ssm-role-cfn`, `pcm-prod-ro-cfn`,
+`pcm-prod-prov-cfn`, `pcm-readonly-discovery-cfn`, `pcm-dumps-<cuenta>-cfn`) y no
+se toca nada de lo que usa `pcm_demo`.
+
+1. [ ] YO · Consola de la sandbox → CloudFormation → stack `pcm-prerequisitos-cfn`
+   con `pcm-prerequisitos.yaml` y **Sufijo `-cfn`**.
+2. [ ] YO · CloudShell: `SUFIJO=-cfn bash verificar.sh` → **TODO OK**.
+3. [ ] YO · Keys de `pcm-prod-ro-cfn` y `pcm-prod-prov-cfn` cargadas en una **base
+   de prueba** (no en `pcm_produccion`), con los parámetros
+   `pcm.ssm_instance_profile = pcm-ssm-role-cfn` y
+   `pcm.readonly_discovery_document = pcm-readonly-discovery-cfn`.
+4. [ ] CC · Con ESOS usuarios: importación de solo lectura con gemelo y un
+   montaje chico (dump reducido, disco, restore) hasta HTTPS. Cada AccessDenied
+   se anota, se corrige la policy y se repite hasta que pase limpio. Video.
+   Terminar los recursos al final.
+
 ## F2 · IAM en la cuenta real (YO, consola + CloudShell)
+
+0. [ ] YO · Mandar a INCO `entregables/inco/pcm_permisos_<fecha>.zip` (lo arma
+   `infra/armar_entregable_inco.sh`, que verifica que no lleve cuentas, IPs,
+   keys, correos ni nombres de clientes).
 
 1. [ ] YO · **Antes de desplegar**, en CloudShell (us-east-1). Subí
    `pcm-prerequisitos.yaml` desde «Actions → Upload file» y corré:
@@ -124,7 +148,10 @@ blureados en el montaje).
    - documento SSM `pcm-readonly-discovery`;
    - rol + instance profile **`pcm-ssm-role`** (agente SSM + dumps en `pcm-*`);
    - bucket **`pcm-dumps-<cuenta>`** en us-east-1: privado, Block Public Access
-     completo, SSE-S3, sin versionado, `incoming/` expira a los 7 días, solo TLS;
+     completo, SSE-S3, sin versionado, `incoming/` expira a los 7 días, solo TLS.
+     **Todo bucket de PCM se llama `pcm-<uso>-<cuenta>`** (p. ej. el de backups,
+     `pcm-backups-<cuenta>`): los permisos sólo alcanzan a ese patrón y a esta
+     cuenta;
    - managed policies **`pcm-prod-readonly`** y **`pcm-prod-provision`** (con
      el Deny de CreateTags/DeleteTags sobre `primate:managed_by` y PutObject
      solo en `incoming/` de ese bucket);

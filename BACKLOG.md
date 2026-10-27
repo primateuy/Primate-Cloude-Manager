@@ -69,6 +69,25 @@ disco de 100 GB (antes del cambio: ~60 + 7).
   del pre-backup (que va a S3 con retención de 7 días, `pcm.pre_restore_retention_days`) **se
   mide recién en el primer restore sobre una base existente**. No registrarlo como medido.
 
+## 🔒 LIMITACIÓN CONOCIDA — El rol `pcm-ssm-role` es compartido entre servidores (2026-10-27)
+
+Un solo instance profile para todas las EC2 que monta PCM: cualquiera de esos
+servidores puede leer (y escribir) los dumps y backups de OTROS clientes en los
+buckets `pcm-<uso>-<cuenta>`. Ya está acotado a los buckets de PCM de esta cuenta
+(`aws:ResourceAccount`), pero no por servidor. Documentado para INCO en
+`infra/README_INCO.md` §6. No se cambia ahora.
+
+Opciones:
+1. **Prefijo por instancia con condición**: objetos bajo `.../<pcm_ref del entorno>/`
+   y en la policy del rol `s3:prefix` / ARN con `${aws:PrincipalTag/...}` o
+   `${ec2:SourceInstanceARN}`; requiere etiquetar la sesión de la instancia o un rol
+   por servidor.
+2. **Rol por servidor** (o por cliente) creado por PCM: aislamiento total, pero PCM
+   necesitaría `iam:CreateRole`/`PutRolePolicy` acotados (más superficie de IAM).
+3. **URLs prefirmadas desde PCM**: el rol de la EC2 no lee S3; PCM genera una URL
+   GET/PUT de pocos minutos por transferencia y la pasa en el comando. Lo más
+   simple de auditar; las URLs viajan en el comando SSM (expiran en minutos).
+
 ## 💡 FEATURE — Ampliar el disco de una instancia desde PCM (2026-10-27)
 
 Pedido a raíz de que INCO definió 100 GB para Barraca Julia UAT. Hoy PCM **no**
