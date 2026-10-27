@@ -335,6 +335,27 @@ class TestCloudpepperImport(TransactionCase):
         return self.env["primate.cloud.environment"].search(
             [("name", "=", "cp-clientes-1")], limit=1)
 
+    def test_import_acepta_el_json_decodificado(self):
+        """infra/gemelo_cloudpepper.sh deja un .json por servidor."""
+        twin = _twin_dos_instancias()
+        wiz = self.env["primate.cloud.external.import.wizard"].create({
+            "server_name": "cp-clientes-1",
+            "twin_file": base64.b64encode(json.dumps(twin).encode()),
+            "twin_filename": "cp-clientes-1.json"})
+        wiz.action_import()
+        env_rec = self.env["primate.cloud.environment"].search(
+            [("name", "=", "cp-clientes-1")], limit=1)
+        self.assertEqual(env_rec.pcm_origin, "imported_cloudpepper")
+        self.assertEqual(len(env_rec.instance_ids), 2)
+
+    def test_import_rechaza_un_json_que_no_es_gemelo(self):
+        wiz = self.env["primate.cloud.external.import.wizard"].create({
+            "server_name": "cp-x",
+            "twin_file": base64.b64encode(b'{"hola": 1}'),
+            "twin_filename": "x.json"})
+        with self.assertRaises(UserError):
+            wiz.action_import()
+
     def test_import_crea_entorno_marcado_con_gemelo(self):
         env_rec = self._importar()
         self.assertEqual(env_rec.pcm_origin, "imported_cloudpepper")

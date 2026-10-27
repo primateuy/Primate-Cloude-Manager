@@ -1,0 +1,19 @@
+# Lista de servidores Cloudpepper para infra/gemelo_cloudpepper.sh.
+# Copiala a ~/.pcm_produccion/cloudpepper_servidores.txt (fuera del repo) y
+# completala. Una línea por servidor, tres columnas separadas por espacios:
+#
+#   <alias>   <destino ssh>   <modo>
+#
+#   alias        nombre corto; es el nombre del .json y el que vas a poner
+#                como «nombre del servidor» al importarlo en PCM.
+#   destino ssh  lo mismo que usás en `ssh <destino>`: usuario@host, o un Host
+#                de tu ~/.ssh/config (ahí van el puerto, la clave, el usuario).
+#   modo         sudo  → el usuario entra y corre `sudo -n` (sudo SIN pedir
+#                        contraseña; si la pide, ese servidor falla y se sigue)
+#                root  → el usuario ya es root
+#
+# Líneas que empiezan con # se ignoran.
+#
+# Ejemplos:
+# cp-clientes-1   ubuntu@203.0.113.10    sudo
+# cp-clientes-2   cp2                    root

@@ -11,6 +11,7 @@ alertas y un snapshot versionado. Re-importar sobre el mismo entorno = nueva
 versión del snapshot (para comparar contra el ambiente nuevo).
 """
 import base64
+import json
 
 from odoo import _, fields, models
 from odoo.exceptions import UserError
@@ -37,6 +38,22 @@ class PrimateCloudExternalImportWizard(models.TransientModel):
     twin_file = fields.Binary(string="Salida del discovery", required=True)
     twin_filename = fields.Char(string="Archivo")
 
+    def _leer_gemelo(self, texto):
+        """Acepta las dos salidas: la cruda del script (líneas PCM_TWIN_B64 +
+        PCM_TWIN_OK) o el .json ya decodificado por infra/gemelo_cloudpepper.sh."""
+        if texto.lstrip().startswith("{"):
+            try:
+                twin = json.loads(texto)
+            except ValueError as error:
+                raise UserError(_("El .json del gemelo no es válido: %s") % error)
+            if not isinstance(twin, dict) or not isinstance(
+                    twin.get("instances"), list) or "system" not in twin:
+                raise UserError(_(
+                    "El .json no es un gemelo de PCM (faltan «system» o "
+                    "«instances»)."))
+            return twin
+        return self.env["primate.cloud.ec2.instance"]._twin_parse(texto)
+
     def action_import(self):
         self.ensure_one()
         try:
@@ -44,7 +61,7 @@ class PrimateCloudExternalImportWizard(models.TransientModel):
                 "utf-8", errors="replace")
         except Exception as error:  # noqa: BLE001
             raise UserError(_("El archivo no se pudo leer: %s") % error)
-        twin = self.env["primate.cloud.ec2.instance"]._twin_parse(stdout)
+        twin = self._leer_gemelo(stdout)
         Environment = self.env["primate.cloud.environment"].with_context(
             pcm_import_sync=True)
         env_rec = self.environment_id
