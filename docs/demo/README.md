@@ -1,5 +1,33 @@
 # Videos de ensayo de PCM (fuera de git)
 
+## `sslip_automatico_sandbox_2026-10-27.mp4` — 3:46, 1080p
+
+Prueba real del «Dominio sslip.io automático» en la sandbox (`pcm_demo`, cuenta
+«Personal Prueba Real», us-east-1, t3.small, disco 20 GB, sin restore). Segunda
+corrida: la primera encontró un bug (ver abajo), se corrigió con su test y se
+repitió entera.
+
+| Minuto | Tramo |
+|---|---|
+| 0:00 | Portada |
+| 0:06 | Montaje: nuevo entorno Staging + «Aprovisionar» con IP fija, sslip.io automático y HTTPS (espera ×8) |
+| 2:03 | Verificación: los 4 mensajes del chatter en orden, http → https, certificado de Let's Encrypt (YE1, sin STAGING) |
+| 2:48 | Terminación con triple confirmación + IP fija liberada (espera ×8) |
+| 3:39 | Resultado |
+
+Hallazgos de la corrida (corregidos, con test):
+- Con sslip.io marcado, «Crear registro DNS» quedaba marcado y oculto: el
+  botón «Aprovisionar» no hacía nada (pedía una zona invisible). Ahora sslip.io
+  apaga Route 53 en la pantalla y en el servidor.
+- El chatter del entorno no contaba el montaje entero (la IP fija y el HTTPS
+  quedaban en la máquina y en la instancia). Ahora tiene los 4 pasos en orden.
+- Terminar: si el job choca con una escritura concurrente sobre la máquina,
+  queue_job lo reintenta; el reintento encontraba la IP fija ya liberada en AWS
+  y no la limpiaba en PCM. Ahora la limpia y lo deja en chatter y bitácora.
+
+Revisado entero (hojas de contacto cada 2 s): contraseñas solo como puntos,
+sin credenciales de la cuenta AWS. Scripts: scratchpad de la sesión (`f8/`).
+
 ## `ensayo_permisos_sandbox_2026-10-27.mp4` — 14:16, 1080p
 
 Ensayo de los permisos de la plantilla `pcm-prerequisitos` en la sandbox

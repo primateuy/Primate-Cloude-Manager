@@ -292,19 +292,24 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
    resuelve solo, sin registro DNS), instala Odoo con nginx para ese nombre
    y, al terminar, emite el certificado (Let's Encrypt **producción**) y lo
    verifica con un GET https real. Qué ver, en orden, en el chatter del
-   entorno:
-   - «IP fija (Elastic IP) <ip> asociada…»;
-   - «Dominio provisorio: bj-uat.<ip>.sslip.io (sslip.io con la IP fija…)»;
-   - «Entorno aprovisionado y activo en bj-uat.<ip>.sslip.io»;
-   - el aviso final dice **«Entorno activo en https://bj-uat.<ip>.sslip.io»**
-     y la instancia muestra el badge **«HTTPS activo»** (en el ensayo, el
-     paso HTTPS tardó 30 s).
+   entorno («Gestionar»; el más nuevo arriba):
+   1. «IP fija (Elastic IP) <ip> asociada al servidor.»;
+   2. «Dominio provisorio: bj-uat.<ip-con-guiones>.sslip.io (sslip.io con la
+      IP fija, sin registro DNS).»;
+   3. «Entorno aprovisionado y activo en bj-uat.<ip-con-guiones>.sslip.io.»;
+   4. **«HTTPS activo: https://bj-uat.<ip-con-guiones>.sslip.io (Let's
+      Encrypt).»** — y la instancia con el badge **«HTTPS activo»**.
+
+   Si en vez del 4 dice «Sin HTTPS todavía en …», ver «Plan B si SSL falla».
+   Probado en real el 27-oct en la sandbox (t3.small): montaje completo en
+   4 min 41 s, certificado de Let's Encrypt de producción (emisor YE1) y
+   http → 301 → https.
 
    Abrí `https://bj-uat.<ip>.sslip.io/web/login`: **candado válido**, emisor
    Let's Encrypt (no «(STAGING)»), y `http://` redirige a `https://`. Con la IP
    fija, un stop/start no rompe sslip.io ni el certificado.
-   **«Activar HTTPS ahora» solo se usa si el aviso final dice el dominio SIN
-   https** (badge «Sin HTTPS» con el motivo): ver «Plan B si SSL falla».
+   **«Activar HTTPS ahora» solo se usa si el chatter dice «Sin HTTPS
+   todavía»** (badge «Sin HTTPS» con el motivo): ver «Plan B si SSL falla».
 3. [ ] PCM · **«Restaurar desde un dump…»** (panel lateral): origen «Key S3
    manual» = la ruta que imprimió `subir_dump.sh` · formato: detectar ·
    **Eliminar el dump de S3 al finalizar: sí** · base destino `bj_uat` ·
