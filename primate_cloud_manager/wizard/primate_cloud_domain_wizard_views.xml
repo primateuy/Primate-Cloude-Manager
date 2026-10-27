@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_domain_wizard_form" model="ir.ui.view">
+        <field name="name">primate.cloud.domain.wizard.form</field>
+        <field name="model">primate.cloud.domain.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Dominio de la instancia">
+                <field name="instance_id" invisible="1"/>
+                <field name="mode" invisible="1"/>
+                <div class="alert alert-info" role="alert" invisible="mode != 'route53'">
+                    PCM crea el registro <b>A</b> en Route 53 apuntando a la IP del
+                    servidor, espera a que propague, emite el certificado y recién
+                    ahí retira el dominio actual. Si algo falla, la instancia sigue
+                    como está.
+                </div>
+                <div class="alert alert-info" role="alert" invisible="mode != 'manual'">
+                    El registro <b>A</b> lo cargás vos (consola de Route 53 u otro
+                    DNS) apuntando a la IP del servidor. PCM no toca el DNS: verifica
+                    que el dominio apunte acá, emite el certificado y recién ahí
+                    retira el dominio actual. Si algo falla, la instancia sigue como
+                    está.
+                </div>
+                <group>
+                    <group>
+                        <field name="current_domain" readonly="1"/>
+                        <field name="server_ip" readonly="1"/>
+                    </group>
+                    <group>
+                        <field name="domain" placeholder="erp.cliente.com"/>
+                        <field name="hosted_zone_id" invisible="mode != 'route53'"
+                               required="mode == 'route53'" placeholder="Z0123456789ABC"/>
+                        <field name="ttl" invisible="mode != 'route53'"/>
+                    </group>
+                </group>
+                <footer>
+                    <button name="action_confirm" type="object"
+                            string="Crear DNS y cambiar" class="btn-primary"
+                            invisible="mode != 'route53'"/>
+                    <button name="action_confirm" type="object"
+                            string="Verificar y asociar" class="btn-primary"
+                            invisible="mode != 'manual'"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

@@ -1060,6 +1060,15 @@ class PrimateCloudEnvironment(models.Model):
             if instance_rec:
                 instance_rec.state = "installing"
 
+            # 0. IP fija (Elastic IP) ANTES de todo lo que usa la IP: sslip.io,
+            #    el registro A y el certificado dependen de ella. Acá y no en
+            #    el job del servidor para que «Reintentar instalación» también
+            #    la reintente (es idempotente).
+            if params.get("elastic_ip", True):
+                bus.provision_step(self.env, self,
+                                   _("Asignando la IP fija (Elastic IP)…"))
+                machine._pcm_ensure_elastic_ip()
+
             # 1. Base de datos (RDS / PostgreSQL local / ninguna) --------------
             if resume:
                 db_host = "localhost" if params.get("db_mode") == "local_pg" \
@@ -2158,8 +2167,33 @@ class PrimateCloudEnvironment(models.Model):
                 nameservers = route53.get_zone_nameservers(record.hosted_zone_id)
             except Exception:  # noqa: BLE001 — sin NS, cae al resolver local
                 nameservers = []
+        answers, aaaa = self._dig_answers(
+            ssm, machine, region, domain, nameservers or ["system"])
+        if aaaa:
+            return "aaaa_conflict"
+        if not answers:
+            return _("dig no respondió desde el servidor")
+        missing = [key for key, ips in answers.items()
+                   if machine.public_ip not in ips]
+        if missing:
+            return _("%(who)s aún no devuelve %(ip)s",
+                     who=", ".join(missing), ip=machine.public_ip)
+        return "ok"
+
+    @staticmethod
+    def _dig_answers(ssm, machine, region, domain, servers):
+        """``dig`` desde el SERVIDOR (solo lectura): respuestas A por resolver
+        y la AAAA del resolver del sistema.
+
+        Args:
+            servers (list[str]): NS o resolvers a consultar; ``"system"`` es
+                el resolver de la máquina.
+
+        Returns:
+            tuple(dict, list): ``({"A[<resolver>]": [ips]}, [ipv6])``.
+        """
         lines = []
-        for server in (nameservers or ["system"])[:4]:
+        for server in servers[:4]:
             at = "" if server == "system" else " @%s" % shlex.quote(server)
             lines.append(
                 'echo "A[%s]=$(dig +short +time=3 +tries=1 A %s%s '
@@ -2171,23 +2205,14 @@ class PrimateCloudEnvironment(models.Model):
             machine.aws_instance_id, "\n".join(lines), region=region,
             comment="pcm ssl propagation: %s" % domain,
             timeout=90, agent_timeout=60, check=False)
-        stdout = output.get("stdout") or ""
         answers = {}
-        for line in stdout.splitlines():
+        for line in (output.get("stdout") or "").splitlines():
             if "=" in line and (line.startswith("A[") or line.startswith("AAAA")):
                 key, _sep, value = line.partition("=")
-                answers[key] = [v for v in value.strip().split(",") if v]
-        aaaa = answers.pop("AAAA", [])
-        if aaaa:
-            return "aaaa_conflict"
-        if not answers:
-            return _("dig no respondió desde el servidor")
-        missing = [key for key, ips in answers.items()
-                   if machine.public_ip not in ips]
-        if missing:
-            return _("%(who)s aún no devuelve %(ip)s",
-                     who=", ".join(missing), ip=machine.public_ip)
-        return "ok"
+                # dig +short también lista los CNAME intermedios: solo IPv4/6.
+                answers[key] = [v for v in value.strip().split(",")
+                                if v and not v.endswith(".")]
+        return answers, answers.pop("AAAA", [])
 
     def _ssl_run_certbot(self, ssm, machine, region, instance, domain,
                          use_staging):
@@ -2354,26 +2379,7 @@ class PrimateCloudEnvironment(models.Model):
         region = machine.region or self.account_id.default_region
         slug = instance.slug
         new_domain = (instance.main_url or "").strip()
-        vhost = (
-            "server {\n"
-            "    listen 80;\n"
-            "    server_name %(domain)s;\n"
-            "    location /websocket {\n"
-            "        proxy_pass http://127.0.0.1:%(gevent)s;\n"
-            "        proxy_set_header Upgrade $http_upgrade;\n"
-            '        proxy_set_header Connection "Upgrade";\n'
-            "        proxy_set_header Host $host;\n"
-            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
-            "    }\n"
-            "    location / {\n"
-            "        proxy_pass http://127.0.0.1:%(http)s;\n"
-            "        proxy_set_header Host $host;\n"
-            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
-            "        proxy_set_header X-Forwarded-Proto $scheme;\n"
-            "        proxy_set_header X-Forwarded-Host $host;\n"
-            "    }\n"
-            "}\n" % {"domain": new_domain, "gevent": instance.gevent_port,
-                     "http": instance.http_port})
+        vhost = self._instance_vhost(instance, new_domain)
         script = (
             "set -e\n"
             "cat > /etc/nginx/sites-available/pcm-%(slug)s.conf <<'PCM_NGINX'\n"
@@ -2397,6 +2403,255 @@ class PrimateCloudEnvironment(models.Model):
             self._ssl_delete_certificate(
                 ssm, machine, region, old_domain, record=instance)
         return self._provision_ssl(instance) == "active"
+
+    @staticmethod
+    def _instance_vhost(instance, domain):
+        """vhost de nginx de una instancia (solo puerto 80; certbot le suma
+        el 443 y el redirect). Es el MISMO template de install_instance.sh:
+        si se toca allá, tocarlo acá."""
+        return (
+            "server {\n"
+            "    listen 80;\n"
+            "    server_name %(domain)s;\n"
+            "    location /websocket {\n"
+            "        proxy_pass http://127.0.0.1:%(gevent)s;\n"
+            "        proxy_set_header Upgrade $http_upgrade;\n"
+            '        proxy_set_header Connection "Upgrade";\n'
+            "        proxy_set_header Host $host;\n"
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            "    }\n"
+            "    location / {\n"
+            "        proxy_pass http://127.0.0.1:%(http)s;\n"
+            "        proxy_set_header Host $host;\n"
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+            "        proxy_set_header X-Forwarded-Proto $scheme;\n"
+            "        proxy_set_header X-Forwarded-Host $host;\n"
+            "    }\n"
+            "}\n" % {"domain": domain, "gevent": instance.gevent_port,
+                     "http": instance.http_port})
+
+    # ==================================================================
+    # Dominio definitivo sobre una instancia que ya sirve (decisión
+    # 2026-10-27): los montajes sin dominio quedan en sslip.io con HTTPS y
+    # el dominio se suma después, por PCM («Crear DNS ahora», Route 53) o
+    # a mano («Asociar dominio existente»). Los dos caminos terminan acá.
+    #
+    # NO destructivo: el dominio nuevo se monta EN PARALELO (vhost aparte +
+    # certificado propio + GET https real) y recién con todo verificado se
+    # retira el viejo. Si algo falla antes, se desarma lo nuevo y la
+    # instancia sigue como estaba (sslip.io con HTTPS). Sin reinstalar ni
+    # tocar la base, salvo web.base.url.
+    # ==================================================================
+    DOMAIN_CHECK_RESOLVERS = ("system", "1.1.1.1", "8.8.8.8")
+
+    def _domain_resolution_problem(self, ssm, machine, region, domain,
+                                   nameservers=None):
+        """¿El dominio resuelve a la IP del servidor? None si sí; si no, el
+        motivo diciendo A QUÉ apunta (lectura pura, dig desde el servidor)."""
+        servers = list(nameservers or self.DOMAIN_CHECK_RESOLVERS)
+        answers, aaaa = self._dig_answers(ssm, machine, region, domain, servers)
+        if aaaa:
+            return _(
+                "%(d)s tiene un registro AAAA (IPv6: %(v6)s): Let's Encrypt "
+                "validaría contra esa IPv6. Borralo (o apuntalo al servidor).",
+                d=domain, v6=", ".join(aaaa))
+        if not answers:
+            return _("No pude consultar el DNS desde el servidor.")
+        ajenos = []
+        for key, ips in sorted(answers.items()):
+            if machine.public_ip not in ips:
+                ajenos.append("%s → %s" % (key[2:-1], ", ".join(ips)
+                                           or _("no resuelve")))
+        if ajenos:
+            return _(
+                "%(d)s no apunta a la IP del servidor (%(ip)s): %(det)s.",
+                d=domain, ip=machine.public_ip, det="; ".join(ajenos))
+        return None
+
+    def _switch_domain(self, instance, new_domain, change_id=None,
+                       nameservers=None, wait_propagation=0):
+        """Pasa ``instance`` a ``new_domain`` sin cortar lo que ya sirve.
+
+        Args:
+            change_id (str): ChangeId de Route 53 (camino PCM): se espera
+                INSYNC antes de mirar la propagación.
+            nameservers (list[str]): NS autoritativos a consultar (camino
+                PCM); sin ellos, resolvers públicos (camino manual).
+            wait_propagation (int): segundos máximos esperando que el
+                dominio resuelva (0 = una sola consulta y, si no, corta).
+
+        Returns:
+            str: ``"active"`` / ``"not_resolving"`` / ``"vhost_failed"`` /
+            ``"certbot_failed"`` / ``"verify_failed"`` / ``"swap_failed"`` /
+            ``"no_machine"``.
+        """
+        self.ensure_one()
+        instance.ensure_one()
+        instance._pcm_assert_not_imported(_("cambiar el dominio"))
+        new_domain = (new_domain or "").strip().lower().rstrip(".")
+        old_domain = (instance.main_url or "").strip().rstrip("/")
+        machine = self._active_machine()
+        if not machine or not machine.public_ip:
+            return instance._domain_switch_failed(_(
+                "El servidor no tiene máquina activa con IP pública."),
+                "no_machine")
+        machine._exigir_gestion_habilitada("domain_change")
+        base = self.account_id._get_aws_service()
+        ssm = aws_ssm.AwsSsmService(base)
+        region = machine.region or self.account_id.default_region
+        slug = instance.slug
+        use_staging = self._ssl_use_le_staging()
+        log_name = _("Dominio %(old)s → %(new)s", old=old_domain or "—",
+                     new=new_domain)
+
+        # 1. Route 53 INSYNC (solo camino PCM) + el dominio tiene que resolver
+        #    a la IP del servidor. Sin eso no se toca NADA.
+        if change_id:
+            route53 = aws_route53.AwsRoute53Service(base)
+            for _attempt in range(SSL_INSYNC_POLLS):
+                if route53.get_change_status(change_id) == "INSYNC":
+                    break
+                time.sleep(SSL_INSYNC_POLL_SECONDS)
+        waited = 0
+        while True:
+            problem = self._domain_resolution_problem(
+                ssm, machine, region, new_domain, nameservers)
+            if not problem or waited >= wait_propagation:
+                break
+            time.sleep(SSL_INSYNC_POLL_SECONDS)
+            waited += SSL_INSYNC_POLL_SECONDS
+        if problem:
+            self._log("domain_switch", name=log_name, result="failed",
+                      error_message=problem, record=instance)
+            return instance._domain_switch_failed(_(
+                "%(p)s No se cambió nada: la instancia sigue en %(old)s.",
+                p=problem, old=old_domain or _("su dirección actual")),
+                "not_resolving")
+
+        # 2. vhost PARALELO para el dominio nuevo (el de la instancia sigue).
+        nuevo = "pcm-%s-dominio-nuevo.conf" % slug
+        script = (
+            "set -e\n"
+            "cat > /etc/nginx/sites-available/%(f)s <<'PCM_NGINX'\n"
+            "%(vhost)s"
+            "PCM_NGINX\n"
+            "ln -sf /etc/nginx/sites-available/%(f)s "
+            "/etc/nginx/sites-enabled/%(f)s\n"
+            "if ! nginx -t; then rm -f /etc/nginx/sites-enabled/%(f)s "
+            "/etc/nginx/sites-available/%(f)s; exit 1; fi\n"
+            "systemctl reload nginx\n"
+            'echo "PCM_VHOST_OK"' % {
+                "f": nuevo,
+                "vhost": self._instance_vhost(instance, new_domain)})
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm domain switch vhost: %s" % slug,
+            timeout=120, check=False)
+        if "PCM_VHOST_OK" not in (output.get("stdout") or ""):
+            why = (output.get("stderr") or output.get("status") or "?")[:200]
+            self._log("domain_switch", name=log_name, result="failed",
+                      error_message=why, record=instance)
+            return instance._domain_switch_failed(_(
+                "No pude preparar nginx para %(d)s: %(w)s. No se cambió nada.",
+                d=new_domain, w=why), "vhost_failed")
+
+        # 3. Certificado del dominio nuevo + verificación https REAL.
+        ok, detail = self._ssl_run_certbot(
+            ssm, machine, region, instance, new_domain, use_staging)
+        if ok:
+            ok, detail = self._ssl_verify_https(
+                new_domain, verify=not use_staging)
+            fallo = "verify_failed"
+        else:
+            fallo = "certbot_failed"
+        if not ok:
+            self._domain_switch_rollback(ssm, machine, region, slug, nuevo,
+                                         new_domain, old_domain)
+            self._log("domain_switch", name=log_name, result="failed",
+                      error_message=(detail or "")[:400], record=instance)
+            return instance._domain_switch_failed(_(
+                "No se pudo emitir/verificar HTTPS para %(d)s: %(w)s. Se "
+                "desarmó lo nuevo: la instancia sigue en %(old)s con su HTTPS.",
+                d=new_domain, w=detail, old=old_domain), fallo)
+
+        # 4. Recién ahora se retira lo viejo: el vhost nuevo pasa a ser el de
+        #    la instancia (con los bloques 443 que certbot le agregó).
+        actual = "pcm-%s.conf" % slug
+        script = (
+            "set -e\n"
+            "A=/etc/nginx/sites-available; E=/etc/nginx/sites-enabled\n"
+            "mkdir -p /var/tmp/pcm\n"
+            "cp -f $A/%(a)s /var/tmp/pcm/%(a)s.antes 2>/dev/null || true\n"
+            "rm -f $E/%(a)s $E/%(n)s\n"
+            "mv -f $A/%(n)s $A/%(a)s\n"
+            "ln -sf $A/%(a)s $E/%(a)s\n"
+            "if ! nginx -t; then\n"
+            "  cp -f /var/tmp/pcm/%(a)s.antes $A/%(a)s; nginx -t && "
+            "systemctl reload nginx; exit 1\n"
+            "fi\n"
+            "systemctl reload nginx\n"
+            'echo "PCM_SWAP_OK"' % {"a": actual, "n": nuevo})
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm domain switch swap: %s" % slug,
+            timeout=120, check=False)
+        if "PCM_SWAP_OK" not in (output.get("stdout") or ""):
+            why = (output.get("stderr") or output.get("status") or "?")[:200]
+            self._log("domain_switch", name=log_name, result="failed",
+                      error_message=why, record=instance)
+            return instance._domain_switch_failed(_(
+                "El certificado de %(d)s se emitió pero no pude activar su "
+                "vhost: %(w)s. Se restauró el vhost anterior (%(old)s).",
+                d=new_domain, w=why, old=old_domain), "swap_failed")
+        if old_domain and old_domain != new_domain:
+            self._ssl_delete_certificate(
+                ssm, machine, region, old_domain, record=instance)
+        expiry = self._ssl_read_cert_expiry(ssm, machine, region, new_domain)
+        self._ssl_update_web_base_url(ssm, machine, region, instance,
+                                      new_domain)
+
+        # 5. PCM: dominio, estado HTTPS y links (todo sale de main_url +
+        #    ssl_state). Sin disparar el flujo viejo de cambio de dominio.
+        instance.with_context(pcm_skip_ssl_hooks=True).sudo().write({
+            "main_url": new_domain,
+            "ssl_state": "active",
+            "ssl_cert_expiry": expiry,
+            "ssl_last_error": False,
+            "ssl_retry_count": 0,
+            "ssl_expiry_warned": False,
+            "domain_switch_target": False,
+            "domain_switch_state": False,
+            "domain_switch_error": False,
+        })
+        if self.main_url == old_domain and instance == self.primary_instance_id:
+            self.sudo().main_url = new_domain
+        instance.message_post(body=_(
+            "✅ Dominio cambiado: %(old)s → https://%(new)s (certificado "
+            "verificado, vence el %(exp)s). Se borró el certificado de "
+            "%(old)s y web.base.url quedó en https://%(new)s.",
+            old=old_domain or "—", new=new_domain, exp=expiry or "?"))
+        self._log("domain_switch", name=log_name, result="success",
+                  record=instance)
+        return "active"
+
+    def _domain_switch_rollback(self, ssm, machine, region, slug, nuevo,
+                                new_domain, old_domain):
+        """Desarma lo nuevo (vhost paralelo y su certificado si llegó a
+        emitirse). Nunca toca el vhost ni el certificado de la instancia."""
+        borrar_cert = ""
+        if new_domain and new_domain != old_domain:
+            borrar_cert = ("certbot delete --cert-name %s -n >/dev/null 2>&1 "
+                           "|| true\n" % shlex.quote(new_domain))
+        script = (
+            "rm -f /etc/nginx/sites-enabled/%(n)s "
+            "/etc/nginx/sites-available/%(n)s\n"
+            "%(cert)s"
+            "nginx -t && systemctl reload nginx\n"
+            'echo "PCM_ROLLBACK_OK"' % {"n": nuevo, "cert": borrar_cert})
+        return ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm domain switch rollback: %s" % slug,
+            timeout=120, check=False)
 
     @staticmethod
     def _pg_engine_version(pg_version):
@@ -2781,6 +3036,10 @@ class PrimateCloudEnvironment(models.Model):
 
             bus.provision_step(self.env, self, _("Creando instancia EC2…"))
             instance = self._provision_ec2(base, account, params, region, domain)
+            if params.get("elastic_ip", True):
+                bus.provision_step(self.env, self,
+                                   _("Asignando la IP fija (Elastic IP)…"))
+                instance._pcm_ensure_elastic_ip()
             bus.provision_step(self.env, self, _("Configurando la base de datos…"))
             db_host = self._provision_database(base, account, instance, params, region)
             # DNS ANTES del install (D-R3.9 endurecida): la propagación corre

@@ -69,6 +69,10 @@ class TestHttpsSsl(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        # La IP fija tiene su suite (test_dominio_definitivo): acá no es lo
+        # que se prueba y su llamada a EC2 no está simulada.
+        self.patch(type(self.env["primate.cloud.ec2.instance"]),
+                   "_pcm_ensure_elastic_ip", lambda rec: rec.public_ip)
         self.account = self.env["primate.cloud.account"].create({
             "name": "C-ssl", "default_region": "us-east-1",
             "iam_access_key_id": "AK", "iam_secret_access_key": "sk",

@@ -653,6 +653,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "is_imported": inst.pcm_is_imported(),
             "can_destroy": self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_destructive"),
+            "can_manage_domain": self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"),
             "ssl": {
                 "state": inst.ssl_state,
                 "state_label": dict(
@@ -711,6 +713,12 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "sync_state": r.sync_state,
                 "sync_state_label": sync_labels.get(r.sync_state, r.sync_state or ""),
             } for r in repos],
+            # Dominio definitivo (2026-10-27): cambio en curso o fallido.
+            "domain_switch": {
+                "target": inst.domain_switch_target or "",
+                "state": inst.domain_switch_state,
+                "error": inst.domain_switch_error or "",
+            } if inst.domain_switch_state else False,
             # DNS best-effort (R4-B6.4): motivo del DNS pendiente si lo hay.
             "dns_pending": inst._dns_pending_data() if hasattr(
                 inst, "_dns_pending_data") else False,
@@ -1196,6 +1204,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             "db_password", "pg_version", "rds_identifier", "rds_instance_class",
             "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
             "hosted_zone_id", "ttl", "region_status", "region_detail",
+            "elastic_ip",
         ]
         data = {f: (wiz[f] if wiz[f] not in (None,) else False) for f in char_int_bool}
         region_labels = dict(Wizard._fields["region_status"].selection)

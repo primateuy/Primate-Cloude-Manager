@@ -15,7 +15,7 @@ from odoo.exceptions import UserError
 from .primate_cloud_destruction import durable_log
 from odoo.tools import file_open
 
-from ..services import aws_ec2, aws_ssm
+from ..services import aws_base, aws_ec2, aws_ssm
 from ..tools import bus, dates
 from .primate_cloud_instance import (
     LEGACY_CONF_PATH, LEGACY_LOG_PATH, LEGACY_SERVICE,
@@ -100,6 +100,11 @@ class PrimateCloudEc2Instance(models.Model):
     region = fields.Char(string="Región")
     instance_type = fields.Char(string="Tipo de instancia")
     public_ip = fields.Char(string="IP pública")
+    # Elastic IP que PCM reservó para esta máquina (IP fija): el dominio
+    # sslip.io y el registro A dependen de ella, y un stop/start no la cambia.
+    # Se libera al terminar la máquina.
+    eip_allocation_id = fields.Char(
+        string="Elastic IP (allocation)", readonly=True, copy=False)
     private_ip = fields.Char(string="IP privada")
     os_type = fields.Selection(
         [
@@ -2057,6 +2062,124 @@ class PrimateCloudEc2Instance(models.Model):
         return snapshot
 
     # ------------------------------------------------------------------
+    # IP fija (Elastic IP) de las máquinas que monta PCM
+    # ------------------------------------------------------------------
+    def _pcm_eip_tags(self):
+        """Tags de la EIP: los mismos de la máquina (llave de PCM, nombres y
+        refs de atribución de costos) más su Name."""
+        self.ensure_one()
+        env_rec = self.environment_id
+        env_ref, client_ref = (env_rec._cost_attribution_refs()
+                               if env_rec else (False, False))
+        return aws_base.build_resource_tags(
+            client=(env_rec.project_id.name if env_rec
+                    else self.account_id.name),
+            environment=env_rec.name if env_rec else self.name,
+            client_ref=client_ref, environment_ref=env_ref,
+            extra={"Name": "pcm-eip-%s" % (self.name or self.aws_instance_id)})
+
+    def _pcm_ensure_elastic_ip(self):
+        """Asegura la IP fija de la máquina (idempotente) y la devuelve.
+
+        Sin EIP: reserva una nueva YA etiquetada (``AllocateAddress`` con
+        ``TagSpecifications``: la llave nace con el recurso) y la asocia. Si
+        la asociación falla, la libera para no dejar una IP huérfana
+        cobrando. Con EIP propia: la reusa. Con una EIP que no es de PCM: la
+        usa como IP pero no la registra (nunca se liberaría algo ajeno).
+
+        Mutante: solo desde un job.
+        """
+        self.ensure_one()
+        self._exigir_gestion_habilitada("ensure_elastic_ip")
+        if self.management_state != "provisioned":
+            raise UserError(_(
+                "«%s» no es una máquina montada por PCM: no se le reserva una "
+                "IP fija.") % self.name)
+        service = self._get_ec2_service()
+        address = service.get_instance_address(
+            self.aws_instance_id, region=self.region)
+        allocation = False
+        if address:
+            if (address.get("tags") or {}).get(aws_base.MANAGED_BY_TAG) \
+                    == aws_base.MANAGED_BY_VALUE:
+                allocation = address["allocation_id"]
+        else:
+            address = service.allocate_address(
+                self._pcm_eip_tags(), region=self.region)
+            allocation = address["allocation_id"]
+            try:
+                service.associate_address(
+                    self.aws_instance_id, allocation, region=self.region)
+            except Exception:
+                try:
+                    service.release_address(allocation, region=self.region)
+                except Exception:  # noqa: BLE001 - se avisa abajo
+                    _logger.warning(
+                        "No pude liberar la Elastic IP %s tras fallar la "
+                        "asociación: liberala a mano.", allocation)
+                raise
+            self._log("eip_ensure", name=_(
+                "IP fija %(ip)s reservada y asociada a %(m)s",
+                ip=address["public_ip"], m=self.name))
+            self.message_post(body=_(
+                "IP fija (Elastic IP) %(ip)s asociada: un stop/start ya no "
+                "cambia la IP del servidor.", ip=address["public_ip"]))
+        vals = {"public_ip": address["public_ip"]}
+        if allocation and allocation != self.eip_allocation_id:
+            vals["eip_allocation_id"] = allocation
+        self.write(vals)
+        return address["public_ip"]
+
+    def _pcm_release_elastic_ip(self, allocation_id, timeout=180,
+                                _sleep=None):
+        """Libera la IP fija de una máquina que se está terminando.
+
+        Espera a que AWS la desasocie (pasa al terminar la instancia) y la
+        libera. Solo libera EIPs con la llave de PCM. Nunca levanta: si no
+        puede, lo deja en la bitácora y en el chatter (una EIP sin usar cuesta).
+
+        Returns:
+            bool: True si quedó liberada (o ya no existía).
+        """
+        self.ensure_one()
+        sleep = _sleep or time.sleep
+        service = self._get_ec2_service()
+        try:
+            waited = 0
+            while True:
+                address = service.get_address(allocation_id, region=self.region)
+                if not address:
+                    return True
+                if (address.get("tags") or {}).get(aws_base.MANAGED_BY_TAG) \
+                        != aws_base.MANAGED_BY_VALUE:
+                    raise UserError(_(
+                        "la Elastic IP %s no tiene la llave de PCM")
+                        % allocation_id)
+                if not address.get("association_id"):
+                    break
+                if waited >= timeout:
+                    raise UserError(_(
+                        "sigue asociada después de %s segundos") % timeout)
+                sleep(10)
+                waited += 10
+            request_id = service.release_address(
+                allocation_id, region=self.region)
+        except Exception as error:  # noqa: BLE001 - se audita, no corta
+            detail = _(
+                "No pude liberar la IP fija %(alloc)s: %(err)s. Liberala a "
+                "mano en la consola de EC2 (Elastic IPs): una EIP sin usar "
+                "cobra.", alloc=allocation_id, err=error)
+            self.message_post(body=detail)
+            self._log("eip_release", result="failed", error_message=detail,
+                      name=_("Liberar IP fija: %s") % self.name)
+            return False
+        self.eip_allocation_id = False
+        self.message_post(body=_("IP fija liberada (%s).") % allocation_id)
+        self._log("eip_release", aws_request_id=request_id,
+                  name=_("Liberar IP fija: %s") % self.name)
+        return True
+
+    # ------------------------------------------------------------------
     # Jobs (queue_job)
     # ------------------------------------------------------------------
     # Mapeo acción -> {método del servicio, etiqueta, carteles de espera/éxito}.
@@ -2096,6 +2219,11 @@ class PrimateCloudEc2Instance(models.Model):
         # valide no alcanza: invisible en la vista no es control de acceso.
         self._exigir_gestion_habilitada(action_type)
         spec = self._LIFECYCLE[action_type]
+        # La IP fija se lee ANTES de terminar: después AWS la desasocia y ya
+        # no se la encuentra por la instancia.
+        eip_to_release = False
+        if action_type == "ec2_terminate":
+            eip_to_release = self._eip_owned_allocation()
         try:
             service = self._get_ec2_service()
             request_id = getattr(service, spec["method"])(
@@ -2117,8 +2245,26 @@ class PrimateCloudEc2Instance(models.Model):
         self.message_post(body=_("Acción '%s' enviada a AWS correctamente.") % spec["label"])
         self._log(action_type, result="success", aws_request_id=request_id,
                   name=_("%(act)s EC2: %(name)s") % {"act": spec["label"], "name": self.name})
+        if eip_to_release:
+            self._pcm_release_elastic_ip(eip_to_release)
         self._notify_user_done(action_type, ok=True)
         return True
+
+    def _eip_owned_allocation(self):
+        """AllocationId de la IP fija de PCM de esta máquina, o False.
+
+        Prefiere lo que AWS dice (la EIP asociada, con la llave de PCM); si
+        AWS no responde, cae al campo guardado al reservarla."""
+        self.ensure_one()
+        try:
+            address = self._get_ec2_service().get_instance_address(
+                self.aws_instance_id, region=self.region)
+        except Exception:  # noqa: BLE001 - cae al dato guardado
+            return self.eip_allocation_id or False
+        if address and (address.get("tags") or {}).get(
+                aws_base.MANAGED_BY_TAG) == aws_base.MANAGED_BY_VALUE:
+            return address["allocation_id"]
+        return self.eip_allocation_id or False
 
     def _notify_user_done(self, action_type, ok, detail=None):
         """Avisa al usuario que disparó la acción (por bus) que el job terminó.

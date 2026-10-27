@@ -22,7 +22,7 @@ PERSISTED_FIELDS = [
     "disk_size_gb", "key_name", "security_group_ids", "subnet_id", "instance_profile",
     "db_mode", "db_name", "db_user", "db_password", "pg_version", "rds_identifier",
     "rds_instance_class", "rds_storage_gb", "rds_multi_az", "backup_retention_days",
-    "create_dns", "hosted_zone_id", "ttl", "admin_password",
+    "create_dns", "hosted_zone_id", "ttl", "admin_password", "elastic_ip",
 ]
 
 
@@ -82,6 +82,12 @@ class PrimateCloudProvisionWizard(models.TransientModel):
     backup_retention_days = fields.Integer(string="Retención de backup (días)", default=7)
 
     # --- DNS ---
+    elastic_ip = fields.Boolean(
+        string="IP fija (Elastic IP)", default=True,
+        help="Reserva una Elastic IP con la etiqueta de PCM y la asocia al "
+             "servidor: sslip.io, el registro A y el certificado dependen de "
+             "esa IP, y un stop/start no la cambia. Se libera al terminar el "
+             "servidor.")
     create_dns = fields.Boolean(string="Crear registro DNS", default=True)
     ssl_auto = fields.Boolean(
         string="Emitir HTTPS al terminar", default=True,
@@ -206,7 +212,8 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             "rds_storage_gb": self.rds_storage_gb,
             "rds_multi_az": self.rds_multi_az,
             "backup_retention_days": self.backup_retention_days,
-            # DNS
+            # IP fija + DNS
+            "elastic_ip": self.elastic_ip,
             "create_dns": self.create_dns,
             "ssl_auto": self.ssl_auto,
             "hosted_zone_id": self.hosted_zone_id,

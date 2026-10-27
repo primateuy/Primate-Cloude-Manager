@@ -15,7 +15,7 @@ const WIZARD_FIELDS = [
     "security_group_ids", "subnet_id", "instance_profile", "db_mode", "db_name",
     "db_user", "db_password", "pg_version", "rds_identifier", "rds_instance_class",
     "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
-    "ssl_auto", "hosted_zone_id", "ttl",
+    "ssl_auto", "hosted_zone_id", "ttl", "elastic_ip",
 ];
 
 /**
@@ -81,6 +81,7 @@ export class EnvForm extends Component {
             rds_storage_gb: 20,
             rds_multi_az: false,
             backup_retention_days: 7,
+            elastic_ip: true,
             create_dns: false,
             ssl_auto: true,
             hosted_zone_id: "",

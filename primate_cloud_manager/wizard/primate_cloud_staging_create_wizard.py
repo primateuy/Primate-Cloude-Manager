@@ -20,7 +20,7 @@ STAGING_PERSISTED_FIELDS = [
     "instance_profile", "db_mode", "db_name", "db_user", "db_password", "pg_version",
     "rds_identifier", "rds_instance_class", "rds_storage_gb", "rds_multi_az",
     "backup_retention_days", "transfer_bucket", "create_dns", "hosted_zone_id",
-    "ttl", "admin_password", "use_last_backup",
+    "ttl", "admin_password", "use_last_backup", "elastic_ip",
 ]
 
 # Campo del entorno origen donde se guarda la config cifrada del staging.
@@ -111,6 +111,12 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
         string="Bucket S3 de transferencia", required=True,
         help="Bucket usado para mover el dump origen → destino.",
     )
+    elastic_ip = fields.Boolean(
+        string="IP fija (Elastic IP)", default=True,
+        help="Reserva una Elastic IP con la etiqueta de PCM y la asocia al "
+             "servidor: sslip.io, el registro A y el certificado dependen de "
+             "esa IP, y un stop/start no la cambia. Se libera al terminar el "
+             "servidor.")
     create_dns = fields.Boolean(string="Crear registro DNS", default=True)
     hosted_zone_id = fields.Char(string="Hosted Zone ID")
     ttl = fields.Integer(string="TTL", default=300)
@@ -215,6 +221,7 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
             "backup_retention_days": self.backup_retention_days,
             # Transferencia / DNS / Odoo
             "transfer_bucket": self.transfer_bucket,
+            "elastic_ip": self.elastic_ip,
             "create_dns": self.create_dns,
             "hosted_zone_id": self.hosted_zone_id,
             "ttl": self.ttl,

@@ -87,6 +87,83 @@ class AwsEc2Service:
         return None
 
     # ------------------------------------------------------------------
+    # Elastic IP (Fase 4a del vendedor de enlatados)
+    # ------------------------------------------------------------------
+    def get_instance_address(self, instance_id, region=None):
+        """Elastic IP asociada a la instancia, o None.
+
+        Returns:
+            dict | None: {"public_ip", "allocation_id", "association_id",
+            "tags" ({clave: valor})}.
+        """
+        client = self._base.get_client("ec2", region=region)
+        response = client.describe_addresses(Filters=[
+            {"Name": "instance-id", "Values": [instance_id]}])
+        for addr in response.get("Addresses", []):
+            return {
+                "public_ip": addr.get("PublicIp"),
+                "allocation_id": addr.get("AllocationId"),
+                "association_id": addr.get("AssociationId"),
+                "tags": {t["Key"]: t["Value"] for t in addr.get("Tags", [])},
+            }
+        return None
+
+    def allocate_address(self, tags, region=None):
+        """Reserva una Elastic IP nueva (etiquetada). Devuelve dict.
+
+        Args:
+            tags (list[dict]): formato boto3 (``build_resource_tags``).
+        """
+        client = self._base.get_client("ec2", region=region)
+        response = client.allocate_address(
+            Domain="vpc",
+            TagSpecifications=[{
+                "ResourceType": "elastic-ip",
+                "Tags": tags,
+            }])
+        return {"public_ip": response.get("PublicIp"),
+                "allocation_id": response.get("AllocationId")}
+
+    def associate_address(self, instance_id, allocation_id, region=None):
+        """Asocia una Elastic IP reservada a la instancia."""
+        client = self._base.get_client("ec2", region=region)
+        response = client.associate_address(
+            InstanceId=instance_id, AllocationId=allocation_id,
+            AllowReassociation=False)
+        return response.get("AssociationId")
+
+    def get_address(self, allocation_id, region=None):
+        """Una Elastic IP por su AllocationId, o None si ya no existe.
+
+        Returns:
+            dict | None: {"public_ip", "allocation_id", "association_id",
+            "instance_id", "tags" ({clave: valor})}.
+        """
+        client = self._base.get_client("ec2", region=region)
+        try:
+            response = client.describe_addresses(AllocationIds=[allocation_id])
+        except ClientError as error:
+            if self._error_code(error) == "InvalidAllocationID.NotFound":
+                return None
+            raise
+        for addr in response.get("Addresses", []):
+            return {
+                "public_ip": addr.get("PublicIp"),
+                "allocation_id": addr.get("AllocationId"),
+                "association_id": addr.get("AssociationId"),
+                "instance_id": addr.get("InstanceId"),
+                "tags": {t["Key"]: t["Value"] for t in addr.get("Tags", [])},
+            }
+        return None
+
+    def release_address(self, allocation_id, region=None):
+        """Libera una Elastic IP (tiene que estar desasociada). Devuelve el
+        AWS Request ID."""
+        client = self._base.get_client("ec2", region=region)
+        response = client.release_address(AllocationId=allocation_id)
+        return self._request_id(response)
+
+    # ------------------------------------------------------------------
     # Acciones de ciclo de vida (Fase 3). Devuelven el AWS Request ID.
     # ------------------------------------------------------------------
     def start_instance(self, instance_id, region=None):

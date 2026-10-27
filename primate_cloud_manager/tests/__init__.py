@@ -33,3 +33,4 @@ from . import test_dueno_restore_catalogo
 from . import test_https_ssl
 from . import test_blindaje_readonly
 from . import test_gemelo
+from . import test_dominio_definitivo

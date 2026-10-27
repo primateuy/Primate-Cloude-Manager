@@ -24,12 +24,16 @@ from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 from .primate_cloud_destruction import durable_log
 
+from ..services import aws_route53
 from ..tools import crypto
 
 # Layout LEGACY (single-Odoo, install_odoo.sh actual). Las instancias nuevas
 # nacen con estas rutas hasta que R3 introduzca el layout multi-Odoo por slug;
 # tener las rutas POR INSTANCIA es lo que permite convivir ambos layouts.
 LEGACY_SERVICE = "odoo"
+# Cuánto espera el cambio de dominio a que el registro propague (segundos).
+# Route 53 suele estar INSYNC en ~1 minuto; afuera depende del DNS.
+DOMAIN_PROPAGATION_WAIT = 300
 LEGACY_CONF_PATH = "/etc/odoo/odoo.conf"
 LEGACY_DATA_DIR = "/opt/odoo/.local/share/Odoo"
 LEGACY_ADDONS_DIR = "/opt/odoo/custom-addons"
@@ -243,6 +247,18 @@ class PrimateCloudInstance(models.Model):
     ssl_expiry_warned = fields.Boolean(
         string="Vencimiento avisado", copy=False,
         help="Evita repetir el aviso de certificado por vencer.")
+
+    # --- Dominio definitivo (decisión 2026-10-27) ---
+    # Cambio NO destructivo a un dominio nuevo («Crear DNS ahora» por Route 53
+    # o «Asociar dominio existente» a mano). Mientras corre o si falló, la
+    # instancia sigue sirviendo en su dominio actual con su HTTPS.
+    domain_switch_target = fields.Char(
+        string="Dominio en camino", copy=False, readonly=True)
+    domain_switch_state = fields.Selection(
+        [("running", "En curso"), ("failed", "No se pudo")],
+        string="Cambio de dominio", copy=False, readonly=True)
+    domain_switch_error = fields.Char(
+        string="Motivo (cambio de dominio)", copy=False, readonly=True)
 
     active = fields.Boolean(string="Activo", default=True)
     notes = fields.Text(string="Notas")
@@ -674,6 +690,143 @@ class PrimateCloudInstance(models.Model):
         self._pcm_assert_not_imported(_("cambiar el dominio"))
         return self.environment_id._apply_instance_domain_change(
             self, old_domain)
+
+    # --- Dominio definitivo: los dos caminos (decisión 2026-10-27) -----
+    def _open_domain_wizard(self, mode):
+        self.ensure_one()
+        self._pcm_assert_not_imported(_("cambiar el dominio"))
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "primate.cloud.domain.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "name": (_("Crear DNS ahora (Route 53)") if mode == "route53"
+                     else _("Asociar dominio existente")),
+            "context": {"default_instance_id": self.id, "default_mode": mode},
+        }
+
+    def action_open_create_dns_wizard(self):
+        """Botón «Crear DNS ahora»: PCM crea el registro A en Route 53 y
+        cambia la instancia al dominio nuevo."""
+        return self._open_domain_wizard("route53")
+
+    def action_open_attach_domain_wizard(self):
+        """Botón «Asociar dominio existente»: el registro lo cargó el usuario
+        (Route 53 a mano u otro DNS); PCM solo verifica y cambia."""
+        return self._open_domain_wizard("manual")
+
+    def _domain_switch_failed(self, reason, code):
+        """Deja el motivo a la vista (la instancia sigue como estaba)."""
+        self.ensure_one()
+        self.sudo().write({"domain_switch_state": "failed",
+                           "domain_switch_error": (reason or "")[:400]})
+        self.message_post(body=reason)
+        return code
+
+    def _domain_switch_start(self, domain):
+        self.ensure_one()
+        if self.domain_switch_state == "running":
+            raise UserError(_(
+                "Ya hay un cambio de dominio en curso para «%(i)s» (hacia "
+                "%(d)s): esperá a que termine.", i=self.display_name,
+                d=self.domain_switch_target))
+        self.sudo().write({"domain_switch_target": domain,
+                           "domain_switch_state": "running",
+                           "domain_switch_error": False})
+
+    def job_create_dns_and_switch(self, domain, hosted_zone_id, ttl=300):
+        """Job (camino PCM): registro A en Route 53 → INSYNC → propagación
+        contra los NS de la zona → cambio no destructivo."""
+        self.ensure_one()
+        self._pcm_assert_not_imported(_("crear DNS"))
+        env_rec = self.environment_id
+        machine = self._machine()
+        self.sudo().write({"domain_switch_target": domain,
+                           "domain_switch_state": "running",
+                           "domain_switch_error": False})
+        try:
+            if not machine or not machine.public_ip:
+                raise UserError(_(
+                    "El servidor no tiene máquina activa con IP pública."))
+            machine._exigir_gestion_habilitada("dns_write")
+            base = self.account_id._get_aws_service()
+            change_id = env_rec._provision_dns(
+                base, self.account_id, machine,
+                {"create_dns": True, "hosted_zone_id": hosted_zone_id,
+                 "ttl": ttl or 300}, domain, instance=self)
+            nameservers = aws_route53.AwsRoute53Service(
+                base).get_zone_nameservers(hosted_zone_id)
+        except Exception as error:  # noqa: BLE001 - se anota, no se traga
+            env_rec._log("domain_switch", result="failed",
+                         name=_("Crear DNS: %s") % domain,
+                         error_message=str(error), record=self)
+            return self._domain_switch_failed(_(
+                "No se pudo crear el registro DNS de %(d)s: %(e)s. No se "
+                "cambió nada.", d=domain, e=error), "dns_failed")
+        try:
+            return env_rec._switch_domain(
+                self, domain, change_id=change_id, nameservers=nameservers,
+                wait_propagation=DOMAIN_PROPAGATION_WAIT)
+        except Exception as error:  # noqa: BLE001 - nunca queda «en curso»
+            return self._domain_switch_failed(_(
+                "El cambio a %(d)s se cortó por un error: %(e)s. Revisá el "
+                "servidor antes de reintentar.", d=domain, e=error),
+                "error")
+
+    def job_attach_domain(self, domain):
+        """Job (camino manual o reintento): el registro ya existe; verifica
+        que apunte al servidor y cambia sin destruir. Si el registro es de
+        Route 53 y PCM lo conoce, consulta sus NS autoritativos."""
+        self.ensure_one()
+        self._pcm_assert_not_imported(_("cambiar el dominio"))
+        env_rec = self.environment_id
+        nameservers = None
+        self.sudo().write({"domain_switch_target": domain,
+                           "domain_switch_state": "running",
+                           "domain_switch_error": False})
+        record = self.env["primate.cloud.dns.record"].sudo().search(
+            [("name", "=", domain), ("hosted_zone_id", "!=", False),
+             ("instance_id", "=", self.id)], limit=1)
+        if record:
+            try:
+                nameservers = aws_route53.AwsRoute53Service(
+                    self.account_id._get_aws_service()).get_zone_nameservers(
+                        record.hosted_zone_id)
+            except Exception:  # noqa: BLE001 - cae a resolvers públicos
+                nameservers = None
+        try:
+            return env_rec._switch_domain(
+                self, domain, nameservers=nameservers,
+                wait_propagation=DOMAIN_PROPAGATION_WAIT if record else 0)
+        except Exception as error:  # noqa: BLE001 - nunca queda «en curso»
+            return self._domain_switch_failed(_(
+                "El cambio a %(d)s se cortó por un error: %(e)s. Revisá el "
+                "servidor antes de reintentar.", d=domain, e=error),
+                "error")
+
+    def action_retry_domain_switch(self):
+        """Reintenta el cambio al dominio que quedó en camino (el registro DNS
+        ya existe: no se vuelve a crear)."""
+        self.ensure_one()
+        self._pcm_assert_not_imported(_("cambiar el dominio"))
+        domain = self.domain_switch_target
+        if not domain:
+            raise UserError(_("No hay un cambio de dominio para reintentar."))
+        self._domain_switch_start(domain)
+        self.with_delay(
+            description=_("Cambiar dominio: %s") % self.display_name
+        ).job_attach_domain(domain)
+        return True
+
+    def action_dismiss_domain_switch(self):
+        """Descarta el aviso de un cambio de dominio que no se pudo hacer."""
+        self.ensure_one()
+        if self.domain_switch_state == "running":
+            raise UserError(_("El cambio de dominio sigue en curso."))
+        self.sudo().write({"domain_switch_target": False,
+                           "domain_switch_state": False,
+                           "domain_switch_error": False})
+        return True
 
     @api.model
     def _cron_ssl(self):

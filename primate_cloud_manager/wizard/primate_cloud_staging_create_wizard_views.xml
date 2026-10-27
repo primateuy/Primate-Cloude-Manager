@@ -82,6 +82,7 @@
                     </page>
                     <page string="DNS" name="dns">
                         <group>
+                            <field name="elastic_ip"/>
                             <field name="create_dns"/>
                             <field name="hosted_zone_id" invisible="not create_dns"
                                    required="create_dns"/>

@@ -48,6 +48,40 @@
                             t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_destroy_wizard')">
                         <i class="fa fa-trash"/> Desmontar instancia…
                     </button>
+                    <!-- Dominio definitivo (2026-10-27): dos caminos, los dos sin
+                         cortar lo que ya sirve (sslip.io con HTTPS). -->
+                    <div t-if="d.can_manage_domain and !d.is_imported and d.state === 'active' and d.server_machine_id and !(d.domain_switch and d.domain_switch.state === 'running')"
+                         class="o_pcm_actions o_pcm_domain_actions">
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_create_dns_wizard')">
+                            <i class="fa fa-globe"/> Crear DNS ahora
+                        </button>
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_attach_domain_wizard')">
+                            <i class="fa fa-link"/> Asociar dominio existente
+                        </button>
+                    </div>
+                    <div t-if="d.domain_switch and d.domain_switch.state === 'running'"
+                         class="o_pcm_note o_pcm_ssl_note o_pcm_domain_switch">
+                        <i class="fa fa-clock-o"/>
+                        <b>Cambiando el dominio a <t t-out="d.domain_switch.target"/>:</b>
+                        propagación, certificado y verificación. Mientras tanto sigue
+                        sirviendo en <t t-out="d.main_url"/>.
+                    </div>
+                    <div t-if="d.domain_switch and d.domain_switch.state === 'failed'"
+                         class="o_pcm_note o_pcm_ssl_note o_pcm_domain_switch">
+                        <i class="fa fa-exclamation-triangle o_pcm_err"/>
+                        <b>No se pudo pasar a <t t-out="d.domain_switch.target"/>:</b>
+                        <t t-out="d.domain_switch.error"/>
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_retry_domain_switch')">
+                            <i class="fa fa-refresh"/> Reintentar
+                        </button>
+                        <button class="o_pcm_btn o_pcm_btn_mini"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_dismiss_domain_switch')">
+                            <i class="fa fa-times"/> Descartar
+                        </button>
+                    </div>
                     <!-- DNS pendiente (R4-B6.4): aviso + acceso por IP + reintento -->
                     <div t-if="d.dns_pending and !d.is_imported" class="o_pcm_note o_pcm_dns_pending">
                         <i class="fa fa-exclamation-triangle o_pcm_err"/>
