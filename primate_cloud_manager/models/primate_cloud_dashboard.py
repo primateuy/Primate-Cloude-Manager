@@ -1204,7 +1204,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             "db_password", "pg_version", "rds_identifier", "rds_instance_class",
             "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
             "hosted_zone_id", "ttl", "region_status", "region_detail",
-            "elastic_ip",
+            "elastic_ip", "ssl_auto",
         ]
         data = {f: (wiz[f] if wiz[f] not in (None,) else False) for f in char_int_bool}
         region_labels = dict(Wizard._fields["region_status"].selection)

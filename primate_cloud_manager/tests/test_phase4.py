@@ -438,6 +438,26 @@ class TestEnvironmentProvision(TransactionCase):
         self.assertEqual(defaults["instance_profile"], "pcm-ssm-role")
         self.assertEqual(defaults["security_group_ids"], "sg-1,sg-2")
 
+    def test_config_preparada_precarga_el_form(self):
+        # Una config guardada de antemano (sin secretos) precarga el form OWL,
+        # incluido «Emitir HTTPS» apagado y el tamaño del servidor.
+        self.env_rec._save_provision_config({
+            "region": "us-east-1", "domain": "bj-uat.pcm.invalid",
+            "instance_name": "bj-uat", "instance_type": "t3.xlarge",
+            "os_type": "ubuntu_24", "disk_size_gb": 100, "db_mode": "local_pg",
+            "db_name": "bj_uat", "elastic_ip": True, "create_dns": False,
+            "ssl_auto": False,
+        })
+        d = self.env["primate.cloud.dashboard"].get_provision_defaults(
+            self.env_rec.id)
+        self.assertEqual(d["instance_type"], "t3.xlarge")
+        self.assertEqual(d["disk_size_gb"], 100)
+        self.assertEqual(d["domain"], "bj-uat.pcm.invalid")
+        self.assertEqual(d["db_name"], "bj_uat")
+        self.assertIs(d["elastic_ip"], True)
+        self.assertIs(d["create_dns"], False)
+        self.assertIs(d["ssl_auto"], False)
+
     def test_provision_wizard_rds_sin_password_falla(self):
         wiz = self.env["primate.cloud.provision.wizard"].create({
             "environment_id": self.env_rec.id, "region": "us-east-1",

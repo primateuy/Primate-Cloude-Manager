@@ -23,6 +23,9 @@ PERSISTED_FIELDS = [
     "db_mode", "db_name", "db_user", "db_password", "pg_version", "rds_identifier",
     "rds_instance_class", "rds_storage_gb", "rds_multi_az", "backup_retention_days",
     "create_dns", "hosted_zone_id", "ttl", "admin_password", "elastic_ip",
+    # «Emitir HTTPS al terminar» también se recuerda: un montaje con dominio
+    # provisorio (después pasa a sslip.io) se deja preparado con HTTPS apagado.
+    "ssl_auto",
 ]
 
 
