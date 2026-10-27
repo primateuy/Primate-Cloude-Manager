@@ -103,6 +103,75 @@ Diseño propuesto (no implementado):
   con condición `aws:ResourceTag/primate:managed_by = pcm` sobre `volume/*`.
 - Guardas: una modificación cada 6 h por volumen (AWS), sólo crecer.
 
+## 🔎 DIAGNÓSTICO — El job de terminar choca con escrituras concurrentes sobre la máquina (2026-10-27)
+
+**Estado:** diagnosticado, sin implementar. El reintento ya es seguro (`b22bc89`: si la IP fija
+ya no existe en AWS, PCM la limpia y lo registra).
+
+**Qué pasó (las dos corridas reales del sslip.io automático, sandbox).** El `job_lifecycle`
+de «Terminar» falló al guardar con `could not serialize access due to concurrent update`
+sobre `primate_cloud_ec2_instance` (el `UPDATE` final: `eip_allocation_id = NULL`,
+`instance_state = 'shutting-down'`). queue_job lo reintentó a los 5 s y la 2ª vuelta terminó
+bien. Corrida 1: el 1er intento duró **184 s**; corrida 2: **25 s**.
+
+**Quién escribió la misma fila: el script de grabación, no PCM.** Mientras el job corría,
+el script llamaba cada 10 s, por XML-RPC y **síncrono**, a
+`primate.cloud.ec2.instance.job_sync_from_aws` sobre la misma máquina (para saber cuándo
+quedaba `terminated`). Eso hace `write(_aws_vals(...))` y commitea. En el log de las dos
+corridas hay un `job_sync_from_aws` commiteado entre el arranque del job y su `UPDATE`
+fallido. **No** fue un cron (en las dos ventanas no corrió ninguno de PCM) ni el chatter
+(`message_post` inserta en `mail_message`, no actualiza la fila de la máquina).
+
+**Por qué el choque es posible (y puede pasar sin el script).**
+- Odoo corre cada transacción en REPEATABLE READ y el ORM **difiere** los `UPDATE` hasta el
+  flush del final. Cualquier escritura **commiteada** sobre esa fila entre el arranque del
+  job y su flush lo hace fallar, aunque toque otros campos.
+- La ventana es larga por diseño: `_pcm_release_elastic_ip` espera **adentro de la
+  transacción** (sleep 10 s, hasta 180 s) a que AWS desasocie la EIP.
+- Escritores reales de esa fila que pueden caer en la ventana:
+  - **«Sincronizar» del servidor** → `job_sync_from_aws` encolado; con `channels = root:2`
+    corre **en paralelo** con el de terminar;
+  - **sync diario de la cuenta** (`cron_sync_accounts` → `job_sync_resources` →
+    `_sync_from_aws`, que escribe todas las máquinas);
+  - **snapshot de métricas** cada hora (`cron_snapshot_metrics` → `_take_metrics_snapshot`
+    escribe `last_cpu`, `last_status_check_failed`, … en cada máquina);
+  - otro job de ciclo de vida sobre la misma máquina (Detener/Reiniciar) encolado al lado.
+- **Riesgo real:** queue_job reintenta los errores de concurrencia hasta `max_retries`
+  (5 por defecto) y después deja el job en `failed`, **con la acción de AWS ya hecha** (la
+  máquina terminada y la EIP liberada) y sin rastro en la bitácora: lo del intento fallido
+  se deshace con el rollback (el mensaje, el log `ec2_terminate`, el `eip_release`).
+
+**¿Serializar con queue_job? (channel / identity_key)**
+- `identity_key` **no** serializa: solo evita encolar dos veces el MISMO job (misma función
+  y argumentos) mientras el primero está pendiente. Sirve contra el doble clic en «Terminar»,
+  no contra un sync o las métricas.
+- Un canal propio con capacidad 1 (p. ej. `root.pcm_ec2:1`) serializa **todos** los jobs de
+  máquinas de todas las cuentas: frena en fila cosas independientes (montar un servidor
+  mientras se sincroniza otro) y **no** cubre lo que corre fuera de la cola (crons, llamadas
+  síncronas). Si se usa, solo para los jobs de ciclo de vida, no como solución.
+- queue_job (OCA 19.0) no tiene un lock por registro.
+
+**Propuesta (a decidir; en este orden):**
+1. **Achicar la ventana**: separar la liberación de la EIP en su propio job
+   (`job_release_elastic_ip(allocation_id)`), encolado al terminar con `eta` ~30 s, que
+   pregunta una vez y, si la EIP sigue asociada, se re-encola (`RetryableJobError` con
+   `seconds`) en vez de dormir dentro de la transacción. El job de terminar queda en
+   ~1–3 s. Es lo que más baja la probabilidad del choque y no cambia el comportamiento.
+2. **Lock por máquina** con `pg_try_advisory_xact_lock` (mismo patrón que
+   `_server_lock_key` del entorno): los jobs que mutan la máquina lo toman; los escritores
+   «de lectura» (`job_sync_from_aws`, `_sync_from_aws` del sync de cuenta, snapshot de
+   métricas) **saltean** esa máquina si el lock está tomado (la próxima pasada la
+   actualiza). Así el sync no pisa a una terminación en curso.
+3. **Que el reintento no pierda la auditoría**: el log de la acción AWS (`ec2_terminate`,
+   `eip_release`) se escribe en una transacción aparte (patrón `durable_log` de
+   destrucción), así un rollback por concurrencia no borra que la acción ocurrió.
+4. Opcional: `identity_key` en los jobs de ciclo de vida (anti doble clic).
+
+**Cómo probarlo (cuando se implemente):** test con dos cursores (el job abierto y un
+`write` commiteado desde otro cursor sobre la misma máquina) que hoy reproduce
+`SerializationFailure`; con 1+2 el sync se saltea la máquina y el job no falla. Y repetir
+la corrida real de terminar con el script que sincroniza cada 10 s.
+
 ## ⏸ POSPUESTO — Backups programados con catálogo (F3)
 
 **Diseño aprobado en sep-2026, NO implementado.** Está completo en
