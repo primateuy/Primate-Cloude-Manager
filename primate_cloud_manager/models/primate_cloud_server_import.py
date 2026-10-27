@@ -95,6 +95,8 @@ class PrimateCloudServerImport(models.Model):
     discovered_count = fields.Integer(string="Con Odoo detectado", readonly=True)
     unrecognized_count = fields.Integer(string="No reconocidos", readonly=True)
     error_count = fields.Integer(string="Con error", readonly=True)
+    twin_incomplete_count = fields.Integer(
+        string="Gemelo incompleto", readonly=True)
     progress = fields.Float(string="Avance (%)", readonly=True)
 
     line_ids = fields.One2many(
@@ -273,6 +275,16 @@ class PrimateCloudServerImport(models.Model):
                     res = sync._aplicar_discovery(datos, centinela)
                     if datos.get("_twin"):
                         sync._twin_apply(datos["_twin"])
+                    elif res["estado"] == "ok":
+                        # Odoo detectado pero el gemelo no llegó entero:
+                        # marcado y contado, nunca en silencio.
+                        maquina._twin_marcar("incomplete",
+                                             datos.get("_twin_error"))
+                        self.twin_incomplete_count += 1
+                        res["detalle"] = "%s%s" % (
+                            (res["detalle"] + " · ") if res["detalle"] else "",
+                            _("Gemelo INCOMPLETO: %s") % (
+                                datos.get("_twin_error") or "?"))
                 vals.update({
                     "discovery_state": ("ok" if res["estado"] == "ok"
                                         else "unrecognized"),
@@ -305,11 +317,12 @@ class PrimateCloudServerImport(models.Model):
         partes = [_(
             "Servidores: %(t)s · nuevos %(n)s · actualizados %(u)s · con "
             "acceso SSM %(on)s · sin acceso SSM %(off)s · con Odoo detectado "
-            "%(d)s · no reconocidos %(nr)s · con error %(e)s",
+            "%(d)s · no reconocidos %(nr)s · con error %(e)s · gemelo "
+            "incompleto %(gi)s",
             t=self.total_servers, n=self.created_count, u=self.updated_count,
             on=self.online_count, off=self.unreachable_count,
             d=self.discovered_count, nr=self.unrecognized_count,
-            e=self.error_count)]
+            e=self.error_count, gi=self.twin_incomplete_count)]
         if detalle:
             partes.append(_("Error: %s") % detalle)
         if errores_region:
@@ -321,6 +334,13 @@ class PrimateCloudServerImport(models.Model):
             for linea in sin_acceso:
                 partes.append("• %s (%s)\n%s" % (
                     linea.name, linea.aws_instance_id, linea.manual_steps or ""))
+        incompletos = self.line_ids.filtered(
+            lambda l: "Gemelo INCOMPLETO" in (l.detail or ""))
+        if incompletos:
+            partes.append(_("GEMELO INCOMPLETO — capturarlo por ssh "
+                            "(infra/gemelo_cloudpepper.sh):"))
+            for linea in incompletos:
+                partes.append("• %s\n%s" % (linea.name, linea.detail or ""))
         no_rec = self.line_ids.filtered(
             lambda l: l.discovery_state == "unrecognized")
         if no_rec:

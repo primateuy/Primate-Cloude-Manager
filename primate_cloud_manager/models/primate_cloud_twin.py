@@ -139,6 +139,20 @@ class PrimateCloudTwinMixin(models.AbstractModel):
     _description = "Aplicación del gemelo exacto"
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _twin_normalizar(twin):
+        """twin_format 2 trae la versión y el pip freeze UNA vez por venv
+        (``venvs``); cada instancia los recibe de vuelta acá. El formato 1
+        (por instancia) queda igual."""
+        venvs = twin.get("venvs") or {}
+        for data in twin.get("instances") or []:
+            python = data.setdefault("python", {}) or {}
+            venv = venvs.get(python.get("bin") or "") or {}
+            for clave in ("version", "pip_freeze"):
+                if not python.get(clave) and venv.get(clave):
+                    python[clave] = venv[clave]
+        return twin
+
     def _twin_apply_to(self, env_rec, twin, machine=None):
         """Vuelca el gemelo a PCM en ``env_rec``: instancias Odoo (creando las
         que falten), repos con alerta de cambios locales, y un snapshot
@@ -148,6 +162,7 @@ class PrimateCloudTwinMixin(models.AbstractModel):
             pcm_import_sync=True)
         Snapshot = self.env["primate.cloud.twin.snapshot"].sudo()
         nginx = twin.get("nginx") or []
+        self._twin_normalizar(twin)
         snapshots = Snapshot.browse()
         claimed = Instance.browse()
         twin_confs = {d.get("conf_path") for d in twin.get("instances") or []}
@@ -337,11 +352,60 @@ class PrimateCloudEc2InstanceTwin(models.Model):
     _name = "primate.cloud.ec2.instance"
     _inherit = ["primate.cloud.ec2.instance", "primate.cloud.twin.mixin"]
 
+    # Estado del último gemelo (2026-10-27): un gemelo que no llegó entero se
+    # marca y se ve, nunca se pierde en silencio (antes la importación dejaba
+    # el servidor sin gemelo y sin decir nada).
+    twin_status = fields.Selection(
+        [("none", "Sin gemelo"), ("ok", "Completo"),
+         ("incomplete", "INCOMPLETO")],
+        string="Gemelo", default="none", readonly=True, copy=False)
+    twin_status_detail = fields.Char(
+        string="Detalle del gemelo", readonly=True, copy=False)
+    twin_status_date = fields.Datetime(
+        string="Último intento de gemelo", readonly=True, copy=False)
+
+    def _twin_marcar(self, estado, detalle=""):
+        """Deja el estado del gemelo; si quedó incompleto, también en el
+        chatter (visible, con el motivo)."""
+        self.ensure_one()
+        self.with_context(pcm_import_sync=True).sudo().write({
+            "twin_status": estado, "twin_status_detail": (detalle or "")[:500],
+            "twin_status_date": fields.Datetime.now()})
+        if estado == "incomplete":
+            self.sudo().message_post(body=_(
+                "Gemelo INCOMPLETO: %s") % (detalle or _("sin detalle")))
+
+    @api.model
+    def _twin_parse_seguro(self, stdout):
+        """(gemelo, None) si la salida trae el gemelo entero; (None, motivo)
+        si no: falta PCM_TWIN_OK (salida cortada) o el blob no decodifica."""
+        stdout = stdout or ""
+        largo = len(stdout)
+        if "PCM_TWIN_B64:" not in stdout:
+            return None, _("la salida no trae el gemelo (%s caracteres).") % largo
+        if "PCM_TWIN_OK" not in stdout:
+            return None, _(
+                "falta PCM_TWIN_OK: la salida se cortó (%s caracteres; el "
+                "límite inline de SSM es 24.000). Capturarlo por ssh "
+                "(infra/gemelo_cloudpepper.sh) o con salida por S3.") % largo
+        try:
+            return self._twin_parse(stdout), None
+        except Exception as error:  # noqa: BLE001 — se reporta, no se traga
+            return None, _("el gemelo no decodifica: %s") % str(error)[:200]
+
     def action_capture_twin(self):
         """Captura el gemelo de ESTE servidor (lectura pura: permitido también
-        —y sobre todo— en importados)."""
+        —y sobre todo— en importados). Si no llega entero, queda marcado
+        INCOMPLETO con el motivo, en vez de fallar sin rastro."""
         self.ensure_one()
-        twin = self._twin_fetch()
+        try:
+            twin = self._twin_fetch()
+        except UserError as error:
+            self._twin_marcar("incomplete", str(error))
+            return {
+                "type": "ir.actions.client", "tag": "display_notification",
+                "params": {"type": "warning", "sticky": True,
+                           "message": _("Gemelo INCOMPLETO: %s") % error}}
         snapshots = self._twin_apply(twin)
         self.message_post(body=_(
             "Gemelo capturado: %(n)s instancia(s) Odoo, %(a)s alerta(s).",
@@ -415,7 +479,9 @@ class PrimateCloudEc2InstanceTwin(models.Model):
         self.ensure_one()
         if not self.environment_id:
             raise UserError(_("El servidor no tiene entorno en PCM."))
-        return self._twin_apply_to(self.environment_id, twin, machine=self)
+        snapshots = self._twin_apply_to(self.environment_id, twin, machine=self)
+        self._twin_marcar("ok", _("%s instancia(s) Odoo.") % len(snapshots))
+        return snapshots
 
 
 class PrimateCloudEnvironmentTwin(models.Model):

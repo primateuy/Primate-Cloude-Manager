@@ -496,7 +496,11 @@ class PrimateCloudDashboard(models.AbstractModel):
         hosted_summary = " · ".join(
             "%d %s" % (n, env_type_labels.get(t, t))
             for t, n in sorted(env_type_counts.items()))
+        twin_labels = dict(Ec2._fields["twin_status"].selection)
         return {
+            "twin_status": inst.twin_status or "none",
+            "twin_status_label": twin_labels.get(inst.twin_status or "none"),
+            "twin_status_detail": inst.twin_status_detail or "",
             "id": inst.id,
             "hosted_instances": [{
                 "id": i.id, "name": i.name,

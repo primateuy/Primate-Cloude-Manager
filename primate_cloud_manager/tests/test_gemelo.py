@@ -211,6 +211,156 @@ class TestGemelo(TransactionCase):
         self.assertEqual(masked["db_name"], "prod")
         self.assertNotIn("superSecreto", json.dumps(masked))
 
+    def test_script_enmascara_mas_claves_del_conf(self):
+        """MASCARA cubre password, passwd, secret, token, key y api."""
+        ns, _sh = self._funciones_del_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = os.path.join(tmp, "x.conf")
+            with open(conf, "w") as fh:
+                fh.write("[options]\nadmin_passwd = a1\nsmtp_passwd = a2\n"
+                         "s3_secret_access = a3\nsibra_token = a4\n"
+                         "google_api_key = a5\nPAGOS_APIKEY = a6\n"
+                         "db_name = prod\nhttp_port = 8069\n"
+                         "list_db = False\n")
+            _opts, masked = ns["leer_conf"](conf)
+        for clave in ("admin_passwd", "smtp_passwd", "s3_secret_access",
+                      "sibra_token", "google_api_key", "pagos_apikey"):
+            self.assertEqual(masked[clave], "******", clave)
+        self.assertEqual(masked["db_name"], "prod")
+        self.assertEqual(masked["http_port"], "8069")
+        texto = json.dumps(masked)
+        for secreto in ("a1", "a2", "a3", "a4", "a5", "a6"):
+            self.assertNotIn('"%s"' % secreto, texto)
+
+    def test_script_tapa_secretos_del_crontab(self):
+        ns, _sh = self._funciones_del_script()
+        crontab = (
+            "SHELL=/bin/sh\n"
+            "PGPASSWORD=claveDePg pg_dump prod > /backup/x.sql\n"
+            "DB_PASSWORD='con espacios' /opt/x.sh\n"
+            "0 3 * * * mysqldump -uroot -pMiClave db > /tmp/d.sql\n"
+            "5 3 * * * /opt/sync --password=ClaveLarga --verbose\n"
+            "6 3 * * * /opt/sync --token ElToken\n"
+            "7 3 * * * curl https://user:ClaveUrl@api.ejemplo.com/hook\n"
+            "8 3 * * * API_KEY=abc123 SIBRA_TOKEN=t0k /opt/factura.sh\n"
+            "9 3 * * * ssh -p 22 backup@host 'ls'\n")
+        tapado = ns["tapar_secretos"](crontab)
+        for secreto in ("claveDePg", "con espacios", "MiClave", "ClaveLarga",
+                        "ElToken", "ClaveUrl", "abc123", "t0k"):
+            self.assertNotIn(secreto, tapado, secreto)
+        # La forma queda: se ve QUÉ corre, no con qué clave.
+        self.assertIn("pg_dump prod", tapado)
+        self.assertIn("PGPASSWORD=******", tapado)
+        self.assertIn("-p******", tapado)
+        self.assertIn("ssh -p 22 backup@host", tapado)   # -p con espacio: puerto
+        self.assertIn("SHELL=/bin/sh", tapado)
+
+    def test_script_une_confs_de_etc_y_de_systemd(self):
+        """Un Odoo con el conf fuera de /etc/odoo (lo usa una unit) no se
+        pierde, y el mismo conf no aparece dos veces."""
+        ns, _sh = self._funciones_del_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            etc = os.path.join(tmp, "etc")
+            os.makedirs(os.path.join(etc, "odoo"))
+            a = os.path.join(etc, "odoo", "a.conf")
+            fuera = os.path.join(tmp, "opt", "cliente-x", "odoo.conf")
+            os.makedirs(os.path.dirname(fuera))
+            for ruta in (a, fuera):
+                open(ruta, "w").close()
+            units = {os.path.realpath(fuera): {"unit": "odoo-x.service"},
+                     os.path.realpath(a): {"unit": "odoo-a.service"}}
+            confs = ns["confs_a_leer"](units, base_dir=etc)
+            reales = {os.path.realpath(c) for c in confs}
+            self.assertEqual(len(confs), 2)
+            self.assertEqual(reales, {os.path.realpath(fuera),
+                                      os.path.realpath(a)})
+
+    def test_script_conf_desde_el_argv(self):
+        ns, _sh = self._funciones_del_script()
+        f = ns["conf_de_argv"]
+        self.assertEqual(f(["python", "odoo-bin", "-c", "/opt/x.conf"]), "/opt/x.conf")
+        self.assertEqual(f(["odoo", "--config", "/o/y.conf"]), "/o/y.conf")
+        self.assertEqual(f(["odoo", "--config=/o/z.conf"]), "/o/z.conf")
+        self.assertEqual(f(["odoo"]), "")
+
+    def test_script_un_solo_enterprise(self):
+        """La palabra «enterprise» en otra ruta no la vuelve enterprise."""
+        ns, sh = self._funciones_del_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            ent = os.path.join(tmp, "enterprise")
+            otro = os.path.join(tmp, "addons-enterprise-cliente")
+            con_web = os.path.join(tmp, "odoo-ee-17")
+            for ruta in (ent, otro, os.path.join(con_web, "web_enterprise")):
+                os.makedirs(ruta)
+            self.assertTrue(ns["es_enterprise"](ent))
+            self.assertTrue(ns["es_enterprise"](con_web))
+            self.assertFalse(ns["es_enterprise"](otro))
+        self.assertIn("if enterprise is None and es_enterprise(base):", sh)
+
+    def test_script_submodulos_con_safe_directory(self):
+        _ns, sh = self._funciones_del_script()
+        self.assertIn("git -c safe.directory='*' submodule status", sh)
+        self.assertNotRegex(sh, r"\"git submodule status\"")
+
+    def test_formato_2_pip_freeze_por_venv(self):
+        """twin_format 2: versión y pip freeze una vez por venv; PCM los
+        devuelve a cada instancia al aplicar."""
+        twin = _twin_dos_instancias()
+        venv = twin["instances"][0]["python"]["bin"]
+        freeze = twin["instances"][0]["python"].get("pip_freeze") or "odoo==19"
+        version = twin["instances"][0]["python"].get("version") or "Python 3"
+        for inst in twin["instances"]:
+            inst["python"] = {"bin": venv}
+        twin["twin_format"] = 2
+        twin["venvs"] = {venv: {"version": version, "pip_freeze": freeze}}
+        snaps = self.machine._twin_apply(twin)
+        self.assertTrue(snaps)
+        for snap in snaps:
+            data = json.loads(snap.payload_json)
+            self.assertEqual(data["instance"]["python"]["pip_freeze"], freeze)
+        self.assertEqual(self.machine.twin_status, "ok")
+
+    def test_gemelo_incompleto_se_marca_y_se_ve(self):
+        """Salida cortada (sin PCM_TWIN_OK) o blob roto: motivo explícito."""
+        cortada = "\n".join(l for l in _stdout_de(_twin_dos_instancias())
+                            .splitlines() if l != "PCM_TWIN_OK")
+        twin, motivo = self.machine._twin_parse_seguro(cortada)
+        self.assertIsNone(twin)
+        self.assertIn("PCM_TWIN_OK", motivo)
+        self.assertIn("24.000", motivo)
+        twin, motivo = self.machine._twin_parse_seguro(
+            "PCM_TWIN_B64:no-es-base64!!\nPCM_TWIN_OK")
+        self.assertIsNone(twin)
+        self.assertIn("no decodifica", motivo)
+        bien, motivo = self.machine._twin_parse_seguro(
+            _stdout_de(_twin_dos_instancias()))
+        self.assertTrue(bien)
+        self.assertIsNone(motivo)
+
+    def test_captura_incompleta_queda_marcada(self):
+        with mock.patch.object(type(self.machine), "_twin_fetch",
+                               side_effect=UserError("salida cortada")):
+            res = self.machine.action_capture_twin()
+        self.assertEqual(res["params"]["type"], "warning")
+        self.assertEqual(self.machine.twin_status, "incomplete")
+        self.assertIn("salida cortada", self.machine.twin_status_detail)
+        self.assertIn("Gemelo INCOMPLETO", self.machine.message_ids[0].body)
+        data = self.env["primate.cloud.dashboard"].get_server_detail(
+            self.machine.id)
+        self.assertEqual(data["twin_status"], "incomplete")
+
+    def test_discovery_con_gemelo_cortado_trae_el_motivo(self):
+        """El import ya no lo traga: _run_discovery devuelve _twin_error."""
+        cortada = "PCM_DISCOVERY_JSON:{\"units\": []}\n" + "\n".join(
+            l for l in _stdout_de(_twin_dos_instancias()).splitlines()
+            if l != "PCM_TWIN_OK")
+        with mock.patch.object(type(self.machine), "_run_readonly_document",
+                               return_value={"status": "Success",
+                                             "stdout": cortada}):
+            datos = self.machine._run_discovery()
+        self.assertIsNone(datos["_twin"])
+        self.assertIn("PCM_TWIN_OK", datos["_twin_error"])
+
     def test_script_lee_el_argv_de_systemd(self):
         """systemctl show -p ExecStart devuelve «{ path=… ; argv[]=… }»: el
         python del venv sale del argv (antes tomaba «path=…» y pip quedaba

@@ -34,6 +34,10 @@
                             <i class="fa fa-clone"/> Capturar gemelo (solo lectura)
                         </button>
                     </div>
+                    <div t-if="d.twin_status === 'incomplete'" class="o_pcm_note o_pcm_twin_incompleto">
+                        <i class="fa fa-exclamation-triangle"/>
+                        <b>Gemelo INCOMPLETO.</b> <t t-out="d.twin_status_detail"/>
+                    </div>
                     <div class="o_pcm_actions" t-if="!d.is_imported">
                         <button t-if="d.state === 'stopped'" class="o_pcm_btn o_pcm_btn_accent"
                                 t-on-click="() => this.runMethod('action_start')">

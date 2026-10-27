@@ -400,11 +400,10 @@ class PrimateCloudEc2Instance(models.Model):
         for linea in stdout.splitlines():
             if linea.startswith("PCM_DISCOVERY_JSON:"):
                 datos = json.loads(linea[len("PCM_DISCOVERY_JSON:"):])
-                if "PCM_TWIN_OK" in stdout:
-                    try:
-                        datos["_twin"] = self._twin_parse(stdout)
-                    except Exception:  # noqa: BLE001 — el gemelo es extra
-                        datos["_twin"] = None
+                # El gemelo es extra, pero si no llegó entero se DICE: el
+                # motivo viaja para marcar el servidor «gemelo incompleto».
+                datos["_twin"], datos["_twin_error"] = \
+                    self._twin_parse_seguro(stdout)
                 return datos
         raise UserError(_(
             "El discovery no devolvió resultado (estado SSM: %(st)s). "
