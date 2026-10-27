@@ -191,9 +191,9 @@ class PrimateCloudDatabase(models.Model):
         target = self.environment_id
         target.with_delay(
             description=_("Restaurar backup en %s") % target.name
-        ).job_restore_backup(dict(params, destruction={
+        ).job_restore_backup(self.env["primate.cloud.job.secret"].stash(dict(params, destruction={
             "ticket_id": ctx.get("destruction_ticket_id"),
-            "job_token": job_token}))
+            "job_token": job_token})))
         return {
             "type": "ir.actions.client", "tag": "display_notification",
             "params": {"type": "info",

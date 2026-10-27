@@ -83,7 +83,8 @@ export class AccountForm extends Component {
             default_region: d.default_region || "",
             auth_method: d.auth_method || "access_key",
             notes: d.notes || "",
-            iam_access_key_id: d.iam_access_key_id || "",  // claro (identificador)
+            iam_access_key_id: d.iam_access_key_id || "",  // enmascarada (AKIA…WXYZ)
+            akidLoaded: d.iam_access_key_id || "",
             iam_secret_access_key: "",                      // SIEMPRE vacío
             role_arn: d.role_arn || "",
             external_id: d.external_id || "",
@@ -148,8 +149,11 @@ export class AccountForm extends Component {
             // Credenciales: solo admin (el gate del modelo también las protege).
             if (this.state.isCloudAdmin) {
                 if (this.isAccessKey) {
-                    // Access Key ID: identificador, se reenvía tal cual (claro).
-                    vals.iam_access_key_id = this.state.iam_access_key_id;
+                    // Access Key ID: llega enmascarada; solo se manda si el
+                    // usuario escribió una nueva (nunca se reenvía la máscara).
+                    if (this.state.iam_access_key_id !== this.state.akidLoaded) {
+                        vals.iam_access_key_id = this.state.iam_access_key_id;
+                    }
                     // Secret: SOLO si el usuario escribió uno (así no se pisa el
                     // guardado en edición, y nunca se reenvía la máscara).
                     if ((this.state.iam_secret_access_key || "").trim()) {

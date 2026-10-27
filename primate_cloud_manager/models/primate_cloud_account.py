@@ -27,6 +27,14 @@ COST_RECONCILE_TOLERANCE = 0.01
 FERNET_KEY_PARAM = "primate_cloud_manager.fernet_key"
 FERNET_KEY_ENV = "PRIMATE_CLOUD_FERNET_KEY"
 
+
+def mask_access_key(key_id):
+    """«AKIA…WXYZ»: la Access Key ID no se muestra entera ni a los admins
+    (decisión 2026-10-27; salía en claro en la ficha y en los videos)."""
+    if not key_id:
+        return False
+    return "%s…%s" % (key_id[:4], key_id[-4:]) if len(key_id) > 8 else "…"
+
 # Máscara mostrada en lugar del secreto: nunca se devuelve el valor en claro.
 SECRET_MASK = "********"
 
@@ -195,21 +203,27 @@ class PrimateCloudAccount(models.Model):
 
     @api.depends("iam_access_key_id_encrypted", "iam_secret_access_key_encrypted")
     def _compute_credentials(self):
-        """Descifra el Access Key ID para mostrarlo; enmascara el secreto."""
+        """Muestra el Access Key ID ENMASCARADO (AKIA…WXYZ) y el secreto como
+        máscara: ninguno de los dos sale en claro de la base."""
         key = self._get_encryption_key()
         for account in self:
-            account.iam_access_key_id = crypto.decrypt(
+            account.iam_access_key_id = mask_access_key(crypto.decrypt(
                 key, account.iam_access_key_id_encrypted
-            ) or False
+            ) or False)
             account.iam_secret_access_key = (
                 SECRET_MASK if account.iam_secret_access_key_encrypted else False
             )
 
     def _inverse_access_key_id(self):
-        """Cifra y almacena el Access Key ID ingresado."""
+        """Cifra y almacena el Access Key ID ingresado. La versión enmascarada
+        que muestra la ficha vuelve tal cual al guardar: se ignora (si no, se
+        cifraría la máscara y la cuenta quedaría sin credencial)."""
         key = self._get_encryption_key()
         for account in self:
-            account.iam_access_key_id_encrypted = crypto.encrypt(key, account.iam_access_key_id)
+            value = account.iam_access_key_id
+            if value and "…" in value:
+                continue
+            account.iam_access_key_id_encrypted = crypto.encrypt(key, value)
 
     def _inverse_secret_access_key(self):
         """Cifra y almacena el secreto, ignorando la máscara (sin cambios reales)."""

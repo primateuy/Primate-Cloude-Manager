@@ -77,3 +77,4 @@ access_instance_operator,primate.cloud.instance operator,model_primate_cloud_ins
 access_instance_admin,primate.cloud.instance admin,model_primate_cloud_instance,group_cloud_admin,1,1,1,1
 access_external_import_wizard_admin,external.import.wizard admin,model_primate_cloud_external_import_wizard,group_cloud_admin,1,1,1,1
 access_domain_wizard_admin,domain.wizard admin,model_primate_cloud_domain_wizard,group_cloud_admin,1,1,1,1
+access_job_secret_none,job.secret sin acceso desde la UI,model_primate_cloud_job_secret,base.group_system,0,0,0,0

@@ -1441,7 +1441,7 @@ class PrimateCloudDashboard(models.AbstractModel):
         }
         if is_admin and acc:
             data.update({
-                # Access Key ID EN CLARO (identificador, solo-admin).
+                # Access Key ID ENMASCARADA (AKIA…WXYZ), también para admins.
                 "iam_access_key_id": acc.iam_access_key_id or "",
                 # Solo si HAY secreto; nunca el valor ni la máscara.
                 "secret_set": bool(acc.iam_secret_access_key),

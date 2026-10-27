@@ -54,7 +54,7 @@
 
                     <t t-if="isAccessKey">
                         <PcmField label="'Access Key ID'"
-                                  help="'Identificador (AKIA…). No es secreto por sí solo.'">
+                                  help="'Se muestra enmascarada (AKIA…WXYZ). Escribí una nueva solo para reemplazarla.'">
                             <input class="o_pcm_input o_pcm_mono" type="text"
                                    t-att-value="state.iam_access_key_id"
                                    t-att-placeholder="'AKIA…'"

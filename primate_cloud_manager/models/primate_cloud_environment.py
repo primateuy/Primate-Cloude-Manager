@@ -728,6 +728,8 @@ class PrimateCloudEnvironment(models.Model):
         # así un requeue tras reiniciar el server NO crea una EC2 duplicada.
         params = dict(params, client_token="pcm-%s" % uuid.uuid4().hex)
         params = self._ensure_transient_db_password(params)
+        # Los secretos NO viajan en el job: va una referencia (2026-10-27).
+        params = self.env["primate.cloud.job.secret"].stash(params)
         self.with_delay(
             description=_("Aprovisionar entorno: %s") % self.name
         ).job_provision_server(params)
@@ -861,6 +863,8 @@ class PrimateCloudEnvironment(models.Model):
         params = dict(params, db_mode="local_pg")
         self._exigir_cadena_de_instalacion(params, instance=instance)
         params = self._ensure_transient_db_password(params)
+        # Los secretos NO viajan en el job: va una referencia (2026-10-27).
+        params = self.env["primate.cloud.job.secret"].stash(params)
         instance.state = "draft"
         self.with_delay(
             description=_("Agregar instancia: %s") % instance.display_name
@@ -1042,6 +1046,7 @@ class PrimateCloudEnvironment(models.Model):
             bool: True si la instancia quedó activa; False si falló.
         """
         self.ensure_one()
+        params = self.env["primate.cloud.job.secret"].reveal(params)
         self._pcm_assert_env_not_imported("instance_install")
         account = self.account_id
         machine = self.ec2_instance_id or self.ec2_instance_ids.filtered(
@@ -1362,6 +1367,7 @@ class PrimateCloudEnvironment(models.Model):
            apellido en la bitácora.
         """
         self.ensure_one()
+        params = self.env["primate.cloud.job.secret"].reveal(params)
         self._pcm_assert_env_not_imported("instance_install")
         instance = self.env["primate.cloud.instance"].browse(instance_id).exists()
         if not instance or instance.environment_id != self:
@@ -2745,6 +2751,8 @@ class PrimateCloudEnvironment(models.Model):
         # si el job de staging se re-ejecuta tras reiniciar el server.
         params = dict(params, client_token="pcm-%s" % uuid.uuid4().hex)
         params = self._ensure_transient_db_password(params)
+        # Los secretos NO viajan en el job: va una referencia (2026-10-27).
+        params = self.env["primate.cloud.job.secret"].stash(params)
         staging.with_delay(
             description=_("Crear staging: %s") % staging.name
         ).job_create_staging(params)
@@ -2809,10 +2817,20 @@ class PrimateCloudEnvironment(models.Model):
             errores.append(_("el nombre de la base %r no es válido: solo letras, números, "
                              "guion y guion bajo, sin espacios") % db_name)
         pg_password = params.get("db_password")
-        if (params.get("db_mode", "local_pg") == "local_pg" and pg_password
+        # Dentro del job llega como referencia al depósito de secretos: ya se
+        # validó al encolar (en claro), acá no hay texto que mirar.
+        if (params.get("db_mode", "local_pg") == "local_pg"
+                and isinstance(pg_password, str) and pg_password
                 and not PG_PASSWORD_RE.match(pg_password)):
             errores.append(_("la contraseña de PostgreSQL tiene caracteres no admitidos "
                              "(usá letras, números, guion y guion bajo)"))
+        # RDS con una cuenta sin permisos de RDS: cortar ACÁ, antes de crear
+        # la EC2 (pcm-prod-provision no tiene ningún permiso de RDS).
+        if params.get("db_mode") == "rds" and self.account_id.provision_only:
+            errores.append(_(
+                "Amazon RDS no está disponible con la cuenta «%s» (solo "
+                "aprovisionamiento): sus permisos (pcm-prod-provision) no "
+                "incluyen RDS. Elegí PostgreSQL local") % self.account_id.name)
         if exigir_bucket:
             bucket = (bucket or "").strip()
             if not bucket:
@@ -2869,6 +2887,7 @@ class PrimateCloudEnvironment(models.Model):
             origin_database_id=origin_database.id if origin_database else False,
         )
         job_params = target_server._ensure_transient_db_password(job_params)
+        job_params = self.env["primate.cloud.job.secret"].stash(job_params)
         target_server.with_delay(
             description=_("Crear staging (instancia): %s") % params["name"]
         ).job_create_staging_instance(instance.id, job_params)
@@ -2884,6 +2903,7 @@ class PrimateCloudEnvironment(models.Model):
         los repos del origen al ``addons_dir`` del slug.
         """
         self.ensure_one()
+        params = self.env["primate.cloud.job.secret"].reveal(params)
         instance = self.env["primate.cloud.instance"].browse(instance_id).exists()
         if not instance:
             return False
@@ -3024,6 +3044,7 @@ class PrimateCloudEnvironment(models.Model):
         copiar la base de origen, neutralizarla y clonar los repos al mismo commit.
         """
         self.ensure_one()
+        params = self.env["primate.cloud.job.secret"].reveal(params)
         origin = self.origin_environment_id
         origin._pcm_assert_env_not_imported("staging_origin")
         account = self.account_id
@@ -4064,6 +4085,7 @@ class PrimateCloudEnvironment(models.Model):
                 (borrar la key de origen si el restore sale bien).
         """
         self.ensure_one()
+        params = self.env["primate.cloud.job.secret"].reveal(params)
         origen = self._restore_origen_normalizado(params)
         backup = self.env["primate.cloud.backup"].browse(
             params.get("backup_id") or []

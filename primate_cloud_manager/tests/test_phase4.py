@@ -364,7 +364,9 @@ class TestEnvironmentProvision(TransactionCase):
             self.env_rec._enqueue_provision(
                 {"region": "us-east-1", "db_mode": "local_pg", "db_password": "",
                  "db_name": "forum"})
-        params = fake_delay.job_provision_server.call_args[0][0]
+        # Al job va una REFERENCIA (2026-10-27); el valor vive cifrado aparte.
+        params = self.env["primate.cloud.job.secret"].reveal(
+            fake_delay.job_provision_server.call_args[0][0])
         self.assertTrue(params["db_password"])
         self.assertGreaterEqual(len(params["db_password"]), 20)
 
@@ -376,8 +378,9 @@ class TestEnvironmentProvision(TransactionCase):
             self.env_rec._enqueue_provision(
                 {"region": "us-east-1", "db_mode": "local_pg", "db_password": "explicita",
                  "db_name": "forum"})
-        self.assertEqual(
-            fake_delay.job_provision_server.call_args[0][0]["db_password"], "explicita")
+        self.assertEqual(self.env["primate.cloud.job.secret"].reveal(
+            fake_delay.job_provision_server.call_args[0][0])["db_password"],
+            "explicita")
         with mock.patch.object(type(self.env_rec), "with_delay", return_value=fake_delay):
             self.env_rec.state = "draft"
             self.env_rec._enqueue_provision(
@@ -574,7 +577,8 @@ class TestEnvironmentProvision(TransactionCase):
             "name": "forum-prod", "account_id": self.account.id,
             "environment_id": self.env_rec.id, "aws_instance_id": "i-forum",
             "instance_state": "running", "region": "us-east-1"})
-        job = self.env_rec.with_delay().job_install_instance(params)
+        job = self.env_rec.with_delay().job_install_instance(
+            self.env["primate.cloud.job.secret"].stash(params))
         job.db_record().write({"state": "failed"})
         self.env_rec.state = "error"
         self.env_rec.action_retry_install()

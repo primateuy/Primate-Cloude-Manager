@@ -30,8 +30,8 @@ class TestAccount(TransactionCase):
         self.assertNotIn("secreto-real", account.iam_secret_access_key_encrypted or "")
         # Lectura fresca (como en el formulario): se recalcula desde lo cifrado.
         account.invalidate_recordset(["iam_access_key_id", "iam_secret_access_key"])
-        # El Access Key ID se puede leer descifrado; el secreto se enmascara.
-        self.assertEqual(account.iam_access_key_id, "AKIAEXAMPLE")
+        # Ni el Access Key ID sale en claro (2026-10-27): los dos enmascarados.
+        self.assertEqual(account.iam_access_key_id, "AKIA…MPLE")
         self.assertEqual(
             account.iam_secret_access_key, primate_cloud_account.SECRET_MASK
         )

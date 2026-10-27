@@ -285,6 +285,12 @@ class PrimateCloudDestructionTicket(models.Model):
         """Lo llama el JOB destructivo al arrancar. Un solo uso, vencimiento
         corto, atado a recurso+acción: un job re-encolado o un cron no pueden
         re-ejecutar la destrucción."""
+        # El token llega como referencia al depósito de secretos (nunca en
+        # claro en queue_job). Si ya fue purgado, cae en «job token inválido».
+        try:
+            job_token = self.env["primate.cloud.job.secret"].reveal(job_token)
+        except UserError:
+            job_token = None
         ticket = self.browse(int(ticket_id or 0)).exists().sudo()
         why = None
         if not ticket or ticket.step != "consumed":

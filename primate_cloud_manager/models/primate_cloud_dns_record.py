@@ -404,7 +404,8 @@ class PrimateCloudDnsRecord(models.Model):
         self.with_delay(
             description=_("Eliminar DNS: %s") % self.name
         ).job_delete(destruction_ticket_id=ctx.get("destruction_ticket_id"),
-                     destruction_job_token=job_token)
+                     destruction_job_token=self.env["primate.cloud.job.secret"].stash(
+                         {"job_token": job_token})["job_token"])
         return {
             "type": "ir.actions.client", "tag": "display_notification",
             "params": {"type": "info",
