@@ -1,5 +1,15 @@
 # Videos de ensayo de PCM (fuera de git)
 
+## `dominio_bj_uat_2026-10-28.mp4` — 1:45, 1080p
+
+Dominio definitivo de bj-uat en la cuenta de Primate: «Crear DNS ahora» con
+`barracajuliav19.erp.primateuy.com` (primera prueba real de punta a punta de
+Route 53 + certificado). PCM propone `<slug>.erp.primateuy.com` y la zona por
+defecto; se cambia al nombre definitivo; registro A → INSYNC → propagación →
+certificado → https verificado → retiro de sslip.io (espera ×8). Después:
+http → https, candado, `/web/database/manager` 404 y el registro en «Registros
+DNS». Revisado entero: sin credenciales ni datos del cliente.
+
 ## `montaje_bj_uat_2026-10-28.mp4` — 7:55, 1080p
 
 Montaje REAL de bj-uat (UAT de Barraca Julia, no productivo) en la cuenta de

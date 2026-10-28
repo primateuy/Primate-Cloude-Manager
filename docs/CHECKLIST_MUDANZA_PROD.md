@@ -355,13 +355,18 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
          **sin usuario ni contraseña**. **Parámetros del sistema** →
          `web.base.url` = la URL sslip.io.
 
-### ⏳ Pendiente de bj-uat: el dominio definitivo
-bj-uat queda en `https://bj-uat.<ip>.sslip.io` **sin registro DNS propio**
-(decisión 2026-10-27). Cuando el cliente confirme el dominio, seguir
-`docs/AGREGAR_DOMINIO.md`: **«Crear DNS ahora»** si el dominio está en la zona
-de Route 53 de la cuenta (y el stack tiene `ZonaDns`/`NombresDns`), o
-**«Asociar dominio existente»** si el registro A se carga a mano (Route 53 u
-otro DNS). Los dos son no destructivos: si algo falla, sigue en sslip.io.
+### ✅ Dominio definitivo de bj-uat (hecho 2026-10-28)
+**`https://barracajuliav19.erp.primateuy.com`**, por **«Crear DNS ahora»**, en 70 s:
+registro A `barracajuliav19.erp.primateuy.com → 32.200.58.86` (TTL 300) creado por PCM en la
+zona `primateuy.com` (`Z06154501H54LEU4PFGH2`), INSYNC, propagación contra los NS de la zona,
+vhost en paralelo, certificado de Let's Encrypt de producción verificado por https, y recién
+ahí se retiró sslip.io (vhost y certificado) y se actualizó `web.base.url`. En la zona solo se
+agregó ese registro (18 → 19, ninguno tocado). `/web/database` sigue en 404 en el dominio nuevo.
+
+Para los próximos montajes: el stack tiene `ZonaDns = Z06154501H54LEU4PFGH2` y `NombresDns =
+*.erp.primateuy.com`, y `pcm_produccion` tiene esos defaults (`pcm.route53_default_zone_id`,
+`pcm.route53_default_domain_suffix`): «Crear DNS ahora» propone `<slug>.erp.primateuy.com` y
+rechaza, antes de tocar nada, un nombre fuera de ese subdominio. Ver `docs/AGREGAR_DOMINIO.md`.
 
 ### Plan B si SSL falla
 (Esto vale para el HTTPS del **montaje**. Al pasar después a un **dominio
@@ -458,7 +463,7 @@ certbot con la propagación confirmada; tope 6 intentos y 24 h esperando).
 - [ ] YO · Video del recorrido completo (credenciales y datos de clientes blureados).
 - [ ] CC · KB actualizada (estado + decisiones).
 - [ ] YO · **Aviso a INCO**: servidor `bj-uat` (UAT, no productivo) en
-      us-east-1 (t3.xlarge, gp3 100 GB, id de instancia e IP fija) para que
+      us-east-1 (t3.xlarge, gp3 100 GB, `i-0617ee15ddadb0a71`, IP fija `32.200.58.86`, `https://barracajuliav19.erp.primateuy.com`) para que
       configuren **backups** (snapshots del EBS), **DR** y **alarmas** (CPU,
       disco, estado del sistema). PCM no tiene política de backup en este
       entorno.

@@ -35,6 +35,13 @@ En PCM:
 3. Completá **Dominio nuevo** (ej. `erp.cliente.com`), **Hosted Zone ID** y
    **TTL** (300). Confirmá con **Crear DNS y cambiar**.
 
+   Con los parámetros `pcm.route53_default_zone_id` (la zona) y
+   `pcm.route53_default_domain_suffix` (el subdominio del permiso, p. ej.
+   `erp.primateuy.com`), el formulario viene con la zona cargada y propone
+   `<slug>.<subdominio>`; un nombre fuera de ese subdominio se rechaza antes de
+   tocar nada (el permiso de Route 53 no lo alcanzaría). Caso real: bj-uat →
+   `barracajuliav19.erp.primateuy.com` (28-oct, 70 s).
+
 PCM hace, en un job:
 
 | Paso | Qué hace | Si falla |
