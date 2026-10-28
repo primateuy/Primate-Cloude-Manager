@@ -1,5 +1,25 @@
 # Videos de ensayo de PCM (fuera de git)
 
+## `montaje_bj_uat_2026-10-28.mp4` — 7:55, 1080p
+
+Montaje REAL de bj-uat (UAT de Barraca Julia, no productivo) en la cuenta de
+Primate, us-east-1, desde `pcm_produccion`. Uso interno.
+
+| Minuto | Tramo |
+|---|---|
+| 0:00 | Portada |
+| 0:06 | La configuración precargada, para el OK (se cierra sin aprovisionar) |
+| 0:50 | Aprovisionamiento: formulario verificado, región en verde, contraseña maestra desde archivo (espera ×8) |
+| 2:29 | Restore — 1er intento (incidente: PCM se reiniciaba por `limit_time_real`, queue_job relanzó; este intento frenó en el chequeo de espacio sin tocar la base) (espera ×32) |
+| 3:56 | Restore — corrida limpia: neutralización antes de arrancar Odoo y checklist en verde (espera de 28 min ×32) |
+| 5:54 | Checks: `/web/login` sin selector, `/web/database/manager` 404, login administrator, 115 módulos, 0 crons, 0 SMTP, `web.base.url`, adjuntos, candado, IP fija en PCM |
+| 7:48 | Resultado |
+
+Revisado entero (hojas de contacto cada 2 s): contraseñas solo como puntos, sin
+credenciales de AWS; contenido del Odoo del cliente blureado. Quedan a la vista
+el nombre del cliente en la página pública de login y el número de cuenta AWS en
+la ruta S3 del restore (uso interno). Scripts: scratchpad de la sesión (`f9/`).
+
 ## `sslip_automatico_sandbox_2026-10-27.mp4` — 3:46, 1080p
 
 Prueba real del «Dominio sslip.io automático» en la sandbox (`pcm_demo`, cuenta
