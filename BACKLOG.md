@@ -172,6 +172,54 @@ fallido. **No** fue un cron (en las dos ventanas no corrió ninguno de PCM) ni e
 `SerializationFailure`; con 1+2 el sync se saltea la máquina y el job no falla. Y repetir
 la corrida real de terminar con el script que sincroniza cada 10 s.
 
+## 🔒 HUECO — El restore no compara la base destino con el dbfilter de la instancia (2026-10-28)
+
+Desde `398a48c` el `odoo.conf` lleva `dbfilter = ^<base>$` de verdad (antes `db_filter` se
+ignoraba). El wizard de restore deja escribir cualquier «Base de datos destino»: si no es la
+del conf, la carga sale bien, Odoo arranca y **no ve la base** (dbfilter), o queda una base
+huérfana ocupando disco. En el montaje de bj-uat se verificó a mano (destino = `db_name` del
+conf = base de PCM = `bj_uat`). **Propuesta:** el wizard propone por defecto la base de la
+instancia y el job rechaza, antes de bajar nada, un destino distinto del `db_name` del conf de
+esa instancia (salvo un flujo explícito de «base adicional», que hoy no existe). Con test.
+
+## 🚨 INCIDENTE — Jobs largos relanzados en paralelo (montaje real de bj-uat, 2026-10-28)
+
+**Qué pasó.** `pcm_produccion.conf` no fijaba `limit_time_real` → default 120 s. queue_job
+corre cada job dentro de un pedido HTTP: a los ~175 s del restore, Odoo reinició el servidor
+de PCM («virtual real time limit reached» → «Initiating server reload»), queue_job encontró el
+job «muerto» y lo relanzó. Tres veces. El script de SSM de cada intento **siguió corriendo en
+bj-uat**: cuatro restores simultáneos (uno ya había frenado Odoo y recreado `bj_uat`). Se
+cortaron a mano los árboles de procesos (autorizado por Daryl), `bj_uat` quedó a medias y
+Odoo frenado hasta el restore limpio. Antes, la instalación también se había relanzado una vez
+(a los 141 s) y terminó bien por ser idempotente.
+
+**Arreglado (con test):**
+- `pcm_produccion.conf`: `limit_time_real = 14400` (0 no sirve con `workers > 0`).
+- Jobs que borran o pisan datos **no se relanzan solos** (`exigir_primera_corrida`): restore,
+  crear/refrescar staging (entorno e instancia), desmontar instancia, borrar registro DNS,
+  terminar EC2, guardar `odoo.conf`, deploy. Una corrida con `retry` > 0 pasa a fallida sin
+  tocar nada y queda en la bitácora (`job_no_retry`); «Reintentar» (manual) vuelve `retry` a 0.
+  `max_retries` no alcanza: queue_job relanza un «dead job» mientras `retry <= max_retries`
+  y 0 es infinito.
+- El restore (los dos scripts) toma `flock -n` en `/var/lock/pcm-restore-<base>.lock` antes
+  del `trap` y de bajar/borrar nada; un segundo restore de la misma base aborta (exit 75). Los
+  hijos (unzip/psql) heredan el lock: matar solo el bash no lo libera.
+
+**Mismo riesgo, sin cubrir todavía (a decidir):**
+- **Instalación / agregar instancia / bootstrap / reanudar aprovisionamiento** (hasta 15 min
+  por SSM): si PCM muere a mitad, queue_job relanza y quedan dos `install_instance.sh` en
+  paralelo (apt, systemd, nginx, `createdb`). Hoy pasó una vez y salió bien por
+  idempotencia, pero no está garantizado. Propuesta: la misma guarda + `flock` por slug.
+- **Backups** (`job_run_backup`: pg_dump + subida): un relanzamiento duplica el dump y el
+  uso de disco; no pisa datos. Propuesta: `flock` por base.
+- **`job_add_addon`** (git clone): idempotente en la práctica; bajo riesgo.
+- **La Mac**: `pcm_produccion` corre en la Mac; si se duerme o se reinicia con un job adentro
+  pasa lo mismo. Hasta mudar PCM a un servidor, no dejar jobs largos con la Mac por dormirse
+  (`caffeinate -i` mientras corre un montaje o restore).
+- **Detección de huérfanos**: PCM no ve un script de SSM que sigue corriendo después de que
+  murió su job. Propuesta: guardar el CommandId en el job y, al fallar por relanzamiento,
+  mostrar su estado (y un botón «Cancelar comando» con triple confirmación).
+
 ## ⏸ POSPUESTO — Backups programados con catálogo (F3)
 
 **Diseño aprobado en sep-2026, NO implementado.** Está completo en

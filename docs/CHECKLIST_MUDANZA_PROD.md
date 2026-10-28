@@ -149,6 +149,17 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
 > No usar `pcm_demo` (sandbox) para nada productivo: tiene una cuenta de
 > prueba vieja llamada «Primate Producción» con un ID ficticio (123456789012).
 
+> ⚠️ **`limit_time_real` en el `.conf` de cualquier PCM que corra jobs
+> largos** (2026-10-28). queue_job corre cada job DENTRO de un pedido HTTP:
+> con el default de Odoo (120 s) el servidor de PCM se reinicia a mitad de un
+> job largo y queue_job lo relanza («dead job»), mientras el script de SSM
+> sigue corriendo en el servidor. En el montaje de bj-uat eso dejó cuatro
+> restores simultáneos. `pcm_produccion.conf` lleva **`limit_time_real =
+> 14400`** (0 no sirve: con `workers > 0` es el watchdog y mata cada worker
+> al instante). La sandbox (`PrimateCloudeManager.conf`) ya tenía 120000.
+> Además, desde ese día los jobs que borran o pisan datos **no se relanzan
+> solos** y el restore toma un **candado por base** en el servidor (ver §6.3).
+
 ## 1 · Stack de prerrequisitos (YO, consola + CloudShell)
 
 0. [x] YO · INCO aprobó `pcm_permisos_2026-10-27.zip`.
@@ -319,6 +330,14 @@ aprovisiona en el paso 6.1, porque el restore (6.3) recién lo usa al final.
    SELECTs **en el servidor**; si algo da rojo o falla la carga, Odoo queda
    **detenido** y el restore figura fallido con la cola del log.
    Proyección: **30–45 min** (ensayo con la reducida: 2 min 30 s).
+
+   **Si el restore se corta** (PCM se reinicia, la Mac se duerme, el job
+   muere): el job queda **fallido** con «NO se relanza automáticamente» en la
+   bitácora, y el script puede **seguir corriendo en el servidor**. Antes de
+   «Reintentar» (que relanza una vez, a mano): mirar el servidor por PCM
+   (procesos de restore, `/var/tmp/pcm/`, disco). Si un restore de la misma
+   base sigue vivo, el nuevo aborta solo («ya hay un restore de la base …
+   corriendo», candado `/var/lock/pcm-restore-<base>.lock`) sin tocar nada.
 4. [ ] YO · Checks post-montaje:
    - [ ] Chatter del entorno: «Checklist de SELECTs en verde» con
          `modules_installed=115`, `smtp_active=0`, `smtp_with_credentials=0`,
