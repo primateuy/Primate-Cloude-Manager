@@ -6,7 +6,7 @@ import time
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
-from .primate_cloud_destruction import durable_log
+from .primate_cloud_destruction import durable_log, exigir_primera_corrida
 
 from ..services import aws_route53
 
@@ -423,6 +423,7 @@ class PrimateCloudDnsRecord(models.Model):
         confirmación — un cron o un re-encolado no pueden fabricarlo.
         """
         self.ensure_one()
+        exigir_primera_corrida(self, _('Borrar registro DNS'))
         self._pcm_assert_not_imported("dns_delete")
         self.env["primate.cloud.destruction.ticket"].burn_job_token(
             self, "dns_delete", destruction_ticket_id, destruction_job_token)

@@ -27,7 +27,7 @@ from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm,
 from ..tools import bus, crypto, dates
 from .primate_cloud_ec2_instance import CUSTOM_ADDONS_DIR
 from .primate_cloud_instance import LEGACY_SERVICE
-from .primate_cloud_destruction import durable_log
+from .primate_cloud_destruction import durable_log, exigir_primera_corrida
 
 _logger = logging.getLogger(__name__)
 
@@ -105,6 +105,10 @@ DB_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 PRE_RESTORE_RETENTION_DAYS = 7
 
 RESTORE_LOG_DIR = "/var/tmp/pcm/logs"
+# Candado por base en el servidor (2026-10-28): un segundo restore de la
+# misma base aborta ANTES de tocar nada (montaje de bj-uat: cuatro corridas
+# simultáneas tras reinicios de PCM).
+RESTORE_LOCK_DIR = "/var/lock"
 RESTORE_TAIL_BYTES = 4000
 
 
@@ -2952,6 +2956,7 @@ class PrimateCloudEnvironment(models.Model):
         los repos del origen al ``addons_dir`` del slug.
         """
         self.ensure_one()
+        exigir_primera_corrida(self, _('Crear staging (instancia)'))
         params = self.env["primate.cloud.job.secret"].reveal(params)
         instance = self.env["primate.cloud.instance"].browse(instance_id).exists()
         if not instance:
@@ -3093,6 +3098,7 @@ class PrimateCloudEnvironment(models.Model):
         copiar la base de origen, neutralizarla y clonar los repos al mismo commit.
         """
         self.ensure_one()
+        exigir_primera_corrida(self, _('Crear staging'))
         params = self.env["primate.cloud.job.secret"].reveal(params)
         origin = self.origin_environment_id
         origin._pcm_assert_env_not_imported("staging_origin")
@@ -3176,6 +3182,7 @@ class PrimateCloudEnvironment(models.Model):
         su backup registrado.
         """
         self.ensure_one()
+        exigir_primera_corrida(self, _('Refrescar staging'))
         self._pcm_assert_env_not_imported("restore")
         params = params or {}
         origin = self.origin_environment_id
@@ -4134,6 +4141,7 @@ class PrimateCloudEnvironment(models.Model):
                 (borrar la key de origen si el restore sale bien).
         """
         self.ensure_one()
+        exigir_primera_corrida(self, _('Restaurar base'))
         params = self.env["primate.cloud.job.secret"].reveal(params)
         origen = self._restore_origen_normalizado(params)
         backup = self.env["primate.cloud.backup"].browse(
@@ -4905,6 +4913,24 @@ class PrimateCloudEnvironment(models.Model):
         ]
 
     @api.model
+    @staticmethod
+    def _restore_lineas_candado(db_name):
+        """Primeras líneas de TODO script de restore: lock exclusivo por base.
+
+        Va antes del ``trap`` y de cualquier descarga/borrado: si ya hay un
+        restore de esa base corriendo (o un hijo suyo —unzip, psql— que
+        hereda el descriptor), este aborta con exit 75 sin tocar nada.
+        """
+        lock = "%s/pcm-restore-%s.lock" % (RESTORE_LOCK_DIR, db_name)
+        msg = ("PCM_ERROR: ya hay un restore de la base %s corriendo en este "
+               "servidor (%s): no se tocó nada." % (db_name, lock))
+        return [
+            "mkdir -p %s" % shlex.quote(RESTORE_LOCK_DIR),
+            "exec 9>%s" % shlex.quote(lock),
+            "if ! flock -n 9; then echo %s; echo %s >&2; exit 75; fi"
+            % (shlex.quote(msg), shlex.quote(msg)),
+        ]
+
     def _build_restore_script_catalogo(self, db_name, backup, has_filestore,
                                        service, pg_user, data_dir, db,
                                        neutralize_sql=None):
@@ -4944,6 +4970,7 @@ class PrimateCloudEnvironment(models.Model):
         need_mb = int(max(backup.size_mb or 0, 1) * 1.5)
         lines = [
             "set -euo pipefail",
+            *self._restore_lineas_candado(db_name),
             "command -v aws >/dev/null 2>&1 || { echo \"PCM_ERROR: aws CLI no está instalado en la instancia (el install de PCM lo trae vía snap; instalalo o re-aprovisioná)\" >&2; exit 1; }",
             'FNAME="/var/tmp/pcm_restore_$$.dump"',
             'FS_TAR="/var/tmp/pcm_restore_$$.tar.gz"',
@@ -5080,6 +5107,7 @@ class PrimateCloudEnvironment(models.Model):
 
         lines = [
             "set -euo pipefail",
+            *self._restore_lineas_candado(db_name),
             "command -v aws >/dev/null 2>&1 || { echo \"PCM_ERROR: aws CLI no está instalado en la instancia (el install de PCM lo trae vía snap; instalalo o re-aprovisioná)\" >&2; exit 1; }",
             # --- Log: todo el detalle al archivo, sólo marcadores a stdout ---
             "mkdir -p %s" % shlex.quote(log_dir),

@@ -12,7 +12,7 @@ import uuid
 
 from odoo import _, SUPERUSER_ID, fields, models
 from odoo.exceptions import UserError
-from .primate_cloud_destruction import durable_log
+from .primate_cloud_destruction import durable_log, exigir_primera_corrida
 from odoo.tools import file_open
 
 from ..services import aws_base, aws_ec2, aws_ssm
@@ -1144,6 +1144,7 @@ class PrimateCloudEc2Instance(models.Model):
         primaria) — el guard de config se levantó al recablear esto.
         """
         self.ensure_one()
+        exigir_primera_corrida(self, _('Guardar odoo.conf y reiniciar'))
         target = self._panel_target(
             self.env["primate.cloud.instance"].browse(instance_id or []))
         title = _("Editar config: %s") % target.display_name
@@ -2232,6 +2233,8 @@ class PrimateCloudEc2Instance(models.Model):
         # programática), así que el guard se repite acá. Que el botón ya lo
         # valide no alcanza: invisible en la vista no es control de acceso.
         self._exigir_gestion_habilitada(action_type)
+        if action_type == "ec2_terminate":
+            exigir_primera_corrida(self, _("Terminar servidor"))
         spec = self._LIFECYCLE[action_type]
         # La IP fija se lee ANTES de terminar: después AWS la desasocia y ya
         # no se la encuentra por la instancia.

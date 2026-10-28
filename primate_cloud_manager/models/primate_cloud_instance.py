@@ -22,7 +22,7 @@ from datetime import timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
-from .primate_cloud_destruction import durable_log
+from .primate_cloud_destruction import durable_log, exigir_primera_corrida
 
 from ..services import aws_route53
 from ..tools import crypto
@@ -426,6 +426,7 @@ class PrimateCloudInstance(models.Model):
         """Job destructivo: corre el teardown por slug (D-R3.3) con drop de
         SU base, y archiva los registros. NO arranca sin el job_token."""
         self.ensure_one()
+        exigir_primera_corrida(self, _('Desmontar instancia'))
         self._pcm_assert_not_imported(_("desmontar la instancia"))
         self.env["primate.cloud.destruction.ticket"].burn_job_token(
             self, "instance_destroy",
@@ -1036,6 +1037,7 @@ class PrimateCloudInstance(models.Model):
     def job_refresh_staging_instance(self, params):
         """Job: copia la base del origen sobre este staging (pipeline B4)."""
         self.ensure_one()
+        exigir_primera_corrida(self, _('Refrescar staging (instancia)'))
         env = self.environment_id
         machine = self._machine()
         if not machine or not self.database_id:

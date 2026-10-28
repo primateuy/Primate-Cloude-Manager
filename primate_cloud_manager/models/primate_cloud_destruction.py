@@ -34,6 +34,41 @@ from odoo.exceptions import AccessError, UserError
 _logger = logging.getLogger(__name__)
 
 TICKET_TTL_MINUTES = 5
+
+
+def exigir_primera_corrida(record, accion):
+    """Los jobs que BORRAN o PISAN datos no se relanzan solos (2026-10-28).
+
+    queue_job relanza un job que encuentra «muerto» (el servidor de PCM se
+    reinició con el job adentro) o que pospuso por concurrencia, y no hay
+    ``max_retries`` que signifique «nunca». Pero el script que mandó por SSM
+    SIGUE corriendo en el servidor: el relanzamiento es una SEGUNDA corrida
+    en paralelo (montaje de bj-uat: cuatro restores simultáneos). Con esto,
+    una corrida que no es la primera (``retry`` > 0) pasa a fallida sin
+    tocar nada y lo deja en la bitácora; solo la relanza una persona
+    («Reintentar» en el job vuelve ``retry`` a 0) después de mirar el
+    servidor.
+    """
+    uuid = record.env.context.get("job_uuid")
+    if not uuid:
+        return       # llamado directo (tests, otro job): no es un relanzamiento
+    job = record.env["queue.job"].sudo().search([("uuid", "=", uuid)], limit=1)
+    if not job or not job.retry:
+        return
+    detalle = _(
+        "«%(accion)s» sobre «%(rec)s» NO se relanza automáticamente (intento "
+        "%(n)s): el anterior pudo quedar corriendo en el servidor. Revisá el "
+        "servidor y, si corresponde, relanzalo a mano con «Reintentar».",
+        accion=accion, rec=record.display_name, n=job.retry + 1)
+    durable_log(record.env, {
+        "action_type": "job_no_retry", "result": "failed",
+        "name": _("Relanzamiento automático bloqueado: %s") % accion,
+        "user_id": record.env.uid,
+        "resource_model": record._name, "resource_id": record.id,
+        "error_message": detalle,
+    })
+    from odoo.addons.queue_job.exception import FailedJobError
+    raise FailedJobError(detalle)
 GROUP_DESTRUCTIVE = "primate_cloud_manager.group_cloud_destructive"
 
 

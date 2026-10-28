@@ -14,6 +14,8 @@ from odoo.exceptions import UserError
 
 from ..tools import bus
 
+from .primate_cloud_destruction import exigir_primera_corrida
+
 _logger = logging.getLogger(__name__)
 
 # Tipos de deployment (spec 8.1).
@@ -164,6 +166,7 @@ class PrimateCloudDeployment(models.Model):
     def job_deploy(self):
         """Job: ejecuta el deploy por SSM, captura commits y log, fija el estado."""
         self.ensure_one()
+        exigir_primera_corrida(self, _('Deploy'))
         self.environment_id._pcm_assert_env_not_imported("deploy")
         self.write({"state": "running", "execution_date": fields.Datetime.now()})
         instance = self._get_target_instance()

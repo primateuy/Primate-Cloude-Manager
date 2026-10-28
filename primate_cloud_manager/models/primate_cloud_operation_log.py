@@ -34,6 +34,7 @@ ACTION_TYPES = [
     ("ssl_delete", "Borrar certificado HTTPS"),
     ("destruction_flow", "Confirmación destructiva (3 pasos)"),
     ("readonly_block", "Bloqueo de solo lectura (importado)"),
+    ("job_no_retry", "Relanzamiento automático bloqueado"),
     ("instance_teardown", "Desmontar instancia Odoo (triple confirmación)"),
     ("provision", "Aprovisionar entorno"),
     ("server_bootstrap", "Bootstrap multi-Odoo del servidor"),
