@@ -339,6 +339,12 @@ class TestHttpsSsl(TransactionCase):
             odoo_sh = handle.read()
         self.assertNotIn("certbot --nginx", odoo_sh)
         self.assertIn("X-Forwarded-Host", odoo_sh)
+        # El install legacy (staging) también cierra el administrador de
+        # bases: conf con dbfilter + list_db y nginx con 404.
+        self.assertIn("dbfilter = ^${DB_NAME}\\$", odoo_sh)
+        self.assertIn("list_db = False", odoo_sh)
+        self.assertIn("location ^~ /web/database", odoo_sh)
+        self.assertNotIn("db_filter", odoo_sh + instance_sh)
         with file_open(env_mod.BOOTSTRAP_SCRIPT_PATH) as handle:
             bootstrap_sh = handle.read()
         self.assertIn("dnsutils", bootstrap_sh)

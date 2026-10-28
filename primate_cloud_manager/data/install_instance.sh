@@ -155,7 +155,7 @@ db_port = %%DB_PORT%%
 db_user = %%PG_USER%%
 db_password = %%PG_PASSWORD%%
 db_name = %%DB_NAME%%
-db_filter = ^%%DB_NAME%%$
+dbfilter = ^%%DB_NAME%%$
 list_db = False
 http_port = %%HTTP_PORT%%
 gevent_port = %%GEVENT_PORT%%
@@ -204,6 +204,10 @@ if [ "${IS_DEFAULT}" = "1" ]; then
 server {
     listen 80 default_server;
     server_name %%DOMAIN%% _;
+    # El administrador de bases NO se publica (además de list_db = False).
+    location ^~ /web/database {
+        return 404;
+    }
     location /websocket {
         proxy_pass http://127.0.0.1:%%GEVENT_PORT%%;
         proxy_set_header Upgrade $http_upgrade;
@@ -225,6 +229,10 @@ else
 server {
     listen 80;
     server_name %%DOMAIN%%;
+    # El administrador de bases NO se publica (además de list_db = False).
+    location ^~ /web/database {
+        return 404;
+    }
     location /websocket {
         proxy_pass http://127.0.0.1:%%GEVENT_PORT%%;
         proxy_set_header Upgrade $http_upgrade;

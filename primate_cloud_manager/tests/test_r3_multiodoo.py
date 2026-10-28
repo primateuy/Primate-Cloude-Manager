@@ -102,6 +102,33 @@ class TestR3Scripts(TransactionCase):
     # ------------------------------------------------------------------
     # EL golden crítico del recableo: aislamiento multi-tenant por conf.
     # ------------------------------------------------------------------
+    def test_conf_solo_usa_opciones_que_odoo_reconoce(self):
+        """Cada clave del odoo.conf generado tiene que ser una opción REAL de
+        Odoo: una clave mal escrita se ignora sin error (pasó con
+        ``db_filter``; el aislamiento por base no estaba activo)."""
+        from odoo.tools import config
+        script = self.server._build_instance_install_script(
+            self.inst_a, self._params("cliente_a_db"), is_default=True)
+        conf = self._conf_block(script, self.inst_a.slug)
+        claves = [l.split("=", 1)[0].strip() for l in conf.splitlines()
+                  if "=" in l and not l.startswith(("[", "#", ";"))]
+        self.assertIn("dbfilter", claves)
+        desconocidas = [c for c in claves if c not in config.options]
+        self.assertEqual(desconocidas, [], "claves que Odoo ignora: %s"
+                         % desconocidas)
+
+    def test_nginx_no_publica_el_administrador_de_bases(self):
+        """/web/database/* → 404 en nginx (además de list_db = False), en los
+        dos vhosts del install y en el del cambio de dominio."""
+        for default in (True, False):
+            script = self.server._build_instance_install_script(
+                self.inst_a, self._params("cliente_a_db"), is_default=default)
+            sitio = script[script.index("# --- 7. Sitio nginx"):]
+            self.assertIn("location ^~ /web/database {\n        return 404;",
+                          sitio)
+        vhost = type(self.server)._instance_vhost(self.inst_a, "a.pcm.test")
+        self.assertIn("location ^~ /web/database {\n        return 404;", vhost)
+
     def test_conf_real_aisla_multitenant_cada_instancia(self):
         """El conf REAL de CADA instancia lleva el candado db_filter+list_db.
 
@@ -114,8 +141,11 @@ class TestR3Scripts(TransactionCase):
             script = self.server._build_instance_install_script(
                 instance, self._params(db_name), is_default=False)
             conf = self._conf_block(script, instance.slug)
-            self.assertIn("db_filter = ^%s$" % db_name, conf,
-                          "db_filter EXACTO ausente para %s" % instance.slug)
+            self.assertIn("dbfilter = ^%s$" % db_name, conf,
+                          "dbfilter EXACTO ausente para %s" % instance.slug)
+            # Odoo lee «dbfilter»: «db_filter» se ignora EN SILENCIO (el
+            # golden viejo exigía esa clave y pasaba en verde con el bug).
+            self.assertNotIn("db_filter", conf)
             self.assertIn("list_db = False", conf,
                           "list_db = False ausente para %s" % instance.slug)
             self.assertIn("db_name = %s" % db_name, conf)
@@ -659,7 +689,7 @@ class TestR3B2Cadena(TransactionCase):
         install = fake.calls[1]["script"]
         primaria = self.server.primary_instance_id
         self.assertIn('SLUG="%s"' % primaria.slug, install)
-        self.assertIn("db_filter = ^forum$", install)
+        self.assertIn("dbfilter = ^forum$", install)
         self.assertIn('IS_DEFAULT="1"', install)  # primera instancia
         # La instancia quedó MATERIALIZADA en el layout por slug.
         self.assertEqual(primaria.state, "active")

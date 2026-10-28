@@ -925,7 +925,8 @@ class PrimateCloudEnvironment(models.Model):
         db_name con charset seguro, puertos enteros, contraseña PG con el
         charset de token_urlsafe (sin comillas → el CREATE USER inline no es
         inyectable). El conf resultante lleva SIEMPRE el candado multi-tenant
-        (db_filter = ^db$ + list_db = False) — fijado por golden.
+        (dbfilter = ^db$ + list_db = False) — fijado por golden. OJO: la
+        opción de Odoo es ``dbfilter``; ``db_filter`` se ignora en silencio.
 
         Args:
             instance (recordset): la primate.cloud.instance a montar.
@@ -2464,6 +2465,9 @@ class PrimateCloudEnvironment(models.Model):
             "server {\n"
             "    listen 80;\n"
             "    server_name %(domain)s;\n"
+            "    location ^~ /web/database {\n"
+            "        return 404;\n"
+            "    }\n"
             "    location /websocket {\n"
             "        proxy_pass http://127.0.0.1:%(gevent)s;\n"
             "        proxy_set_header Upgrade $http_upgrade;\n"

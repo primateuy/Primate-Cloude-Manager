@@ -91,6 +91,8 @@ db_port = ${DB_PORT}
 db_user = ${DB_USER}
 db_password = ${DB_PASSWORD}
 db_name = ${DB_NAME}
+dbfilter = ^${DB_NAME}\$
+list_db = False
 addons_path = ${ODOO_HOME}/odoo/addons,${ODOO_HOME}/custom-addons
 logfile = /var/log/odoo/odoo.log
 proxy_mode = True
@@ -124,6 +126,10 @@ cat > "/etc/nginx/sites-available/${DOMAIN}" <<NGINX
 server {
     listen 80 default_server;
     server_name ${DOMAIN} _;
+    # El administrador de bases NO se publica (además de list_db = False).
+    location ^~ /web/database {
+        return 404;
+    }
     location / {
         proxy_pass http://127.0.0.1:8069;
         proxy_set_header Host \$host;
