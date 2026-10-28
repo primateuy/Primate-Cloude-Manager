@@ -375,6 +375,34 @@ class TestDominioDefinitivo(TransactionCase):
             with self.assertRaises(UserError):
                 wiz.action_confirm()
 
+    def test_crear_dns_propone_el_subdominio_y_no_sale_de_el(self):
+        P = self.env["ir.config_parameter"].sudo()
+        P.set_param("pcm.route53_default_zone_id", "Z0ZONA")
+        P.set_param("pcm.route53_default_domain_suffix", "erp.primateuy.com")
+        Wiz = self.env["primate.cloud.domain.wizard"].with_context(
+            default_instance_id=self.inst.id, default_mode="route53")
+        d = Wiz.default_get(["domain", "hosted_zone_id", "mode", "instance_id"])
+        self.assertEqual(d["domain"], "ensayo.erp.primateuy.com")
+        self.assertEqual(d["hosted_zone_id"], "Z0ZONA")
+        # El camino manual no propone nada (el dominio puede ser cualquiera).
+        dm = Wiz.with_context(default_mode="manual").default_get(["domain"])
+        self.assertFalse(dm.get("domain"))
+        # Un nombre fuera del subdominio frena ANTES de tocar nada.
+        wiz = Wiz.create({"domain": "barracajulia.otra-zona.com"})
+        with mock.patch.object(type(self.server), "_check_hosted_zone") as chk, \
+                mock.patch.object(type(self.inst), "with_delay") as delay:
+            with self.assertRaises(UserError) as ctx:
+                wiz.action_confirm()
+        self.assertIn("erp.primateuy.com", str(ctx.exception))
+        chk.assert_not_called()
+        delay.assert_not_called()
+        # Uno adentro del subdominio sí encola.
+        wiz = Wiz.create({"domain": "barracajuliav19.erp.primateuy.com"})
+        with mock.patch.object(type(self.server), "_check_hosted_zone"), \
+                mock.patch.object(type(self.inst), "with_delay") as delay:
+            wiz.action_confirm()
+        delay.assert_called_once()
+
     # ======================================================= camino PCM
     def test_pcm_crea_registro_espera_insync_y_cambia(self):
         fake = FakeSsm(respuestas(

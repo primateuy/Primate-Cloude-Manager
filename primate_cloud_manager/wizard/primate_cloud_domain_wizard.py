@@ -22,6 +22,9 @@ _logger = logging.getLogger(__name__)
 
 DOMAIN_RE = re.compile(
     r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+# Subdominio por defecto de «Crear DNS ahora» (2026-10-28): el permiso de
+# Route 53 del stack (NombresDns) solo alcanza a *.<sufijo>.
+SUFFIX_PARAM = "pcm.route53_default_domain_suffix"
 RESERVED_SUFFIXES = (".local", ".invalid", ".localhost", ".test", ".example",
                      ".internal", ".lan")
 
@@ -47,6 +50,22 @@ class PrimateCloudDomainWizard(models.TransientModel):
         string="Dominio actual", related="instance_id.main_url")
     server_ip = fields.Char(string="IP del servidor",
                             compute="_compute_server_ip")
+
+    @api.model
+    def default_get(self, fields_list):
+        """Con «Crear DNS ahora» propone ``<slug>.<sufijo por defecto>``."""
+        res = super().default_get(fields_list)
+        suffix = self._default_suffix()
+        if (res.get("mode") == "route53" and suffix and not res.get("domain")
+                and res.get("instance_id")):
+            inst = self.env["primate.cloud.instance"].browse(res["instance_id"])
+            if inst.slug:
+                res["domain"] = "%s.%s" % (inst.slug, suffix)
+        return res
+
+    def _default_suffix(self):
+        return (self.env["ir.config_parameter"].sudo().get_param(SUFFIX_PARAM)
+                or "").strip().lower().strip(".")
 
     @api.depends("instance_id")
     def _compute_server_ip(self):
@@ -96,6 +115,13 @@ class PrimateCloudDomainWizard(models.TransientModel):
             zone = (self.hosted_zone_id or "").strip()
             if not zone:
                 raise UserError(_("Falta el Hosted Zone ID."))
+            suffix = self._default_suffix()
+            if suffix and not domain.endswith("." + suffix):
+                raise UserError(_(
+                    "PCM solo puede crear registros dentro de %(s)s (el "
+                    "permiso de Route 53 del stack alcanza a *.%(s)s): "
+                    "«%(d)s» queda afuera. No se cambió nada.",
+                    s=suffix, d=domain))
             instance.environment_id._check_hosted_zone(
                 instance.account_id, zone)
             instance._domain_switch_start(domain)
