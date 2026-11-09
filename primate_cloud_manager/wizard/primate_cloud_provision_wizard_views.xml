@@ -46,6 +46,7 @@
                                             string="Resolver AMI" class="btn-secondary"/>
                                 </div>
                                 <field name="disk_size_gb"/>
+                                <field name="pcm_profile"/>
                             </group>
                             <!-- Red: solo admin. El usuario final no la ve; el
                                  discovery la completa. Un valor acá (override del

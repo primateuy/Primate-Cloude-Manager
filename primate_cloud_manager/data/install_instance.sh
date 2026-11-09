@@ -21,6 +21,10 @@
 #   %%DOMAIN%%          dominio de la instancia
 #   %%ADMIN_PASSWORD%%  admin_passwd del conf
 #   %%IS_DEFAULT%%      "1" solo para la primera instancia (default_server)
+#   %%PCM_PROFILE%%     "1" si la instancia hospeda un PCM (perfil reutilizable):
+#                       pip extra en el venv del runtime, conf con jobrunner de
+#                       queue_job + jobs largos, y clave Fernet generada EN el
+#                       servidor (EnvironmentFile; nunca pasa por stdout/SSM).
 #
 set -euo pipefail
 
@@ -28,6 +32,7 @@ SLUG="%%SLUG%%"
 ODOO_VERSION="%%ODOO_VERSION%%"
 DB_LOCAL="%%DB_LOCAL%%"
 IS_DEFAULT="%%IS_DEFAULT%%"
+PCM_PROFILE="%%PCM_PROFILE%%"
 
 ODOO_USER="odoo"
 PCM_ROOT="/opt/pcm"
@@ -47,6 +52,7 @@ CREATED_UNIT=0
 CREATED_SITE=0
 CREATED_DIRS=0
 CREATED_USER=0
+CREATED_ENV=0
 DB_WAS_ABSENT=0
 
 rollback() {
@@ -73,6 +79,11 @@ rollback() {
     if [ "${CREATED_DIRS}" = "1" ]; then
         rm -rf "${INST_DIR}"
         rm -f "${CONF}" "${LOGROTATE}"
+    fi
+    # El env file (clave Fernet) solo se borra si nació en ESTA corrida: una
+    # clave preexistente puede tener credenciales reales cifradas detrás.
+    if [ "${CREATED_ENV}" = "1" ]; then
+        rm -f "/etc/odoo/${SLUG}.env"
     fi
     echo "PCM_ROLLBACK_DONE"
     exit 1
@@ -132,6 +143,16 @@ RUNTIME_LOG="/var/log/pcm-runtime-odoo-${ODOO_VERSION}.log"
     fi
 ) 9>"${PCM_ROOT}/runtime/.lock-${ODOO_VERSION}"
 
+# --- 3b. Perfil PCM: dependencias Python de PCM en el venv del runtime -------
+#     Idempotente y fuera del lock del runtime: corre también cuando el
+#     runtime ya existía (pip resuelve "ya instalado" en segundos).
+if [ "${PCM_PROFILE}" = "1" ]; then
+    log "Perfil PCM: instalando dependencias Python (detalle en ${RUNTIME_LOG})…"
+    sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/pip" install \
+        boto3 botocore paramiko cryptography PyGithub \
+        >>"${RUNTIME_LOG}" 2>&1
+fi
+
 # --- 4. Credencial PostgreSQL PROPIA (D-R3.10; jamás se loguea) ---------------
 if [ "${DB_LOCAL}" = "1" ]; then
     if ! sudo -u postgres psql -tc \
@@ -165,8 +186,58 @@ addons_path = /opt/pcm/runtime/odoo-%%ODOO_VERSION%%/src/addons,/opt/pcm/instanc
 logfile = /opt/pcm/instances/%%SLUG%%/log/odoo.log
 proxy_mode = True
 CONF
+
+# Perfil PCM: jobrunner de queue_job + jobs largos (lección bj-uat: con el
+# limit_time_real default Odoo se reinicia a mitad de un restore y queue_job
+# lo relanza). Las claves sueltas siguen bajo [options]; [queue_job] va al
+# final a propósito.
+if [ "${PCM_PROFILE}" = "1" ]; then
+    cat >> "${CONF}" <<'CONFPCM'
+server_wide_modules = base,web,queue_job
+limit_time_real = 14400
+limit_time_real_cron = -1
+max_cron_threads = 2
+
+[queue_job]
+channels = root:2
+CONFPCM
+fi
 chown "${ODOO_USER}:${ODOO_USER}" "${CONF}" "${INST_DIR}" -R
 chmod 640 "${CONF}"
+
+# --- 5b. Perfil PCM: queue_job ANTES del primer arranque ----------------------
+#     El conf del perfil lleva server_wide_modules = base,web,queue_job: sin el
+#     módulo en el addons_path, Odoo no arranca y el health check de abajo
+#     fallaría siempre. El clone es del repo PÚBLICO de OCA; el módulo entra
+#     como symlink al tope del addons dir (los módulos se cargan de PRIMER
+#     nivel, mismo criterio que el deploy del companion).
+if [ "${PCM_PROFILE}" = "1" ]; then
+    log "Perfil PCM: clonando OCA queue_job ${ODOO_VERSION}.0 (detalle en ${RUNTIME_LOG})…"
+    sudo -u "${ODOO_USER}" mkdir -p "${INST_DIR}/repos"
+    sudo -u "${ODOO_USER}" git clone --depth 1 --branch "${ODOO_VERSION}.0" \
+        https://github.com/OCA/queue "${INST_DIR}/repos/oca-queue" \
+        >>"${RUNTIME_LOG}" 2>&1
+    sudo -u "${ODOO_USER}" ln -s "../repos/oca-queue/queue_job" \
+        "${INST_DIR}/addons/queue_job"
+fi
+
+# --- 5c. Perfil PCM: clave Fernet propia, generada EN el servidor -------------
+#     La clave NO pasa por stdout ni por el comando SSM (historial ~30 días):
+#     se genera acá y aterriza directo en el env file (root:odoo, 640) que la
+#     unit carga vía EnvironmentFile. Si el archivo ya existe, NO se pisa
+#     (puede tener credenciales reales cifradas detrás).
+ENVF="/etc/odoo/${SLUG}.env"
+if [ "${PCM_PROFILE}" = "1" ] && [ ! -f "${ENVF}" ]; then
+    umask 077
+    printf 'PRIMATE_CLOUD_FERNET_KEY=%s\n' \
+        "$("${RUNTIME}/venv/bin/python3" -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
+        > "${ENVF}"
+    umask 022
+    chown root:"${ODOO_USER}" "${ENVF}"
+    chmod 640 "${ENVF}"
+    CREATED_ENV=1
+    log "Perfil PCM: clave de cifrado generada en ${ENVF} (no viaja por SSM)."
+fi
 
 cat > "${LOGROTATE}" <<'ROTATE'
 /opt/pcm/instances/%%SLUG%%/log/odoo.log {
@@ -188,6 +259,9 @@ After=network.target postgresql.service
 [Service]
 Type=simple
 User=odoo
+# El «-» hace opcional el env file: solo existe con el perfil PCM (clave
+# Fernet); en el resto de las instancias la línea es inocua.
+EnvironmentFile=-/etc/odoo/%%SLUG%%.env
 ExecStart=/opt/pcm/runtime/odoo-%%ODOO_VERSION%%/venv/bin/python3 /opt/pcm/runtime/odoo-%%ODOO_VERSION%%/src/odoo-bin -c /etc/odoo/%%SLUG%%.conf
 Restart=on-failure
 

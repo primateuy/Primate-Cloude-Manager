@@ -90,10 +90,21 @@ vistas, 2 crons de `ai`). Verificado por `ir_model_data` sobre una copia.
 | Clave Fernet por entorno | la unit no soporta env vars | `EnvironmentFile=/etc/odoo/<slug>.env` con `PRIMATE_CLOUD_FERNET_KEY` | agregar a la unit del script |
 | Repos addons | — | OCA `queue_job` (público) + `primate_cloud_manager` (privado) | como `primate.cloud.repository` de la instancia (flujo existente) |
 
-**Recomendación:** cambio chico en `install_instance.sh` (tokens opcionales
-`%%EXTRA_PIP%%`, `%%EXTRA_CONF%%`, `EnvironmentFile` condicional) + checkbox
-«Perfil PCM» en el wizard, con goldens actualizados. Alternativa sin código: 4
-comandos post-montaje por «Ejecutar comando». **A decidir antes del ensayo.**
+**DECIDIDO E IMPLEMENTADO (2026-11-09, OK de Daryl):** checkbox **«Perfil PCM
+(hospeda un PCM)»** en los wizards de aprovisionar y de agregar instancia
+(backend + forms OWL), token `%%PCM_PROFILE%%` en `install_instance.sh`:
+pip extra en el venv del runtime, bloque de conf (`server_wide_modules`,
+`limit_time_real = 14400`, `max_cron_threads = 2`, `[queue_job] channels`),
+`workers = 2` por defecto del perfil (un valor explícito manda), y **clave
+Fernet generada EN el servidor** → `/etc/odoo/<slug>.env` (root:odoo 640,
+jamás por stdout/SSM) cargada por `EnvironmentFile=-` en la unit (línea
+inocua sin perfil). Además el perfil **clona OCA `queue_job` (público, rama
+`<versión>.0`) ANTES del primer arranque** — con `server_wide_modules =
+queue_job` en el conf, sin el módulo en el path Odoo no arranca y el health
+check del install moriría siempre; entra como symlink al tope del addons dir
+(los módulos cargan de primer nivel, criterio del deploy del companion).
+Reutilizable para futuros servidores de PCM; se recuerda al reintentar
+(config persistida). Goldens en `tests/test_perfil_pcm.py`.
 
 ### Comparación con `pcm_produccion.conf` de la Mac
 
@@ -114,11 +125,11 @@ montaje ya lo pone), rutas `/opt/pcm/instances/<slug>/...`, logfile propio.
 - **Caveat:** el script SSM lleva el token en **base64 inline** → legible
   (decodificable) en el historial de comandos SSM de la cuenta ~30 días. Mismo
   pendiente conocido del `admin_passwd` de bj-uat (BACKLOG «secretos por comando SSM»).
-- **Recomendación:** fine-grained PAT de GitHub, **solo lectura**, limitado al repo
-  `primate_cloud_manager`, con vencimiento (90 días) y renovación anotada. Riesgo
-  residual bajo: quien lee el historial SSM ya es admin de la cuenta. La deploy key
-  SSH es una alternativa válida pero exige reescribir el clone a `ssh://` +
-  known_hosts; el camino PAT ya está construido y testeado.
+- **DECIDIDO (Daryl, 2026-11-09):** fine-grained PAT de GitHub, **solo lectura**,
+  limitado al repo, con vencimiento **corto (7 días)**, usado SOLO para el clone del
+  montaje y **revocado apenas el clone termina** (paso del runbook). Para las
+  actualizaciones futuras de código: **deploy key SSH generada en el servidor**
+  (la privada nunca sale; la pública se carga a mano en GitHub) — en BACKLOG.
 - **Hardening futuro (opcional, mismo backlog):** pasar secretos por S3
   presigned / SSM Parameter Store en lugar de inline (cubriría también `admin_passwd`).
 
@@ -147,11 +158,11 @@ montaje ya lo pone), rutas `/opt/pcm/instances/<slug>/...`, logfile propio.
 
 Coincide con tu preferencia. Procedimiento exacto:
 
-1. **Antes del primer arranque post-restore**: generar clave en el server
-   (`.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`),
-   escribirla en `/etc/odoo/pcm-self.env` → `PRIMATE_CLOUD_FERNET_KEY=...`
-   (root:odoo, 640), `EnvironmentFile=` en la unit, `daemon-reload`. Así el fallback
-   de `_get_encryption_key()` **nunca** genera una clave dentro de la base.
+1. **La hace el montaje** (perfil PCM, implementado): la clave se genera EN el
+   servidor durante `install_instance.sh` → `/etc/odoo/<slug>.env` (root:odoo 640,
+   nunca por stdout/SSM) y la unit la carga por `EnvironmentFile`. Así el fallback
+   de `_get_encryption_key()` **nunca** genera una clave dentro de la base. Solo
+   verificar en F4 que el env file existe y que la base no tiene el parámetro.
 2. Arrancar: los blobs viejos no descifran → `decrypt()` devuelve `False` (no
    revienta): cuentas sin credenciales, token de repo vacío.
 3. **Recargás a mano por UI** (vos, Claude no las toca): secret de `pcm-prod-ro` y
@@ -206,12 +217,23 @@ Coincide con tu preferencia. Procedimiento exacto:
   feature entra después del corte, con calma.
 - **Backups diarios de la base de PCM:** la política gestionada existente sirve tal
   cual (cron «ejecutar backups gestionados» + «marcar backups expirados»). Bucket
-  `pcm-backups-512060111009` se crea A MANO según RUNBOOK_ONBOARDING (PCM no crea
-  buckets, decisión fija) con lifecycle de retención. **Permisos: alcanzan** — la
-  política del rol del servidor ya da `s3:PutObject/GetObject` sobre `pcm-*/*` y el
-  usuario de PCM tiene `Get/PutLifecycleConfiguration` sobre `pcm-*` (runbook §S3).
-  Nota fina: PCM-self se respalda a sí mismo (permitido); solo el RESTORE sobre sí
-  está bloqueado.
+  `pcm-backups-<ACCOUNT_ID>` se crea A MANO (PCM no crea buckets, decisión fija).
+  **Configuración exacta para crearlo en la consola** (igual criterio que el
+  runbook de onboarding):
+  - Nombre `pcm-backups-512060111009` · Región **us-east-1** (la misma del server).
+  - Object Ownership: **ACLs disabled (bucket owner enforced)**.
+  - **Block *all* public access: ON** (las cuatro casillas).
+  - Versioning: **desactivado** (la retención la maneja el lifecycle; versionar
+    duplicaría el costo sin sumar).
+  - Cifrado: **SSE-S3 (AES-256)**, bucket key default.
+  - Lifecycle rule `pcm-retencion-30d`, alcance todo el bucket:
+    **Expire current versions: 30 días** + **Delete incomplete multipart uploads: 7
+    días**. (El 30 tiene que coincidir con `expected_retention_days` de la política
+    en PCM.)
+  **Permisos: alcanzan** — la política del rol del servidor ya da
+  `s3:PutObject/GetObject` sobre `pcm-*/*` y el usuario de PCM tiene
+  `Get/PutLifecycleConfiguration` sobre `pcm-*` (runbook §S3). Nota fina: PCM-self
+  se respalda a sí mismo (permitido); solo el RESTORE sobre sí está bloqueado.
 
 ---
 
@@ -278,11 +300,17 @@ Con `pcm_demo` (cuenta sandbox «Personal Prueba Real»):
 ## F0 — Prerrequisitos (días antes)
 
 - [ ] Ensayo sandbox (punto 9) completado con video revisado.
-- [ ] Servidor `pcm-self` montado en la cuenta real (config del punto 8), con perfil
-      PCM aplicado y `https://pcm.erp.primateuy.com` activo (sslip → DNS → cert).
-- [ ] Repos clonados en la instancia (queue_job + primate_cloud_manager @ 19.0).
-- [ ] Bucket `pcm-backups-512060111009` creado con lifecycle (runbook onboarding).
-- [ ] Clave Fernet NUEVA instalada (`/etc/odoo/pcm-self.env` + EnvironmentFile, F4.1).
+- [ ] PAT fine-grained **solo lectura, solo el repo, vencimiento 7 días** creado por
+      Daryl y cargado en el registro del repo en PCM (para el clone del montaje).
+- [ ] Servidor `pcm-self` montado en la cuenta real (config del punto 8), con
+      **Perfil PCM** tildado (pip extra + conf + clave Fernet generada en el server,
+      todo automático) y `https://pcm.erp.primateuy.com` activo (sslip → DNS → cert).
+- [ ] Repo `primate_cloud_manager` clonado en la instancia (queue_job ya lo dejó
+      el perfil en el montaje; verificar el symlink en el addons dir).
+- [ ] **Revocar el PAT en GitHub apenas el clone termine** (aunque le queden días).
+- [ ] Bucket `pcm-backups-512060111009` creado con la config exacta del punto 6
+      (us-east-1, privado, SSE-S3, lifecycle 30 días + multipart 7 días).
+- [ ] Verificar que `/etc/odoo/pcm-self.env` existe con la clave (lo dejó el perfil).
 - [ ] Access keys IAM nuevas creadas para `pcm-prod-ro` y `pcm-prod-prov`
       (sin cargar en ningún lado todavía).
 - [ ] En la Mac: desinstalados los 13 módulos Enterprise (punto 0.c) con `-u` y
@@ -310,13 +338,19 @@ Con `pcm_demo` (cuenta sandbox «Personal Prueba Real»):
 
 ## F4 — Despertar y verificar el PCM nuevo (checklist en verde ANTES de apagar nada)
 
-- [ ] (hecho en F0) clave Fernet nueva por env var; confirmar que la base NO tiene
-      `primate_cloud_manager.fernet_key` en parámetros.
+- [ ] (la dejó el perfil en F0) clave Fernet por env var; confirmar que la base NO
+      tiene `primate_cloud_manager.fernet_key` en parámetros.
 - [ ] Post-restore: `web.base.url = https://pcm.erp.primateuy.com` +
       `web.base.url.freeze`, `report.url` local.
-- [ ] Login admin (2FA) por el dominio nuevo.
+- [ ] **2FA ANTES que los secretos**: login admin por el dominio nuevo y verificar
+      que TODOS los usuarios admin tienen TOTP/passkey ACTIVOS (el dump los trae;
+      confirmar que siguen operativos en el dominio nuevo). Recién con el 2FA en
+      verde se cargan credenciales — el servidor no queda nunca accesible con keys
+      cargadas y login a contraseña sola.
 - [ ] Cargar credenciales: keys IAM **NUEVAS** en pcm-prod-ro / pcm-prod-prov +
-      «Validar conexión» (ARN esperado en verde); PAT del repo privado.
+      «Validar conexión» (ARN esperado en verde). El repo privado queda SIN token
+      (el PAT ya fue revocado): las actualizaciones de código van por la deploy
+      key SSH del BACKLOG.
 - [ ] Marcar `is_self` en la instancia pcm-self → botones destructivos desaparecen;
       probar un stop → bloqueado y en bitácora.
 - [ ] Sync AWS manual OK (servidores listados, bj-uat visible).

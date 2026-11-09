@@ -80,12 +80,18 @@
                                t-on-input="(ev) => this.onInput('domain', ev)"/>
                     </PcmField>
                     <PcmField label="'Workers'"
-                              help="'0 = threaded (default multi-Odoo). Subir solo con RAM de sobra.'">
+                              help="'0 = threaded (default multi-Odoo). Subir solo con RAM de sobra. Con Perfil PCM, 0 se toma como sin dato y el montaje usa 2.'">
                         <input class="o_pcm_input o_pcm_input_narrow" type="number" min="0"
                                t-att-value="state.workers"
                                t-on-input="(ev) => this.onIntInput('workers', ev)"/>
                     </PcmField>
                 </div>
+
+                <label class="o_pcm_form_check">
+                    <input type="checkbox" t-att-checked="state.pcm_profile"
+                           t-on-change="(ev) => { state.pcm_profile = ev.target.checked; }"/>
+                    <span>Perfil PCM: la instancia hospeda un Primate Cloud Manager (pip extra, jobrunner de queue_job, jobs largos y clave de cifrado generada en el servidor)</span>
+                </label>
 
                 <div class="o_pcm_form_row">
                     <PcmField label="'Nombre de la base'" required="true"

@@ -959,13 +959,22 @@ class PrimateCloudEnvironment(models.Model):
             raise UserError(_("Usuario PG inválido: %r.") % pg_user)
         if not instance.odoo_version:
             raise UserError(_("La instancia no tiene versión de Odoo."))
+        # Perfil PCM (mudanza 2026-11, reutilizable): pip extra + conf con
+        # jobrunner/jobs largos + clave Fernet generada en el servidor. Un
+        # workers explícito se respeta; sin dato, el perfil arranca con 2
+        # (Linux convive bien con el jobrunner; el 0 era el default multi-Odoo).
+        pcm_profile = bool(params.get("pcm_profile"))
+        workers = params.get("workers")
+        if workers in (None, False, ""):
+            workers = 2 if pcm_profile else 0
         return self._render_script_template(INSTANCE_INSTALL_SCRIPT_PATH, {
             "SLUG": slug,
             "ODOO_VERSION": instance.odoo_version,
             "ODOO_EDITION": instance.odoo_edition or "community",
             "HTTP_PORT": int(instance.http_port),
             "GEVENT_PORT": int(instance.gevent_port),
-            "WORKERS": int(params.get("workers") or 0),
+            "WORKERS": int(workers),
+            "PCM_PROFILE": "1" if pcm_profile else "0",
             "DB_HOST": params.get("db_host") or "localhost",
             "DB_PORT": int(params.get("db_port") or 5432),
             "DB_NAME": db_name,

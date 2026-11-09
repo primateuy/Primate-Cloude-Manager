@@ -452,3 +452,13 @@ Odoo frenado hasta el restore limpio. Antes, la instalación también se había 
   dedicado). Queda como **verificación diferida** al primer uso real: confirmar en vivo que el
   clone entra, el `addons_path` retroactivo se activa vía B3 y Odoo carga el módulo. NO registrar
   como "validado". (El rollback del que B4 depende — B3 config — SÍ se validó en vivo.)
+
+## MUDANZA PCM SELF — deploy key SSH para actualizaciones de código (2026-11-09)
+
+- **Deploy key SSH generada EN el servidor de PCM** para las actualizaciones futuras del
+  código de `primate_cloud_manager` (git pull): el par se genera en el server (la privada
+  NUNCA sale de ahí), la pública la carga Daryl a mano en GitHub → Settings del repo →
+  Deploy keys (solo lectura). Reemplaza al PAT para el día a día: el PAT fine-grained de
+  7 días queda SOLO para el clone inicial del montaje y se revoca apenas termina (paso del
+  runbook de mudanza). Implica: cambiar el remote del clone a `ssh://` en el server +
+  known_hosts de github.com fijado (no TOFU). Diseñar cuando el PCM self esté operativo.

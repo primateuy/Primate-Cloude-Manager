@@ -26,6 +26,8 @@ PERSISTED_FIELDS = [
     # «Emitir HTTPS al terminar» también se recuerda: un montaje con dominio
     # provisorio (después pasa a sslip.io) se deja preparado con HTTPS apagado.
     "ssl_auto", "sslip_domain",
+    # Perfil PCM (mudanza 2026-11): reutilizable para futuros servidores de PCM.
+    "pcm_profile",
 ]
 
 
@@ -51,6 +53,14 @@ class PrimateCloudProvisionWizard(models.TransientModel):
     instance_name = fields.Char(string="Nombre de la instancia")
     instance_type = fields.Char(string="Tipo de instancia", required=True, default="t3.medium")
     os_type = fields.Selection(OS_TYPES, string="Sistema operativo", default="ubuntu_24")
+    pcm_profile = fields.Boolean(
+        string="Perfil PCM (hospeda un PCM)",
+        help="La instancia va a hospedar un Primate Cloud Manager: instala las "
+             "dependencias Python de PCM en el venv, configura el jobrunner de "
+             "queue_job con jobs largos (limit_time_real=14400) y genera la "
+             "clave de cifrado de credenciales EN el servidor (nunca viaja "
+             "por SSM). Reutilizable para futuros servidores de PCM.",
+    )
     image_id = fields.Char(
         string="AMI",
         help="ID de la AMI base (ami-...). Si lo dejás vacío, se resuelve "
@@ -236,6 +246,7 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             "ttl": self.ttl,
             # Odoo
             "admin_password": self.admin_password,
+            "pcm_profile": self.pcm_profile,
         }
 
     @api.onchange("image_id")

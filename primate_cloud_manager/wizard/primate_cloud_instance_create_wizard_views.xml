@@ -24,6 +24,7 @@
                         <field name="odoo_edition"/>
                         <field name="domain"/>
                         <field name="workers"/>
+                        <field name="pcm_profile"/>
                     </group>
                 </group>
                 <group>

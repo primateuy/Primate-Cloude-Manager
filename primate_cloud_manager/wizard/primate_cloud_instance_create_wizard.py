@@ -71,7 +71,15 @@ class PrimateCloudInstanceCreateWizard(models.TransientModel):
     workers = fields.Integer(
         string="Workers", default=0,
         help="0 = threaded (default multi-Odoo, D-R3.6). Subir solo con RAM "
-             "de sobra.",
+             "de sobra. Con «Perfil PCM», 0 se toma como «sin dato» y el "
+             "montaje usa 2 (el jobrunner en Linux convive bien con workers).",
+    )
+    pcm_profile = fields.Boolean(
+        string="Perfil PCM (hospeda un PCM)",
+        help="La instancia va a hospedar un Primate Cloud Manager: pip extra "
+             "en el venv, jobrunner de queue_job + jobs largos en el conf y "
+             "clave de cifrado generada EN el servidor. Reutilizable para "
+             "futuros servidores de PCM.",
     )
     create_dns = fields.Boolean(string="Crear registro DNS")
     ssl_auto = fields.Boolean(
@@ -189,6 +197,7 @@ class PrimateCloudInstanceCreateWizard(models.TransientModel):
             "domain": self.domain,
             "admin_password": self.admin_password,
             "workers": self.workers,
+            "pcm_profile": self.pcm_profile,
             "create_dns": self.create_dns,
             "ssl_auto": self.ssl_auto,
             "hosted_zone_id": self.hosted_zone_id,

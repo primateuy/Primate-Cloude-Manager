@@ -109,6 +109,12 @@
                         </PcmField>
                     </div>
 
+                    <label class="o_pcm_form_check">
+                        <input type="checkbox" t-att-checked="state.pcm_profile"
+                               t-on-change="(ev) => this.toggle('pcm_profile', ev)"/>
+                        <span>Perfil PCM: la instancia hospeda un Primate Cloud Manager (pip extra, jobrunner de queue_job, jobs largos y clave de cifrado generada en el servidor)</span>
+                    </label>
+
                     <!-- Avanzado (solo admin): AMI + red. Un valor acá gana sobre
                          el auto-discovery de la región. -->
                     <t t-if="state.isCloudAdmin">
