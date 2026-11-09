@@ -38,6 +38,8 @@
                         </group>
                         <group string="Identidad Odoo">
                             <field name="env_type"/>
+                            <field name="is_self"
+                                   groups="primate_cloud_manager.group_cloud_admin"/>
                             <field name="odoo_version"/>
                             <field name="odoo_edition"/>
                             <field name="main_url"/>

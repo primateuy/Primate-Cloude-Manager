@@ -71,7 +71,7 @@
                                 t-on-click="() => this.addOdooInstance()">
                             <i class="fa fa-plus-circle"/> Agregar Odoo (instancia)
                         </button>
-                        <button t-if="d.state === 'active'" class="o_pcm_btn"
+                        <button t-if="d.state === 'active' and !d.hosts_self" class="o_pcm_btn"
                                 t-on-click="() => this.runEnvMethod('action_create_staging')">
                             <i class="fa fa-clone"/> Crear staging
                         </button>
@@ -250,7 +250,7 @@
                         <!-- F1: restaurar un dump que NO está en el catálogo (key de
                              S3 o ruta del servidor). El otro camino es "Restaurar…"
                              en cada backup de la lista. -->
-                        <button t-if="(d.state === 'active' or d.state === 'error') and !d.is_imported" class="o_pcm_btn"
+                        <button t-if="(d.state === 'active' or d.state === 'error') and !d.is_imported and !d.hosts_self" class="o_pcm_btn"
                                 t-on-click="() => this.runEnvMethod('action_restore_external_dump')">
                             <i class="fa fa-upload"/> Restaurar desde un dump…
                         </button>

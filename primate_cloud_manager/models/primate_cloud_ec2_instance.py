@@ -270,6 +270,27 @@ class PrimateCloudEc2Instance(models.Model):
                 "modifica de ninguna forma. El intento quedó en la bitácora.",
                 nombre=maquina.name, cuenta=maquina.account_id.name, que=que))
 
+    # Acciones de MÁQUINA que se cortan si el servidor hospeda a este PCM
+    # (autogestión, mudanza 2026-11). Arrancar NO: es el camino de
+    # recuperación si alguien lo detuvo por fuera.
+    _ACCIONES_SELF_MAQUINA = {
+        "ec2_stop": "detener el servidor",
+        "ec2_restart": "reiniciar el servidor",
+        "ec2_terminate": "terminar el servidor",
+    }
+
+    def _pcm_assert_sin_self(self, accion):
+        """Corta acciones de MÁQUINA sobre el servidor que hospeda a este PCM.
+
+        Delega el raise+bitácora en la instancia marcada
+        (:meth:`primate.cloud.instance._pcm_assert_not_self`): un solo texto,
+        una sola auditoría. Se llama desde los puntos de EJECUCIÓN (botón y
+        job), para que requeues y llamadas programáticas también choquen.
+        """
+        for maquina in self:
+            maquina.environment_id.instance_ids.filtered(
+                "is_self")._pcm_assert_not_self(accion)
+
     def _instancias_sin_clasificar(self):
         """Instancias Odoo del servidor que siguen con el proyecto centinela.
 
@@ -1393,6 +1414,9 @@ class PrimateCloudEc2Instance(models.Model):
         self.ensure_one()
         self._exigir_gestion_habilitada("odoo_restart")
         target = self._panel_target(odoo_instance)
+        # Autogestión: PCM no reinicia SU propio Odoo (se mataría a mitad
+        # del job; un conf roto lo dejaría caído sin quien lo levante).
+        target._pcm_assert_not_self(_("reiniciar el Odoo"))
         self._get_ssm_service().run_script(
             self.aws_instance_id,
             "sudo systemctl restart %s" % shlex.quote(
@@ -1827,6 +1851,8 @@ class PrimateCloudEc2Instance(models.Model):
         # detiene, ni se reinicia, ni se termina. Acá quedan cubiertas las
         # cuatro puertas de UI de una sola vez (las cuatro delegan acá).
         self._exigir_gestion_habilitada(action_type)
+        if action_type in self._ACCIONES_SELF_MAQUINA:
+            self._pcm_assert_sin_self(self._ACCIONES_SELF_MAQUINA[action_type])
         spec = self._LIFECYCLE[action_type]
         for instance in self:
             instance.with_delay(
@@ -1863,6 +1889,7 @@ class PrimateCloudEc2Instance(models.Model):
         sin puerta de entrada.)"""
         self.ensure_one()
         self._exigir_gestion_habilitada("ec2_terminate")
+        self._pcm_assert_sin_self(_("terminar el servidor"))
         return {
             "type": "ir.actions.act_window",
             "name": _("Terminar servidor — confirmación destructiva"),
@@ -2233,6 +2260,8 @@ class PrimateCloudEc2Instance(models.Model):
         # programática), así que el guard se repite acá. Que el botón ya lo
         # valide no alcanza: invisible en la vista no es control de acceso.
         self._exigir_gestion_habilitada(action_type)
+        if action_type in self._ACCIONES_SELF_MAQUINA:
+            self._pcm_assert_sin_self(self._ACCIONES_SELF_MAQUINA[action_type])
         if action_type == "ec2_terminate":
             exigir_primera_corrida(self, _("Terminar servidor"))
         spec = self._LIFECYCLE[action_type]

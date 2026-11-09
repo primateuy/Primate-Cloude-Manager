@@ -41,16 +41,23 @@
                         PCM lo observa (gemelo) y no lo modifica de ninguna
                         forma. Sin acciones disponibles.
                     </div>
+                    <!-- Autogestión (2026-11): la instancia hospeda a ESTE PCM. -->
+                    <div t-if="d.is_self" class="o_pcm_note o_pcm_imported_note">
+                        <i class="fa fa-shield"/>
+                        <b>Esta instancia hospeda a ESTE PCM.</b> Desmontar,
+                        restaurar, reiniciar, cambiar el dominio o usarla de
+                        origen de staging se bloquea para todos los grupos.
+                    </div>
                     <!-- Desmontar (DESTRUCTIVO): solo el grupo manual, nunca
                          sobre un importado; abre la triple confirmación. -->
-                    <button t-if="d.can_destroy and !d.is_imported and d.state === 'active'"
+                    <button t-if="d.can_destroy and !d.is_imported and !d.is_self and d.state === 'active'"
                             class="o_pcm_btn o_pcm_btn_danger"
                             t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_destroy_wizard')">
                         <i class="fa fa-trash"/> Desmontar instancia…
                     </button>
                     <!-- Dominio definitivo (2026-10-27): dos caminos, los dos sin
                          cortar lo que ya sirve (sslip.io con HTTPS). -->
-                    <div t-if="d.can_manage_domain and !d.is_imported and d.state === 'active' and d.server_machine_id and !(d.domain_switch and d.domain_switch.state === 'running')"
+                    <div t-if="d.can_manage_domain and !d.is_imported and !d.is_self and d.state === 'active' and d.server_machine_id and !(d.domain_switch and d.domain_switch.state === 'running')"
                          class="o_pcm_actions o_pcm_domain_actions">
                         <button class="o_pcm_btn"
                                 t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_create_dns_wizard')">

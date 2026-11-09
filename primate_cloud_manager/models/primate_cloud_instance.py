@@ -21,7 +21,7 @@ import uuid
 from datetime import timedelta
 
 from odoo import _, api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 from .primate_cloud_destruction import durable_log, exigir_primera_corrida
 
 from ..services import aws_route53
@@ -101,6 +101,18 @@ class PrimateCloudInstance(models.Model):
         ],
         string="Tipo", required=True, default="production",
         help="Propósito del Odoo (era del entorno; D6 lo muda a la instancia).",
+    )
+    # Autogestión (mudanza de PCM a su propio servidor, 2026-11): la instancia
+    # que hospeda a ESTE PCM. Sobre ella —y sobre su servidor— lo destructivo
+    # o disruptivo se corta para TODO grupo, también el destructivo: PCM no se
+    # termina, detiene, reinicia, restaura, desmonta ni re-dominia a sí mismo.
+    # Los bloqueos viven en los puntos de EJECUCIÓN (_pcm_assert_not_self),
+    # no solo en los botones. Máximo una instancia marcada (constraint).
+    is_self = fields.Boolean(
+        string="Hospeda este PCM", copy=False, tracking=True,
+        help="Marca la instancia donde corre ESTE PCM. Bloquea sobre ella "
+             "(y su servidor) toda acción destructiva o disruptiva, sin "
+             "importar el grupo del usuario.",
     )
     # Obligatorias EN EL MODELO (2026-09-19): sin versión la instalación falla
     # recién sobre la EC2 ya creada. Ningún camino —UI, wizard o programático—
@@ -306,6 +318,13 @@ class PrimateCloudInstance(models.Model):
         si vuelve a un estado vivo se limpia (edge de reactivación). Un
         ``hosted_until`` explícito en el mismo write manda (no se toca).
         """
+        # Autogestión: marcar/desmarcar «Hospeda este PCM» es decisión de
+        # Cloud Admin (server-side; el groups de la vista no es seguridad).
+        if "is_self" in vals and not self.env.su and not self.env.user.has_group(
+                "primate_cloud_manager.group_cloud_admin"):
+            raise UserError(_(
+                "Solo un Cloud Admin puede marcar o desmarcar «Hospeda "
+                "este PCM»."))
         # ¿Cambia la condición dedicado/compartido? Pasar A o DESDE 'archived'
         # altera el set de instancias VIVAS del servidor (R5-B3). Se evalúa ANTES
         # de escribir (después, r.state ya cambió). Mismo choke point que
@@ -364,6 +383,7 @@ class PrimateCloudInstance(models.Model):
         """Una instancia importada no se borra NUNCA (regla 2026-10-22):
         es el reflejo de un Odoo real funcionando."""
         self._pcm_assert_not_imported(_("eliminar la instancia"))
+        self._pcm_assert_not_self(_("eliminar la instancia"))
         return super().unlink()
 
     # --- Desmontar instancia (destructivo, triple confirmación) ---------
@@ -372,6 +392,7 @@ class PrimateCloudInstance(models.Model):
         base): triple confirmación obligatoria (regla dura 2026-10-22)."""
         self.ensure_one()
         self._pcm_assert_not_imported(_("desmontar la instancia"))
+        self._pcm_assert_not_self(_("desmontar la instancia"))
         return {
             "type": "ir.actions.act_window",
             "name": _("Desmontar instancia — confirmación destructiva"),
@@ -404,6 +425,7 @@ class PrimateCloudInstance(models.Model):
 
     def _destruction_enqueue_destroy(self):
         self.ensure_one()
+        self._pcm_assert_not_self(_("desmontar la instancia"))
         ctx = self.env.context
         job_token = self.env["primate.cloud.destruction.ticket"]\
             .consume_for_job(self, "instance_destroy",
@@ -428,6 +450,9 @@ class PrimateCloudInstance(models.Model):
         self.ensure_one()
         exigir_primera_corrida(self, _('Desmontar instancia'))
         self._pcm_assert_not_imported(_("desmontar la instancia"))
+        # El job es alcanzable sin pasar por el botón (requeue, RPC): la
+        # guarda de autogestión se repite acá, leída fresca de la BD.
+        self._pcm_assert_not_self(_("desmontar la instancia"))
         self.env["primate.cloud.destruction.ticket"].burn_job_token(
             self, "instance_destroy",
             destruction_ticket_id, destruction_job_token)
@@ -608,6 +633,44 @@ class PrimateCloudInstance(models.Model):
                 "puede %(a)s, sin excepción ni override — es un ambiente "
                 "real funcionando.", n=inst.display_name, a=accion))
 
+    @api.constrains("is_self")
+    def _check_self_unica(self):
+        """A lo sumo UNA instancia puede hospedar a este PCM."""
+        for inst in self.filtered("is_self"):
+            otra = self.search([("is_self", "=", True),
+                                ("id", "!=", inst.id)], limit=1)
+            if otra:
+                raise ValidationError(_(
+                    "Ya hay una instancia marcada como «Hospeda este PCM»: "
+                    "%(otra)s. Desmarcala antes de marcar otra.",
+                    otra=otra.display_name))
+
+    def _pcm_assert_not_self(self, accion):
+        """Corta (y audita) lo destructivo/disruptivo sobre el PCM mismo.
+
+        Igual que :meth:`_pcm_assert_not_imported`, se llama desde los puntos
+        de EJECUCIÓN (acción, ORM y job), no solo desde los botones, y aplica
+        a TODOS los grupos — también ``group_cloud_destructive``: un PCM que
+        se termina, detiene, reinicia o restaura a sí mismo deja la flota sin
+        gobierno en medio de la operación.
+        """
+        for inst in self:
+            if not inst.is_self:
+                continue
+            durable_log(self.env, {
+                "action_type": "self_block", "result": "failed",
+                "name": _("Bloqueado (PCM mismo): %(a)s sobre %(n)s",
+                          a=accion, n=inst.display_name),
+                "user_id": self.env.uid,
+                "resource_model": inst._name, "resource_id": inst.id,
+                "error_message": _("La instancia hospeda a este PCM."),
+            })
+            raise UserError(_(
+                "«%(n)s» hospeda a ESTE PCM: no se puede %(a)s desde PCM, "
+                "sin importar el grupo. Si de verdad corresponde, es una "
+                "operación manual por fuera (consola AWS / SSM), con el "
+                "runbook a la vista.", n=inst.display_name, a=accion))
+
     # --- HTTPS (D-R3.9 endurecida) ------------------------------------
     def _public_url(self):
         """La URL real de ESTA instancia según su estado SSL (ajuste A del
@@ -741,6 +804,7 @@ class PrimateCloudInstance(models.Model):
         contra los NS de la zona → cambio no destructivo."""
         self.ensure_one()
         self._pcm_assert_not_imported(_("crear DNS"))
+        self._pcm_assert_not_self(_("cambiar el dominio"))
         env_rec = self.environment_id
         machine = self._machine()
         self.sudo().write({"domain_switch_target": domain,
@@ -781,6 +845,7 @@ class PrimateCloudInstance(models.Model):
         Route 53 y PCM lo conoce, consulta sus NS autoritativos."""
         self.ensure_one()
         self._pcm_assert_not_imported(_("cambiar el dominio"))
+        self._pcm_assert_not_self(_("cambiar el dominio"))
         env_rec = self.environment_id
         nameservers = None
         self.sudo().write({"domain_switch_target": domain,

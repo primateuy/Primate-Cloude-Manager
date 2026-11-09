@@ -36,3 +36,4 @@ from . import test_gemelo
 from . import test_dominio_definitivo
 from . import test_secretos_jobs
 from . import test_sin_reintento
+from . import test_autogestion_self

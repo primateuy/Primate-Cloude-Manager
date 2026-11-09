@@ -390,6 +390,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             # Regla dura 2026-10-22: importado = solo lectura TOTAL en la UI;
             # y lo destructivo solo existe para el grupo manual.
             "is_imported": environment.pcm_is_imported(),
+            # Autogestión: el entorno hospeda a ESTE PCM → sin staging/restore.
+            "hosts_self": bool(environment.instance_ids.filtered("is_self")),
             "origin_label": dict(environment._fields["pcm_origin"].selection)
             .get(environment.pcm_origin, ""),
             "can_destroy": self.env.user.has_group(
@@ -518,6 +520,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "name": inst.display_name,
             # Regla dura 2026-10-22.
             "is_imported": inst.management_state == "adopted_readonly",
+            # Autogestión: la máquina hospeda a ESTE PCM → sin stop/reboot/kill.
+            "hosts_self": bool(hosted.filtered("is_self")),
             "can_destroy": self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_destructive"),
             "state": inst.instance_state,
@@ -651,6 +655,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "url": inst._public_url(),
             # Regla dura 2026-10-22: importado = sin acciones en la UI.
             "is_imported": inst.pcm_is_imported(),
+            # Autogestión: esta instancia hospeda a ESTE PCM.
+            "is_self": inst.is_self,
             "can_destroy": self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_destructive"),
             "can_manage_domain": self.env.user.has_group(

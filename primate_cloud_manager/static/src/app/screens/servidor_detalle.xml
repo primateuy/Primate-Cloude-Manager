@@ -43,11 +43,11 @@
                                 t-on-click="() => this.runMethod('action_start')">
                             <i class="fa fa-play"/> Iniciar
                         </button>
-                        <button t-if="d.state === 'running'" class="o_pcm_btn"
+                        <button t-if="d.state === 'running' and !d.hosts_self" class="o_pcm_btn"
                                 t-on-click="() => this.runMethod('action_stop', { confirm: '¿Detener el servidor? Afecta a todas sus instancias.' })">
                             <i class="fa fa-stop"/> Detener
                         </button>
-                        <button t-if="d.state === 'running'" class="o_pcm_btn"
+                        <button t-if="d.state === 'running' and !d.hosts_self" class="o_pcm_btn"
                                 t-on-click="() => this.runMethod('action_restart', { confirm: '¿Reiniciar el servidor? Afecta a todas sus instancias.' })">
                             <i class="fa fa-refresh"/> Reiniciar
                         </button>
@@ -59,10 +59,17 @@
                                 t-on-click="() => this.runMethod('action_execute_command')">
                             <i class="fa fa-terminal"/> Ejecutar comando
                         </button>
-                        <button t-if="d.state !== 'terminated' and d.can_destroy" class="o_pcm_btn o_pcm_btn_danger"
+                        <button t-if="d.state !== 'terminated' and d.can_destroy and !d.hosts_self" class="o_pcm_btn o_pcm_btn_danger"
                                 t-on-click="() => this.runMethod('action_open_terminate_wizard')">
                             <i class="fa fa-trash"/> Terminar servidor
                         </button>
+                    </div>
+                    <!-- Autogestión (2026-11): este servidor hospeda a ESTE PCM. -->
+                    <div t-if="d.hosts_self" class="o_pcm_note o_pcm_imported_note">
+                        <i class="fa fa-shield"/>
+                        <b>Este servidor hospeda a ESTE PCM.</b> Detener,
+                        reiniciar o terminar la máquina se bloquea para todos
+                        los grupos: haría caer al propio PCM.
                     </div>
                 </div>
 

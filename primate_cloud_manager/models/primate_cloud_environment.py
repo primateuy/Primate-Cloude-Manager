@@ -2966,6 +2966,10 @@ class PrimateCloudEnvironment(models.Model):
         # Regla dura 2026-10-22: un staging cuyo ORIGEN es importado correría
         # pg_dump en un productivo ajeno — prohibido sin excepción.
         origin._pcm_assert_env_not_imported("staging_origin")
+        # Autogestión: la instancia que hospeda a este PCM no es origen de
+        # staging (el pipeline corre pg_dump/backup sobre ella bajo demanda).
+        origin.instance_ids._pcm_assert_not_self(
+            _("usar como origen de staging"))
         origin_machine = self.env["primate.cloud.ec2.instance"].browse(
             params.get("origin_instance_id") or []).exists()
         origin_machine._exigir_gestion_habilitada("staging_origin")
@@ -3102,6 +3106,8 @@ class PrimateCloudEnvironment(models.Model):
         params = self.env["primate.cloud.job.secret"].reveal(params)
         origin = self.origin_environment_id
         origin._pcm_assert_env_not_imported("staging_origin")
+        origin.instance_ids._pcm_assert_not_self(
+            _("usar como origen de staging"))
         account = self.account_id
         bus.provision_start(self.env, self, title=_("Creando staging: %s") % self.name)
         try:
@@ -3188,6 +3194,8 @@ class PrimateCloudEnvironment(models.Model):
         origin = self.origin_environment_id
         if not origin:
             raise UserError(_("Este staging no tiene entorno origen registrado."))
+        origin.instance_ids._pcm_assert_not_self(
+            _("usar como origen del refresh"))
         # R4-B5: guard levantado (la copia/restore es por instancia, B4).
         bus.provision_start(self.env, self,
                             title=_("Refrescando staging: %s") % self.name)
@@ -4239,6 +4247,10 @@ class PrimateCloudEnvironment(models.Model):
             return fail(_(
                 "No se pudo determinar de forma inequívoca la instancia Odoo "
                 "destino (el servidor hospeda varias): indicá la instancia."))
+        # Autogestión (2026-11): PCM no restaura NADA encima de sí mismo —
+        # pisaría su propia base en caliente y moriría a mitad del job. La
+        # mudanza/rollback de PCM es una operación manual con runbook.
+        odoo_instance._pcm_assert_not_self(_("restaurar una base encima"))
 
         # 3. Pre-backup del destino (red de seguridad): si falla, se ABORTA.
         pre_record = None
