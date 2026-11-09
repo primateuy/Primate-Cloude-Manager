@@ -155,6 +155,17 @@ class TestPerfilPcm(TransactionCase):
         self.assertIn('rm -f "/etc/odoo/${SLUG}.env"', rollback)
 
     # ------------------------------------------------------------------
+    # Bootstrap: aws-cli con reintentos (snap store flaky — 408 real)
+    # ------------------------------------------------------------------
+    def test_bootstrap_awscli_reintenta_y_falla_ruidoso(self):
+        script = self.server._build_bootstrap_script()
+        self.assertIn("for intento in 1 2 3 4", script)
+        self.assertIn("PCM_ERR_BOOTSTRAP_AWSCLI", script)
+        # El marker sigue al FINAL (si algo falló, el bootstrap NO quedó aplicado).
+        self.assertLess(script.index("PCM_ERR_BOOTSTRAP_AWSCLI"),
+                        script.index('touch "${MARKER}"'))
+
+    # ------------------------------------------------------------------
     # Los wizards pasan el perfil
     # ------------------------------------------------------------------
     def test_wizard_provision_pasa_el_perfil(self):

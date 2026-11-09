@@ -50,8 +50,22 @@ systemctl enable --now certbot.timer >>"${DETALLE}" 2>&1 || \
 
 # AWS CLI: lo usan backup/staging/restore (aws s3 cp en streaming). En Ubuntu
 # 24.04 el paquete apt no tiene candidato -> snap (hallazgo real de Fase 8).
-command -v aws >/dev/null 2>&1 || snap install aws-cli --classic \
-    >>"${DETALLE}" 2>&1
+# El snap store es FLAKY (408 real, ensayo PCM-self 2026-11-09): reintentos
+# con espera y fallo RUIDOSO propio — sin esto, un 408 tumbaba el bootstrap
+# entero por el set -e, o peor, aparecía recién en el primer respaldo.
+if ! command -v aws >/dev/null 2>&1; then
+    for intento in 1 2 3 4; do
+        if snap install aws-cli --classic >>"${DETALLE}" 2>&1; then
+            break
+        fi
+        log "snap aws-cli falló (intento ${intento}/4); reintento en 20 s…"
+        sleep 20
+    done
+fi
+if ! command -v aws >/dev/null 2>&1; then
+    echo "PCM_ERR_BOOTSTRAP_AWSCLI: no se pudo instalar aws-cli (snap store)."
+    exit 1
+fi
 
 # 2. Usuario de servicio (compartido en v1 — aislamiento por instancia es v2) --
 if ! id "${ODOO_USER}" >/dev/null 2>&1; then
