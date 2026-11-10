@@ -149,6 +149,21 @@ def check_owl(page, texto):
     return page.locator("label.o_pcm_form_check:has-text('%s') input" % texto).first
 
 
+_SLUG_INST = [None]
+
+
+def slug_inst():
+    """Slug REAL de la instancia Odoo del ensayo. El PCM lo deriva del NOMBRE
+    del entorno («PCM Self (ensayo)» → pcm-self-ensayo), no del nombre de la
+    máquina (SLUG): asumir SLUG quemó la toma 8 (rutas /opt/pcm inexistentes)."""
+    if _SLUG_INST[0] is None:
+        env = rpc(VIEJO, DB_VIEJO, "primate.cloud.environment", "search_read",
+                  [[["name", "=", ENV_NOMBRE]], ["primary_instance_id"]])[0]
+        _SLUG_INST[0] = rpc(VIEJO, DB_VIEJO, "primate.cloud.instance", "read",
+                            [[env["primary_instance_id"][0]], ["slug"]])[0]["slug"]
+    return _SLUG_INST[0]
+
+
 def abrir_servidor(page):
     """Desde el detalle del entorno, abre el SERVIDOR (tarjeta .o_pcm_instance)."""
     ox.clic(page, page.locator(".o_pcm_instance .o_pcm_line_name",
@@ -427,7 +442,13 @@ def _maquina_y_sslip():
 
 
 def comando(page, maquina_nombre, orden, explicacion, espera=18000):
-    """Ejecutar comando por el wizard + mostrar la salida en el historial."""
+    """Ejecutar comando por el wizard + mostrar la salida en el historial.
+    Verifica en la bitácora que terminó success (lección tomas 3 y 8: un fallo
+    remoto pasaba en silencio y quemaba la toma entera)."""
+    previos = rpc(VIEJO, DB_VIEJO, "primate.cloud.operation.log", "search",
+                  [[["action_type", "=", "ssm_command"]]],
+                  {"limit": 1, "order": "id desc"})
+    ultimo = previos[0] if previos else 0
     ox.clic(page, page.locator("button", has_text="Ejecutar comando").first)
     page.wait_for_selector("textarea#command_0, input#command_0", timeout=12000)
     caja = page.locator("textarea#command_0, input#command_0").first
@@ -435,17 +456,30 @@ def comando(page, maquina_nombre, orden, explicacion, espera=18000):
     ox.rotulo(page, "Ejecutar comando (SSM)", explicacion, 2800)
     ox.clic(page, page.locator("button[name=action_run]").first)
     page.wait_for_timeout(espera)   # job + SSM
+    t0 = time.time()
+    while time.time() - t0 < 120:
+        filas = rpc(VIEJO, DB_VIEJO, "primate.cloud.operation.log", "search_read",
+                    [[["action_type", "=", "ssm_command"], ["id", ">", ultimo]],
+                     ["result", "error_message"]], {"limit": 1, "order": "id desc"})
+        if filas and filas[0]["result"] in ("success", "failed"):
+            assert filas[0]["result"] == "success", (
+                "comando SSM FALLÓ: %s · %s"
+                % (orden[:90], (filas[0]["error_message"] or "")[:200]))
+            return
+        page.wait_for_timeout(5000)
+    raise RuntimeError("el comando SSM no terminó a tiempo: %s" % orden[:90])
 
 
 def t2_perfil(page, env_id):
     abrir_entorno(page, ENV_NOMBRE)
     abrir_servidor(page)
-    comando(page, SLUG, "tail -n 14 /etc/odoo/%s.conf" % SLUG,
+    si = slug_inst()
+    comando(page, SLUG, "tail -n 14 /etc/odoo/%s.conf" % si,
             "El conf del perfil: jobrunner, jobs largos y candado multi-tenant")
     comando(page, SLUG,
             "ls -l /opt/pcm/instances/%s/addons/ /etc/odoo/%s.env "
             "&& systemctl cat odoo-%s.service | grep -A1 EnvironmentFile"
-            % (SLUG, SLUG, SLUG),
+            % (si, si, si),
             "queue_job clonado por el perfil + la clave generada EN el servidor "
             "(se ve el archivo, nunca la clave)")
     comando(page, SLUG,
@@ -465,12 +499,13 @@ def t3_modulo(page):
                   [[["action_type", "=", "ssm_command"]]], {"limit": 1,
                                                             "order": "id desc"})
     ultimo_previo = previos[0] if previos else 0
+    si = slug_inst()
     comando(page, SLUG,
             "aws s3 cp s3://%s/%s /tmp/pcm.tgz --region us-east-1 "
             "&& sudo tar xzf /tmp/pcm.tgz -C /opt/pcm/instances/%s/addons "
             "&& sudo chown -R odoo:odoo /opt/pcm/instances/%s/addons "
             "&& rm /tmp/pcm.tgz && ls /opt/pcm/instances/%s/addons"
-            % (BUCKET, TGZ_KEY, SLUG, SLUG, SLUG),
+            % (BUCKET, TGZ_KEY, si, si, si),
             "El módulo PCM entra por paquete local (el clone con PAT real "
             "queda para el día D, decisión de hoy)", espera=25000)
     # Verificación dura (lección toma 3: un s3 cp fallido pasaba en silencio).
@@ -507,6 +542,12 @@ def t4_dump(page):
 
 
 def t5_restore(page, env_id):
+    # Guarda anti-stale (quemó la toma 9: el poll leía el restore de OTRO
+    # entorno de hace semanas y daba verde sin que nada se hubiera encolado).
+    previos = rpc(VIEJO, DB_VIEJO, "primate.cloud.operation.log", "search",
+                  [[["action_type", "=", "backup_restore"]]],
+                  {"limit": 1, "order": "id desc"})
+    ultimo_previo = previos[0] if previos else 0
     abrir_entorno(page, ENV_NOMBRE)
     ox.clic(page, page.locator("button", has_text="Restaurar desde un dump").first)
     page.wait_for_selector("#origin_uri_0", timeout=15000)
@@ -527,6 +568,12 @@ def t5_restore(page, env_id):
     ox.rotulo(page, "Restore SIN neutralizar", "La instancia destino es "
               "Producción: crons, SMTP y web.base.url llegan como salieron", 3400)
     ox.clic(page, page.locator("button[name=action_restore]").first)
+    # Confirm NATIVO de Odoo antes del server call (se comió la toma 9: sin
+    # este Ok el wizard queda abierto y no se encola nada, en silencio).
+    page.wait_for_selector(".modal button:has-text('Ok')", timeout=10000)
+    ox.rotulo(page, "Odoo pregunta primero",
+              "La base destino se reemplaza entera", 2200)
+    ox.clic(page, page.locator(".modal button", has_text="Ok").first)
     page.wait_for_timeout(2500)
     # Pisa una base registrada → confirmación destructiva (impacto→nombre→clave).
     if page.locator("#typed_name_0").count() or page.locator(
@@ -548,7 +595,8 @@ def t5_restore(page, env_id):
         t0 = time.time()
         while time.time() - t0 < 2400:
             filas = rpc(VIEJO, DB_VIEJO, "primate.cloud.operation.log", "search_read",
-                        [[["action_type", "=", "backup_restore"]],
+                        [[["action_type", "=", "backup_restore"],
+                          ["id", ">", ultimo_previo]],
                          ["result", "name"]], {"limit": 1, "order": "id desc"})
             if filas and filas[0]["result"] in ("success", "failed", "partial"):
                 assert filas[0]["result"] == "success", \
@@ -671,8 +719,13 @@ def abrir_entorno_nuevo(page, nuevo):
 
 
 def t7_autogestion(page, nuevo):
+    # La copia restaurada trae instancias de tomas viejas con el MISMO slug
+    # (quemó la toma 10: is_self cayó en una instancia muerta, nada bloqueó y
+    # el stop real apagó el servidor). El nombre EXACTO del entorno vivo
+    # desambigua: los residuales están renombrados «— toma N (terminado)».
     inst_id = rpc(nuevo, DB_DESTINO, "primate.cloud.instance", "search",
-                  [[["slug", "=", SLUG]]])[0]
+                  [[["slug", "=", slug_inst()],
+                    ["environment_id.name", "=", ENV_NOMBRE]]])[0]
     # ANTES: el servidor muestra Detener/Reiniciar/Terminar.
     abrir_entorno_nuevo(page, nuevo)
     abrir_servidor(page)
@@ -682,30 +735,39 @@ def t7_autogestion(page, nuevo):
     # Marcar is_self (form backend, campo de Cloud Admin).
     rpc(nuevo, DB_DESTINO, "primate.cloud.instance", "write",
         [[inst_id], {"is_self": True}])
+    assert rpc(nuevo, DB_DESTINO, "primate.cloud.instance", "read",
+               [[inst_id], ["is_self"]])[0]["is_self"], "is_self no quedó escrito"
     page.reload(wait_until="load")
     page.wait_for_selector(".o_pcm_detalle", timeout=20000)
     page.wait_for_timeout(2500)
     ox.rotulo(page, "DESPUÉS: la instancia hospeda a ESTE PCM",
               "Los botones desaparecieron y quedó el aviso — para TODOS los grupos",
               4000)
+    # El botón destructivo tiene que haber DESAPARECIDO (no solo el rótulo).
+    assert not page.locator("button", has_text="Terminar servidor").count(), \
+        "el botón destructivo sigue visible: is_self no gateó la UI"
     marca("is_self marcado: botones fuera")
-    # ORM y job: rechazan con el mensaje de autogestión.
+    # ORM y job: rechazan con EL mensaje de autogestión (otro error no vale),
+    # y al primer no-bloqueo se corta YA (pudo encolar un stop/terminate real).
     maquina = rpc(nuevo, DB_DESTINO, "primate.cloud.ec2.instance", "search",
                   [[["environment_id.name", "=", ENV_NOMBRE]]])[0]
     errores = []
-    for metodo in ("action_stop", "action_terminate"):
+    # action_open_terminate_wizard y no action_terminate: el crudo choca antes
+    # con la guarda del ticket de destrucción (otro bloqueo legítimo, pero no
+    # el que esta prueba demuestra — abortó la toma 11). El wizard es el punto
+    # de entrada real del botón y tiene la guarda self primero.
+    for metodo, args in (("action_stop", [[maquina]]),
+                         ("action_open_terminate_wizard", [[maquina]]),
+                         ("job_lifecycle", [[maquina], "ec2_stop"])):
         try:
-            rpc(nuevo, DB_DESTINO, "primate.cloud.ec2.instance", metodo, [[maquina]])
-            errores.append((metodo, "NO BLOQUEÓ"))
+            rpc(nuevo, DB_DESTINO, "primate.cloud.ec2.instance", metodo, args)
         except xmlrpc.client.Fault as f:
-            errores.append((metodo, re.sub(r"\s+", " ", str(f))[:90]))
-    try:
-        rpc(nuevo, DB_DESTINO, "primate.cloud.ec2.instance", "job_lifecycle",
-            [[maquina], "ec2_stop"])
-        errores.append(("job_lifecycle", "NO BLOQUEÓ"))
-    except xmlrpc.client.Fault as f:
-        errores.append(("job_lifecycle", re.sub(r"\s+", " ", str(f))[:90]))
-    assert all("NO BLOQUEÓ" not in d for _m, d in errores), errores
+            detalle = re.sub(r"\s+", " ", str(f))
+            assert "hospeda a ESTE PCM" in detalle, \
+                "%s falló por otra razón: %s" % (metodo, detalle[:160])
+            errores.append((metodo, detalle[:90]))
+        else:
+            raise AssertionError("%s NO bloqueó la autogestión" % metodo)
     ox.tarjeta(page, "ORM y job: rechazados",
                "«hospeda a ESTE PCM: no se puede … sin importar el grupo»",
                [(m, "UserError ✓") for m, _d in errores])
@@ -784,11 +846,15 @@ def t9_teardown(page):
     with Ventana("terminar", FACTORES["terminar"]):
         t0 = time.time()
         while time.time() - t0 < 900:
-            estado = rpc(VIEJO, DB_VIEJO, "primate.cloud.ec2.instance",
-                         "search_read", [[["environment_id.name", "=", ENV_NOMBRE]],
-                                         ["instance_state"]])[0]["instance_state"]
-            if estado == "terminated":
+            fila = rpc(VIEJO, DB_VIEJO, "primate.cloud.ec2.instance",
+                       "search_read", [[["environment_id.name", "=", ENV_NOMBRE]],
+                                       ["instance_state"]])[0]
+            if fila["instance_state"] == "terminated":
                 break
+            # Sync explícito: no depender de la cadencia del cron (lección del
+            # cierre de la toma 3 — sin esto el poll puede agotar los 900 s).
+            rpc(VIEJO, DB_VIEJO, "primate.cloud.ec2.instance",
+                "action_sync_from_aws", [[fila["id"]]])
             page.wait_for_timeout(10000)
         else:
             raise RuntimeError("la EC2 no llegó a terminated")

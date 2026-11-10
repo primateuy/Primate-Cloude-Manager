@@ -1,5 +1,32 @@
 # Videos de ensayo de PCM (fuera de git)
 
+## `ensayo_pcm_self.mp4` — 10:11, 1080p
+
+Ensayo COMPLETO de la mudanza de PCM a su propio servidor (punto 9 del plan,
+`MUDANZA_PCM_SELF.md`), en la sandbox (`pcm_demo`, cuenta «Personal Prueba
+Real», us-east-1, t3.small, Odoo 19 **Community**). Todo ocurre de verdad:
+driver `grabar_ensayo_pcm_self.py`, toma 12 (las tomas 7–11 cazaron bugs del
+driver: banner de expiración, slug de instancia ≠ nombre de máquina, confirm
+nativo del restore, poll stale, is_self en instancia duplicada de la copia,
+guarda del ticket antes que la self en `action_terminate` crudo).
+
+| Minuto | Tramo |
+|---|---|
+| 0:00 | Portada + montaje: entorno Producción Community con perfil PCM (espera ×16) |
+| 1:33 | Servidor activo; perfil verificado por SSM: conf jobrunner, queue_job clonado, clave Fernet nacida EN el servidor, pip extra |
+| 3:20 | Dump espejo del runbook (freeze crons → copia → desinstalar 29 Enterprise + bundle → dump); subida a S3 por Daryl, verificada desde el servidor (×32) |
+| 4:12 | Módulo PCM por paquete local al addons dir (PAT real queda para el día D) |
+| 4:59 | Restore SIN neutralizar (destino Producción): confirm + triple confirmación + job en verde (×16) |
+| 5:33 | El PCM nuevo despierta: web.base.url/report.url, crons reactivados, SMTP y cola INTACTOS |
+| 7:16 | Credenciales recargadas por Daryl en la UI (opción b: la clave vieja no descifra, las keys nunca pasan por Claude) y verificadas con sync real |
+| 8:26 | Autogestión: is_self → botones fuera + `action_stop`, wizard de terminar y `job_lifecycle` rechazados («hospeda a ESTE PCM») |
+| 9:00 | Simulacro del corte: viejo apagado, el nuevo solo, ROLLBACK (viejo vuelve con crons) |
+| 9:54 | Teardown real con triple confirmación → EC2 terminated, IP liberada |
+
+Revisado entero (fotogramas cada 25 s): contraseñas solo como puntos, las keys
+de AWS jamás aparecen (las cargó Daryl en su navegador, fuera de la grabación).
+Costo AWS del ensayo completo (12 tomas, 2 días): ≈ US$ 0,40.
+
 ## `dominio_bj_uat_2026-10-28.mp4` — 1:45, 1080p
 
 Dominio definitivo de bj-uat en la cuenta de Primate: «Crear DNS ahora» con
