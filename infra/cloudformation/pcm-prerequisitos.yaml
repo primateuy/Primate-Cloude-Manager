@@ -1123,15 +1123,6 @@ Resources:
       - Fn::Sub: arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
       - Fn::Sub: arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy
       Policies:
-      - PolicyName: PcmCWAgentConfigRead
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Sid: LeerLaConfigDelAgenteQueMantieneINCO
-            Effect: Allow
-            Action: ssm:GetParameter
-            Resource:
-              Fn::Sub: arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/alarm/*
       - PolicyName: PcmS3BackupObjects
         PolicyDocument:
           Version: '2012-10-17'

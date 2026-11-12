@@ -326,7 +326,9 @@
                     <div class="o_pcm_line">
                         <div class="o_pcm_line_main">
                             <span t-if="d.cw_monitoring" class="o_pcm_line_name">
-                                RAM y disco → CloudWatch · parámetro <t t-out="d.cw_ssm_parameter"/>
+                                RAM y disco → CloudWatch ·
+                                <t t-if="d.cw_ssm_parameter">parámetro <t t-out="d.cw_ssm_parameter"/></t>
+                                <t t-else="">config embebida (la de INCO)</t>
                             </span>
                             <span t-else="" class="o_pcm_muted">
                                 Apagado: el servidor no manda RAM/disco a CloudWatch.

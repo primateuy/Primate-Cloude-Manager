@@ -72,11 +72,12 @@ class PrimateCloudProvisionWizard(models.TransientModel):
              "(RAM y disco). Un error del agente no bloquea el montaje.",
     )
     cw_ssm_parameter = fields.Char(
-        string="Parámetro SSM del agente",
+        string="Parámetro SSM del agente (opcional)",
         default=lambda self: self.env[
             "primate.cloud.environment"]._default_cw_ssm_parameter(),
-        help="Nombre del parámetro SSM con la config del agente (lo "
-             "mantiene INCO).",
+        help="OPCIONAL. Con valor, la config se lee de ese parámetro SSM; "
+             "vacío (default): PCM escribe la config de INCO en el servidor "
+             "y la carga por archivo local.",
     )
     image_id = fields.Char(
         string="AMI",

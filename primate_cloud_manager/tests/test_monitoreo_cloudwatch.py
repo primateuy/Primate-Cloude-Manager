@@ -51,23 +51,64 @@ class TestMonitoreoCloudWatch(TransactionCase):
     # ------------------------------------------------------------------
     # El script (goldens)
     # ------------------------------------------------------------------
-    def test_script_enable_idempotente_y_con_marcadores(self):
-        self.server.cw_ssm_parameter = "/alarm/AWS-CWAgentLinConfig"
+    def test_script_default_archivo_local_con_la_config_de_inco(self):
+        """Modo DEFAULT (respuesta de INCO): config embebida + archivo local,
+        sin Parameter Store."""
+        self.server.cw_ssm_parameter = False
         script = self.server._build_cw_agent_script(True)
         # Idempotencia: el .deb solo se instala si NO está.
         self.assertIn("dpkg -s amazon-cloudwatch-agent", script)
         # El .deb de Ubuntu (el script de INCO es de Amazon Linux).
         self.assertIn("ubuntu/amd64/latest/amazon-cloudwatch-agent.deb", script)
-        # La config es LA DE INCO, por su parámetro SSM.
-        self.assertIn("fetch-config -m ec2 -c ssm:/alarm/AWS-CWAgentLinConfig -s",
+        # La config aterriza en el servidor y se carga por archivo.
+        self.assertIn("/opt/aws/amazon-cloudwatch-agent/etc/pcm-cloudwatch.json",
                       script)
-        # Veredicto por marcadores (el job los parsea; errores con exit 0).
+        self.assertIn("SRC=file:/opt/aws/amazon-cloudwatch-agent/etc/"
+                      "pcm-cloudwatch.json", script)
+        self.assertIn('fetch-config -m ec2 -c "${SRC}" -s', script)
+        self.assertNotIn("ssm:", script)
+        # El JSON embebido es EXACTAMENTE el de INCO.
+        import json as json_mod
+        heredoc = script.split("<<'CWJSON'\n", 1)[1].split("\nCWJSON\n", 1)[0]
+        self.assertEqual(json_mod.loads(heredoc), {
+            "metrics": {
+                "append_dimensions": {"InstanceId": "${aws:InstanceId}"},
+                "metrics_collected": {
+                    "mem": {"measurement": ["mem_used_percent"],
+                            "metrics_collection_interval": 60},
+                    "disk": {"measurement": ["disk_used_percent"],
+                             "metrics_collection_interval": 60,
+                             "resources": ["/"]}}}})
+        # Veredicto por marcadores y verificación real del servicio.
         self.assertIn("PCM_CW_OK", script)
         self.assertIn("PCM_CW_ERR", script)
-        # Verificación real de que el servicio quedó activo.
         self.assertIn("systemctl is-active amazon-cloudwatch-agent", script)
         # Lo verboso va al log del servidor, no al stdout de SSM (trunca 24KB).
         self.assertIn("/var/log/pcm-cw-agent.log", script)
+
+    def test_script_modo_ssm_opcional(self):
+        """Con parámetro seteado, la config se lee de SSM (modo alternativo)."""
+        self.server.cw_ssm_parameter = "/alarm/AWS-CWAgentLinConfig"
+        script = self.server._build_cw_agent_script(True)
+        self.assertIn("SRC=ssm:/alarm/AWS-CWAgentLinConfig", script)
+        self.assertIn('fetch-config -m ec2 -c "${SRC}" -s', script)
+        # En modo SSM no se escribe la config local.
+        self.assertNotIn("CWJSON", script)
+
+    def test_config_editable_por_parametro_de_sistema(self):
+        otra = '{"metrics": {"metrics_collected": {"mem": {"measurement": ["mem_used_percent"]}}}}'
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.cw_agent_config", otra)
+        self.server.cw_ssm_parameter = False
+        self.assertEqual(self.server._cw_agent_config(), otra)
+        self.assertIn(otra, self.server._build_cw_agent_script(True))
+
+    def test_config_invalida_corta_antes_de_viajar(self):
+        self.env["ir.config_parameter"].sudo().set_param(
+            "pcm.cw_agent_config", "{esto no es json")
+        self.server.cw_ssm_parameter = False
+        with self.assertRaises(UserError):
+            self.server._build_cw_agent_script(True)
 
     def test_script_disable_detiene_sin_desinstalar(self):
         script = self.server._build_cw_agent_script(False)
@@ -223,11 +264,11 @@ class TestMonitoreoCloudWatch(TransactionCase):
             "db_mode": "local_pg", "db_name": "x",
         })
         self.assertTrue(wiz.cw_monitoring)   # hereda el default: activado
-        self.assertEqual(wiz.cw_ssm_parameter, "/alarm/AWS-CWAgentLinConfig")
+        # Default del modo: archivo local (sin parámetro SSM).
+        self.assertFalse(wiz.cw_ssm_parameter)
         params = wiz._prepare_params()
         self.assertTrue(params["cw_monitoring"])
-        self.assertEqual(params["cw_ssm_parameter"],
-                         "/alarm/AWS-CWAgentLinConfig")
+        self.assertFalse(params["cw_ssm_parameter"])
         # Y se recuerda al reintentar (config persistida).
         self.assertIn("cw_monitoring", wiz._raw_values())
 

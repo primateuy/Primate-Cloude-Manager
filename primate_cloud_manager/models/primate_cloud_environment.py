@@ -230,11 +230,12 @@ class PrimateCloudEnvironment(models.Model):
              "(sin desinstalar).",
     )
     cw_ssm_parameter = fields.Char(
-        string="Parámetro SSM del agente", copy=False,
+        string="Parámetro SSM del agente (opcional)", copy=False,
         default=lambda self: self._default_cw_ssm_parameter(),
-        help="Nombre del parámetro SSM con la config del agente (lo mantiene "
-             "INCO). El default sale del parámetro de sistema "
-             "pcm.cw_agent_ssm_parameter.",
+        help="OPCIONAL. Con valor, la config del agente se lee de ese "
+             "parámetro SSM (ssm:<nombre>). Vacío (default): PCM escribe la "
+             "config de INCO en el servidor y la carga por archivo local "
+             "(no requiere Parameter Store ni permisos extra).",
     )
     cw_agent_state = fields.Selection(
         [("disabled", "Desactivado"), ("pending", "Pendiente"),
@@ -1715,19 +1716,50 @@ class PrimateCloudEnvironment(models.Model):
 
     # ------------------------------------------------------------------
     # Monitoreo CloudWatch (pedido INCO 2026-11): el agente de AWS manda
-    # RAM y disco con la config que INCO mantiene en un parámetro SSM
-    # (hoy /alarm/AWS-CWAgentLinConfig; su script es de Amazon Linux, los
-    # servidores de PCM son Ubuntu → .deb). Nada de esto es destructivo:
-    # permitido también sobre el servidor que hospeda a ESTE PCM (self).
-    # Un error del agente NO bloquea ninguna otra operación.
+    # RAM y disco. Modo DEFAULT (respuesta de INCO 2026-11-12): la config
+    # es la MISMA de INCO, embebida como plantilla versionada del módulo,
+    # escrita en el servidor y cargada por archivo local — sin Parameter
+    # Store ni permisos extra. Modo opcional por entorno: un parámetro SSM
+    # (ssm:<nombre>; requiere que el rol pueda leerlo). El script de INCO
+    # es de Amazon Linux; los servidores de PCM son Ubuntu → .deb oficial.
+    # Nada de esto es destructivo: permitido también sobre el servidor que
+    # hospeda a ESTE PCM (self). Un error NO bloquea ninguna otra operación.
     # ------------------------------------------------------------------
     CW_PARAM_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+    CW_CONFIG_PATH = "/opt/aws/amazon-cloudwatch-agent/etc/pcm-cloudwatch.json"
+    CW_CONFIG_TEMPLATE = "primate_cloud_manager/data/cw_agent_config.json"
 
     @api.model
     def _default_cw_ssm_parameter(self):
-        """Default del nombre del parámetro: parámetro de sistema de PCM."""
+        """Default del parámetro SSM: vacío = config por archivo local."""
         return self.env["ir.config_parameter"].sudo().get_param(
-            "pcm.cw_agent_ssm_parameter", "/alarm/AWS-CWAgentLinConfig")
+            "pcm.cw_agent_ssm_parameter", "")
+
+    @api.model
+    def _cw_agent_config(self):
+        """La config del agente (JSON) para el modo archivo local.
+
+        Sale del parámetro de sistema ``pcm.cw_agent_config`` si está
+        seteado; si no, de la plantilla versionada del módulo — que es
+        EXACTAMENTE el JSON que pasó INCO. Se valida ANTES de embeberla en
+        el script (un JSON roto es un UserError acá, no un agente mudo).
+        """
+        texto = (self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.cw_agent_config", "") or "").strip()
+        if not texto:
+            with file_open(self.CW_CONFIG_TEMPLATE, "r") as plantilla:
+                texto = plantilla.read().strip()
+        try:
+            json.loads(texto)
+        except ValueError as error:
+            raise UserError(_(
+                "La config del agente CloudWatch no es JSON válido "
+                "(pcm.cw_agent_config): %s") % error)
+        if "CWJSON" in texto:
+            raise UserError(_(
+                "La config del agente no puede contener el texto reservado "
+                "«CWJSON» (delimitador del script)."))
+        return texto
 
     def _cw_machine(self):
         """La máquina corriendo del entorno (el agente vive en la MÁQUINA)."""
@@ -1745,11 +1777,13 @@ class PrimateCloudEnvironment(models.Model):
         self.ensure_one()
         self._pcm_assert_env_not_imported("cw_monitoring")
         self._cw_machine()
-        param = (self.cw_ssm_parameter or self._default_cw_ssm_parameter()).strip()
-        if not self.CW_PARAM_RE.match(param):
+        param = (self.cw_ssm_parameter or "").strip()
+        if param and not self.CW_PARAM_RE.match(param):
             raise UserError(_(
                 "Nombre de parámetro SSM inválido: %r (tiene que empezar con "
                 "«/», sin espacios).") % param)
+        if not param:
+            self._cw_agent_config()   # valida la config del modo archivo YA
         self.write({"cw_monitoring": True, "cw_ssm_parameter": param,
                     "cw_agent_state": "pending", "cw_agent_error": False})
         self.with_delay(
@@ -1786,10 +1820,25 @@ class PrimateCloudEnvironment(models.Model):
                 "systemctl disable --now amazon-cloudwatch-agent >/dev/null 2>&1 || true\n"
                 "echo PCM_CW_DISABLED\n")
         param = (self.cw_ssm_parameter or "").strip()
-        # Validación EN el punto de ejecución (el valor se interpola en el
-        # script): llega por la acción o por params del montaje.
-        if not self.CW_PARAM_RE.match(param):
-            raise UserError(_("Nombre de parámetro SSM inválido: %r.") % param)
+        # Validación EN el punto de ejecución (los valores se interpolan en
+        # el script): llegan por la acción o por params del montaje.
+        if param:
+            if not self.CW_PARAM_RE.match(param):
+                raise UserError(_("Nombre de parámetro SSM inválido: %r.") % param)
+            config_src = (
+                "SRC=ssm:%s\n" % param)
+            motivo_src = "el parámetro %s (¿existe en esta región?)" % param
+        else:
+            # Modo DEFAULT: la config de INCO, escrita en el servidor y
+            # cargada por archivo local (sin Parameter Store).
+            config_src = (
+                'mkdir -p "$(dirname %(cfg)s)"\n'
+                "cat > %(cfg)s <<'CWJSON'\n"
+                "%(json)s\n"
+                "CWJSON\n"
+                "SRC=file:%(cfg)s\n"
+                % {"cfg": self.CW_CONFIG_PATH, "json": self._cw_agent_config()})
+            motivo_src = "la config local %s" % self.CW_CONFIG_PATH
         return (
             "set -u\n"
             "LOG=/var/log/pcm-cw-agent.log\n"
@@ -1804,9 +1853,9 @@ class PrimateCloudEnvironment(models.Model):
             "    fi\n"
             "    rm -f /tmp/pcm-cw-agent.deb\n"
             "fi\n"
-            'if ! "${CTL}" -a fetch-config -m ec2 -c ssm:%(param)s -s >>"${LOG}" 2>&1; then\n'
-            '    echo "PCM_CW_ERR: fetch-config falló con el parámetro %(param)s'
-            ' (¿existe en esta región?) — detalle en ${LOG}"\n'
+            "%(config_src)s"
+            'if ! "${CTL}" -a fetch-config -m ec2 -c "${SRC}" -s >>"${LOG}" 2>&1; then\n'
+            '    echo "PCM_CW_ERR: fetch-config falló con %(motivo_src)s — detalle en ${LOG}"\n'
             "    exit 0\n"
             "fi\n"
             'systemctl enable amazon-cloudwatch-agent >>"${LOG}" 2>&1 || true\n'
@@ -1815,7 +1864,7 @@ class PrimateCloudEnvironment(models.Model):
             "    echo PCM_CW_OK\n"
             "else\n"
             '    echo "PCM_CW_ERR: el servicio no quedó activo tras fetch-config (detalle en ${LOG})"\n'
-            "fi\n" % {"param": param})
+            "fi\n" % {"config_src": config_src, "motivo_src": motivo_src})
 
     def job_cw_agent_apply(self, enable):
         """Job: aplica el estado pedido del agente y escribe el veredicto."""

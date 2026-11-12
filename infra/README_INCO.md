@@ -112,19 +112,22 @@ cuenta registre primero un bucket con ese nombre y reciba nuestros backups.
 PCM valida el nombre antes de usarlo.
 
 **Monitoreo (agente CloudWatch):** los servidores que monta PCM pueden mandar
-métricas de RAM y disco a CloudWatch con el **agente oficial de AWS**, usando
-la configuración que mantiene el equipo de infraestructura en un parámetro SSM
-(hoy `/alarm/AWS-CWAgentLinConfig`; los servidores de PCM son Ubuntu, así que
-PCM instala el `.deb` oficial en lugar del script de Amazon Linux). Para eso
-`pcm-ssm-role` lleva:
+métricas de RAM y disco a CloudWatch con el **agente oficial de AWS**. La
+configuración es **la misma que usa el equipo de infraestructura**
+(`mem_used_percent` + `disk_used_percent` de `/`, namespace `CWAgent`, cada
+60 s), **embebida en PCM** y escrita por PCM en cada servidor como archivo
+local — el agente la carga con `fetch-config -c file:...`. No usa Parameter
+Store, así que **el único permiso nuevo del rol `pcm-ssm-role` es la managed
+policy de AWS `CloudWatchAgentServerPolicy`** (publicar métricas con
+`cloudwatch:PutMetricData` restringido al namespace `CWAgent`, y leer
+parámetros `AmazonCloudWatch-*`, que PCM no usa). Los servidores de PCM son
+Ubuntu, así que PCM instala el `.deb` oficial en lugar del script de Amazon
+Linux.
 
-- la managed policy de AWS **`CloudWatchAgentServerPolicy`** (publicar
-  métricas con `cloudwatch:PutMetricData` restringido al namespace `CWAgent`,
-  y leer los parámetros `AmazonCloudWatch-*`), y
-- una inline (`PcmCWAgentConfigRead`) con **solo `ssm:GetParameter`** sobre
-  `arn:aws:ssm:*:<cuenta>:parameter/alarm/*`, porque la config vive bajo
-  `/alarm/` y la managed no lo cubre. Si el prefijo cambia, es una línea de la
-  plantilla.
+Opcional por servidor: PCM también puede cargar la config desde un parámetro
+SSM (`ssm:<nombre>`) si algún día se prefiere centralizarla; en ese caso
+habría que sumarle al rol `ssm:GetParameter` sobre ese nombre (hoy la
+plantilla NO lo incluye a propósito).
 
 El agente se activa y desactiva por servidor desde PCM (desactivar lo detiene,
 no lo desinstala), y el estado queda a la vista en la ficha del entorno.
