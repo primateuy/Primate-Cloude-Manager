@@ -50,23 +50,32 @@ systemctl enable --now certbot.timer >>"${DETALLE}" 2>&1 || \
 
 # AWS CLI: lo usan backup/staging/restore (aws s3 cp en streaming). En Ubuntu
 # 24.04 el paquete apt no tiene candidato -> snap (hallazgo real de Fase 8).
-# El snap store es FLAKY (408 real, ensayo PCM-self 2026-11-09; otra caída
-# 2026-11-12 que superó 4×20s): reintentos con espera CRECIENTE (~4 min de
-# cobertura) y fallo RUIDOSO propio — sin esto, un 408 tumbaba el bootstrap
-# entero por el set -e, o peor, aparecía recién en el primer respaldo.
+# El snap store es FLAKY (408 real 2026-11-09; DOS caídas más el 2026-11-12
+# que superaron todos los reintentos): snap con pocos intentos y FALLBACK al
+# instalador oficial zip de AWS (awscli.amazonaws.com — unzip ya está en las
+# deps). El fallo final sigue siendo RUIDOSO: sin aws no hay backups.
 if ! command -v aws >/dev/null 2>&1; then
     espera=15
-    for intento in 1 2 3 4 5 6; do
+    for intento in 1 2 3; do
         if snap install aws-cli --classic >>"${DETALLE}" 2>&1; then
             break
         fi
-        log "snap aws-cli falló (intento ${intento}/6); reintento en ${espera} s…"
+        log "snap aws-cli falló (intento ${intento}/3); reintento en ${espera} s…"
         sleep "${espera}"
         espera=$((espera + espera / 2))
     done
 fi
 if ! command -v aws >/dev/null 2>&1; then
-    echo "PCM_ERR_BOOTSTRAP_AWSCLI: no se pudo instalar aws-cli (snap store)."
+    log "snap agotado; instalando AWS CLI v2 con el instalador oficial (zip)…"
+    curl -fsSL -o /tmp/awscliv2.zip \
+        https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip >>"${DETALLE}" 2>&1 \
+        && unzip -oq /tmp/awscliv2.zip -d /tmp/awscliv2 >>"${DETALLE}" 2>&1 \
+        && /tmp/awscliv2/aws/install >>"${DETALLE}" 2>&1 \
+        || true
+    rm -rf /tmp/awscliv2 /tmp/awscliv2.zip
+fi
+if ! command -v aws >/dev/null 2>&1; then
+    echo "PCM_ERR_BOOTSTRAP_AWSCLI: no se pudo instalar aws-cli (snap NI zip oficial)."
     exit 1
 fi
 

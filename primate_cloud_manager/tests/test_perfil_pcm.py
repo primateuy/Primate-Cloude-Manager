@@ -159,10 +159,12 @@ class TestPerfilPcm(TransactionCase):
     # ------------------------------------------------------------------
     def test_bootstrap_awscli_reintenta_y_falla_ruidoso(self):
         script = self.server._build_bootstrap_script()
-        # 6 intentos con espera creciente (la caída real del 2026-11-12
-        # superó los 4×20s del fix anterior).
-        self.assertIn("for intento in 1 2 3 4 5 6", script)
+        # snap con pocos intentos (espera creciente) + FALLBACK al zip
+        # oficial de AWS: el snap store tumbó 3 montajes reales en 2 días.
+        self.assertIn("for intento in 1 2 3", script)
         self.assertIn("espera=$((espera + espera / 2))", script)
+        self.assertIn("awscli.amazonaws.com/awscli-exe-linux-x86_64.zip", script)
+        self.assertIn("/tmp/awscliv2/aws/install", script)
         self.assertIn("PCM_ERR_BOOTSTRAP_AWSCLI", script)
         # El marker sigue al FINAL (si algo falló, el bootstrap NO quedó aplicado).
         self.assertLess(script.index("PCM_ERR_BOOTSTRAP_AWSCLI"),
