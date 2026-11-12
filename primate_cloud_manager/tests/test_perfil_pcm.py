@@ -159,7 +159,10 @@ class TestPerfilPcm(TransactionCase):
     # ------------------------------------------------------------------
     def test_bootstrap_awscli_reintenta_y_falla_ruidoso(self):
         script = self.server._build_bootstrap_script()
-        self.assertIn("for intento in 1 2 3 4", script)
+        # 6 intentos con espera creciente (la caída real del 2026-11-12
+        # superó los 4×20s del fix anterior).
+        self.assertIn("for intento in 1 2 3 4 5 6", script)
+        self.assertIn("espera=$((espera + espera / 2))", script)
         self.assertIn("PCM_ERR_BOOTSTRAP_AWSCLI", script)
         # El marker sigue al FINAL (si algo falló, el bootstrap NO quedó aplicado).
         self.assertLess(script.index("PCM_ERR_BOOTSTRAP_AWSCLI"),
