@@ -218,10 +218,32 @@ def prerrequisitos():
                             "Action": "sts:AssumeRole",
                         }],
                     },
-                    "ManagedPolicyArns": [{"Fn::Sub": (
-                        "arn:${AWS::Partition}:iam::aws:policy/"
-                        "AmazonSSMManagedInstanceCore")}],
+                    "ManagedPolicyArns": [
+                        {"Fn::Sub": (
+                            "arn:${AWS::Partition}:iam::aws:policy/"
+                            "AmazonSSMManagedInstanceCore")},
+                        # Monitoreo (pedido INCO 2026-11): el agente CloudWatch
+                        # manda RAM/disco. La gestionada cubre PutMetricData y
+                        # los parámetros AmazonCloudWatch-*; la config de INCO
+                        # vive en /alarm/* → la inline de abajo.
+                        {"Fn::Sub": (
+                            "arn:${AWS::Partition}:iam::aws:policy/"
+                            "CloudWatchAgentServerPolicy")},
+                    ],
                     "Policies": [{
+                        "PolicyName": "PcmCWAgentConfigRead",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [{
+                                "Sid": "LeerLaConfigDelAgenteQueMantieneINCO",
+                                "Effect": "Allow",
+                                "Action": "ssm:GetParameter",
+                                "Resource": {"Fn::Sub": (
+                                    "arn:${AWS::Partition}:ssm:*:"
+                                    "${AWS::AccountId}:parameter/alarm/*")},
+                            }],
+                        },
+                    }, {
                         "PolicyName": "PcmS3BackupObjects",
                         "PolicyDocument": {
                             "Version": "2012-10-17",

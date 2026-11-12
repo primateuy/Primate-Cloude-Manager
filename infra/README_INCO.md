@@ -97,7 +97,7 @@ las crea un administrador en la consola y las carga en PCM (cifradas).
 | Recurso | Nombre | Para qué |
 |---|---|---|
 | Documento SSM | `pcm-readonly-discovery` | El **único** comando que PCM puede correr en un servidor que no montó. Script fijo, sin parámetros, de solo lectura (ver §8). |
-| Rol IAM + instance profile | `pcm-ssm-role` | El rol que llevan las EC2 que **monta** PCM: agente SSM (`AmazonSSMManagedInstanceCore`; PCM no usa SSH) y lectura/escritura de dumps y backups en los buckets de PCM de esta cuenta. Los servidores existentes no lo usan. |
+| Rol IAM + instance profile | `pcm-ssm-role` | El rol que llevan las EC2 que **monta** PCM: agente SSM (`AmazonSSMManagedInstanceCore`; PCM no usa SSH), lectura/escritura de dumps y backups en los buckets de PCM de esta cuenta, y monitoreo (ver «Monitoreo» abajo). Los servidores existentes no lo usan. |
 | Bucket S3 | `pcm-dumps-<cuenta>` | Dumps a restaurar. Privado, Block Public Access completo, cifrado SSE-S3, **sin versionado**, sólo TLS. Lo que está en `incoming/` se borra solo a los 7 días; los multipart incompletos, a 1 día. Política **Retain**: borrar el stack no borra el bucket. |
 | Managed policy | `pcm-prod-readonly` | Ver §3. |
 | Managed policy | `pcm-prod-provision` | Ver §4. |
@@ -110,6 +110,24 @@ para backups y pre-backups). Los permisos de S3 se limitan a ese patrón **y** a
 buckets de esta cuenta (`aws:ResourceAccount`). Lo segundo evita que otra
 cuenta registre primero un bucket con ese nombre y reciba nuestros backups.
 PCM valida el nombre antes de usarlo.
+
+**Monitoreo (agente CloudWatch):** los servidores que monta PCM pueden mandar
+métricas de RAM y disco a CloudWatch con el **agente oficial de AWS**, usando
+la configuración que mantiene el equipo de infraestructura en un parámetro SSM
+(hoy `/alarm/AWS-CWAgentLinConfig`; los servidores de PCM son Ubuntu, así que
+PCM instala el `.deb` oficial en lugar del script de Amazon Linux). Para eso
+`pcm-ssm-role` lleva:
+
+- la managed policy de AWS **`CloudWatchAgentServerPolicy`** (publicar
+  métricas con `cloudwatch:PutMetricData` restringido al namespace `CWAgent`,
+  y leer los parámetros `AmazonCloudWatch-*`), y
+- una inline (`PcmCWAgentConfigRead`) con **solo `ssm:GetParameter`** sobre
+  `arn:aws:ssm:*:<cuenta>:parameter/alarm/*`, porque la config vive bajo
+  `/alarm/` y la managed no lo cubre. Si el prefijo cambia, es una línea de la
+  plantilla.
+
+El agente se activa y desactiva por servidor desde PCM (desactivar lo detiene,
+no lo desinstala), y el estado queda a la vista en la ficha del entorno.
 
 **Parámetro `Sufijo`** (opcional, vacío en producción): se agrega a todos los
 nombres (por ejemplo `-cfn`). Sirve para probar el stack en una cuenta que ya

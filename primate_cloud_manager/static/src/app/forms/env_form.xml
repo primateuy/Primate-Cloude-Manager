@@ -115,6 +115,12 @@
                         <span>Perfil PCM: la instancia hospeda un Primate Cloud Manager (pip extra, jobrunner de queue_job, jobs largos y clave de cifrado generada en el servidor)</span>
                     </label>
 
+                    <label class="o_pcm_form_check">
+                        <input type="checkbox" t-att-checked="state.cw_monitoring"
+                               t-on-change="(ev) => this.toggle('cw_monitoring', ev)"/>
+                        <span>Monitoreo CloudWatch: el agente de AWS manda RAM y disco con la configuración que mantiene INCO (se instala al final del montaje; un error no bloquea)</span>
+                    </label>
+
                     <!-- Avanzado (solo admin): AMI + red. Un valor acá gana sobre
                          el auto-discovery de la región. -->
                     <t t-if="state.isCloudAdmin">

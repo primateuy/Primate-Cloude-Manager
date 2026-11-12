@@ -35,6 +35,7 @@ ACTION_TYPES = [
     ("destruction_flow", "Confirmación destructiva (3 pasos)"),
     ("readonly_block", "Bloqueo de solo lectura (importado)"),
     ("self_block", "Bloqueo de autogestión (PCM mismo)"),
+    ("cw_monitoring", "Monitoreo CloudWatch"),
     ("job_no_retry", "Relanzamiento automático bloqueado"),
     ("instance_teardown", "Desmontar instancia Odoo (triple confirmación)"),
     ("provision", "Aprovisionar entorno"),

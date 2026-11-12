@@ -1986,6 +1986,12 @@ class PrimateCloudEc2Instance(models.Model):
         from ..services import aws_cloudwatch
         cw = aws_cloudwatch.AwsCloudWatchService(self.account_id._get_aws_service())
         self._take_metrics_snapshot(cw)
+        # Health del agente CloudWatch (pedido INCO): con la opción activa,
+        # el snapshot periódico también verifica el SERVICIO en el servidor.
+        env = self.environment_id
+        if (env and env.cw_monitoring and self.instance_state == "running"
+                and self.provisioned_by_pcm):
+            env._cw_agent_verify(self)
         return True
 
     # Sondeo de runtime (solo lectura). NO toca credenciales: el grep de workers

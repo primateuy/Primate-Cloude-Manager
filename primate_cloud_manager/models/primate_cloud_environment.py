@@ -221,6 +221,29 @@ class PrimateCloudEnvironment(models.Model):
         help="El servidor pasó el bootstrap multi-Odoo (informativo; se "
              "re-verifica contra el marker en disco en cada operación).",
     )
+    # --- Monitoreo CloudWatch (pedido INCO 2026-11): RAM/disco por agente ---
+    cw_monitoring = fields.Boolean(
+        string="Monitoreo CloudWatch", default=False, copy=False, tracking=True,
+        help="Agente CloudWatch de AWS en el servidor mandando RAM y disco, "
+             "con la configuración que INCO mantiene en un parámetro SSM. "
+             "Activar instala y arranca el agente; desactivar lo detiene "
+             "(sin desinstalar).",
+    )
+    cw_ssm_parameter = fields.Char(
+        string="Parámetro SSM del agente", copy=False,
+        default=lambda self: self._default_cw_ssm_parameter(),
+        help="Nombre del parámetro SSM con la config del agente (lo mantiene "
+             "INCO). El default sale del parámetro de sistema "
+             "pcm.cw_agent_ssm_parameter.",
+    )
+    cw_agent_state = fields.Selection(
+        [("disabled", "Desactivado"), ("pending", "Pendiente"),
+         ("active", "Activo"), ("error", "Error")],
+        string="Agente CloudWatch", default="disabled", copy=False,
+        readonly=True,
+    )
+    cw_agent_error = fields.Char(
+        string="Motivo del error (agente)", copy=False, readonly=True)
     database_ids = fields.One2many(
         "primate.cloud.database", "environment_id", string="Bases de datos"
     )
@@ -1184,6 +1207,23 @@ class PrimateCloudEnvironment(models.Model):
                         "sirve por HTTP y el reintento automático sigue "
                         "(o «Activar HTTPS ahora»).",
                         d=domain, r=instance_rec.ssl_last_error or ssl_result))
+        # 6. Monitoreo CloudWatch (pedido INCO): al FINAL del montaje, si la
+        #    opción vino activada en el wizard. Nunca bloquea: el entorno ya
+        #    quedó activo; un error queda en la ficha y la bitácora.
+        if params.get("cw_monitoring"):
+            bus.provision_step(self.env, self,
+                               _("Instalando el agente CloudWatch…"))
+            self.write({
+                "cw_monitoring": True,
+                "cw_ssm_parameter": (params.get("cw_ssm_parameter") or "").strip()
+                or self._default_cw_ssm_parameter(),
+                "cw_agent_state": "pending", "cw_agent_error": False,
+            })
+            try:
+                self.job_cw_agent_apply(True)
+            except Exception as error:  # noqa: BLE001 — no bloquea el montaje
+                self.write({"cw_agent_state": "error",
+                            "cw_agent_error": str(error)[:500]})
         bus.provision_done(self.env, self, ok=True,
                            message=_("Entorno activo en %(url)s.", url=(
                                "https://%s" % domain if ssl_result == "active"
@@ -1672,6 +1712,187 @@ class PrimateCloudEnvironment(models.Model):
         code = (output.get("stdout") or "").strip()
         # curl imprime 000 cuando NO pudo conectar: eso es muerto, no vivo.
         return code.isdigit() and 100 <= int(code) < 500
+
+    # ------------------------------------------------------------------
+    # Monitoreo CloudWatch (pedido INCO 2026-11): el agente de AWS manda
+    # RAM y disco con la config que INCO mantiene en un parámetro SSM
+    # (hoy /alarm/AWS-CWAgentLinConfig; su script es de Amazon Linux, los
+    # servidores de PCM son Ubuntu → .deb). Nada de esto es destructivo:
+    # permitido también sobre el servidor que hospeda a ESTE PCM (self).
+    # Un error del agente NO bloquea ninguna otra operación.
+    # ------------------------------------------------------------------
+    CW_PARAM_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+
+    @api.model
+    def _default_cw_ssm_parameter(self):
+        """Default del nombre del parámetro: parámetro de sistema de PCM."""
+        return self.env["ir.config_parameter"].sudo().get_param(
+            "pcm.cw_agent_ssm_parameter", "/alarm/AWS-CWAgentLinConfig")
+
+    def _cw_machine(self):
+        """La máquina corriendo del entorno (el agente vive en la MÁQUINA)."""
+        self.ensure_one()
+        machine = self.ec2_instance_id or self.ec2_instance_ids.filtered(
+            lambda m: m.instance_state == "running")[:1]
+        if not machine or machine.instance_state != "running":
+            raise UserError(_(
+                "El servidor no está corriendo: no se puede tocar el agente "
+                "CloudWatch."))
+        return machine
+
+    def action_cw_monitoring_enable(self):
+        """Activa el monitoreo: instala/configura el agente por SSM (job)."""
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("cw_monitoring")
+        self._cw_machine()
+        param = (self.cw_ssm_parameter or self._default_cw_ssm_parameter()).strip()
+        if not self.CW_PARAM_RE.match(param):
+            raise UserError(_(
+                "Nombre de parámetro SSM inválido: %r (tiene que empezar con "
+                "«/», sin espacios).") % param)
+        self.write({"cw_monitoring": True, "cw_ssm_parameter": param,
+                    "cw_agent_state": "pending", "cw_agent_error": False})
+        self.with_delay(
+            description=_("Monitoreo CloudWatch: activar en %s") % self.name
+        ).job_cw_agent_apply(True)
+        return True
+
+    def action_cw_monitoring_disable(self):
+        """Desactiva el monitoreo: detiene y deshabilita (sin desinstalar)."""
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("cw_monitoring")
+        self._cw_machine()
+        self.write({"cw_monitoring": False,
+                    "cw_agent_state": "pending", "cw_agent_error": False})
+        self.with_delay(
+            description=_("Monitoreo CloudWatch: desactivar en %s") % self.name
+        ).job_cw_agent_apply(False)
+        return True
+
+    def _build_cw_agent_script(self, enable):
+        """Script SSM del agente (idempotente; stdout corto con marcadores).
+
+        Los errores salen como ``PCM_CW_ERR: <motivo>`` con ``exit 0``: el
+        veredicto lo parsea el job (un parámetro inexistente es un estado de
+        la ficha, no una excepción). El detalle verboso va al log del
+        servidor (lección B4: el stdout de SSM se trunca a ~24KB).
+        """
+        self.ensure_one()
+        if not enable:
+            return (
+                "set -u\n"
+                "CTL=/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl\n"
+                '[ -x "${CTL}" ] && "${CTL}" -a stop >/dev/null 2>&1 || true\n'
+                "systemctl disable --now amazon-cloudwatch-agent >/dev/null 2>&1 || true\n"
+                "echo PCM_CW_DISABLED\n")
+        param = (self.cw_ssm_parameter or "").strip()
+        # Validación EN el punto de ejecución (el valor se interpola en el
+        # script): llega por la acción o por params del montaje.
+        if not self.CW_PARAM_RE.match(param):
+            raise UserError(_("Nombre de parámetro SSM inválido: %r.") % param)
+        return (
+            "set -u\n"
+            "LOG=/var/log/pcm-cw-agent.log\n"
+            "DEB_URL=https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb\n"
+            "CTL=/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl\n"
+            "if ! dpkg -s amazon-cloudwatch-agent >/dev/null 2>&1; then\n"
+            '    if ! curl -fsSL -o /tmp/pcm-cw-agent.deb "${DEB_URL}" >>"${LOG}" 2>&1; then\n'
+            '        echo "PCM_CW_ERR: no se pudo descargar el .deb del agente"; exit 0\n'
+            "    fi\n"
+            '    if ! dpkg -i /tmp/pcm-cw-agent.deb >>"${LOG}" 2>&1; then\n'
+            '        apt-get install -f -y >>"${LOG}" 2>&1 || { echo "PCM_CW_ERR: la instalación del .deb falló (detalle en ${LOG})"; exit 0; }\n'
+            "    fi\n"
+            "    rm -f /tmp/pcm-cw-agent.deb\n"
+            "fi\n"
+            'if ! "${CTL}" -a fetch-config -m ec2 -c ssm:%(param)s -s >>"${LOG}" 2>&1; then\n'
+            '    echo "PCM_CW_ERR: fetch-config falló con el parámetro %(param)s'
+            ' (¿existe en esta región?) — detalle en ${LOG}"\n'
+            "    exit 0\n"
+            "fi\n"
+            'systemctl enable amazon-cloudwatch-agent >>"${LOG}" 2>&1 || true\n'
+            "sleep 3\n"
+            'if [ "$(systemctl is-active amazon-cloudwatch-agent 2>/dev/null)" = "active" ]; then\n'
+            "    echo PCM_CW_OK\n"
+            "else\n"
+            '    echo "PCM_CW_ERR: el servicio no quedó activo tras fetch-config (detalle en ${LOG})"\n'
+            "fi\n" % {"param": param})
+
+    def job_cw_agent_apply(self, enable):
+        """Job: aplica el estado pedido del agente y escribe el veredicto."""
+        self.ensure_one()
+        titulo = (_("Monitoreo CloudWatch: activar en %s")
+                  if enable else _("Monitoreo CloudWatch: desactivar en %s")) % self.name
+        try:
+            machine = self._cw_machine()
+            ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+            output = ssm.run_script(
+                machine.aws_instance_id, self._build_cw_agent_script(enable),
+                region=machine.region, comment="pcm cloudwatch agent",
+                timeout=420, agent_timeout=60, check=False)
+        except Exception as error:  # noqa: BLE001 — veredicto honesto en la ficha
+            self.write({"cw_agent_state": "error",
+                        "cw_agent_error": str(error)[:500]})
+            self._log("cw_monitoring", result="failed",
+                      error_message=str(error), name=titulo)
+            return False
+        stdout = output.get("stdout") or ""
+        if not enable:
+            ok = "PCM_CW_DISABLED" in stdout
+            self.write({"cw_agent_state": "disabled" if ok else "error",
+                        "cw_agent_error": False if ok else
+                        _("el apagado no confirmó (ver bitácora)")})
+            self._log("cw_monitoring", result="success" if ok else "failed",
+                      name=titulo,
+                      error_message=None if ok else (stdout or
+                                                     output.get("stderr") or "")[-800:])
+            return ok
+        if "PCM_CW_OK" in stdout:
+            self.write({"cw_agent_state": "active", "cw_agent_error": False})
+            self._log("cw_monitoring", name=titulo)
+            return True
+        motivo = next(
+            (line.split("PCM_CW_ERR:", 1)[1].strip()
+             for line in stdout.splitlines() if "PCM_CW_ERR:" in line),
+            _("el agente no reportó estado (ver bitácora)"))
+        self.write({"cw_agent_state": "error", "cw_agent_error": motivo[:500]})
+        self._log("cw_monitoring", result="failed", name=titulo,
+                  error_message="%s\n%s" % (motivo,
+                                            (output.get("stderr") or "")[-500:]))
+        return False
+
+    def _cw_agent_verify(self, machine, ssm=None):
+        """Health liviano del servicio (lo llama el snapshot de métricas).
+
+        Solo cambia el estado con un veredicto REAL del servidor: un fallo
+        de SSM no dice nada del agente y no toca la ficha.
+        """
+        self.ensure_one()
+        if not (self.cw_monitoring and self.cw_agent_state in ("active", "error")):
+            return
+        try:
+            if ssm is None:
+                ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+            output = ssm.run_script(
+                machine.aws_instance_id,
+                "systemctl is-active amazon-cloudwatch-agent 2>/dev/null || true",
+                region=machine.region, comment="pcm cw agent health",
+                timeout=30, agent_timeout=30, check=False)
+        except Exception:  # noqa: BLE001 — sin veredicto no se toca el estado
+            return
+        lineas = [l.strip() for l in (output.get("stdout") or "").splitlines()
+                  if l.strip()]
+        estado = lineas[-1] if lineas else ""
+        if estado == "active" and self.cw_agent_state != "active":
+            self.write({"cw_agent_state": "active", "cw_agent_error": False})
+        elif estado and estado != "active" and self.cw_agent_state == "active":
+            self.write({
+                "cw_agent_state": "error",
+                "cw_agent_error": _(
+                    "health: el servicio amazon-cloudwatch-agent está "
+                    "%s") % estado})
+            self._log("cw_monitoring", result="failed",
+                      name=_("Health del agente CloudWatch: %s") % self.name,
+                      error_message=self.cw_agent_error)
 
     # ------------------------------------------------------------------
     # Teardown por slug (rollback orquestado desde el job)

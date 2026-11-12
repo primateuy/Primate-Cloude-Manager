@@ -81,6 +81,12 @@
                                     <field name="instance_type"/>
                                 </list>
                             </field>
+                            <group string="Monitoreo CloudWatch (agente de AWS — config de INCO)">
+                                <field name="cw_monitoring"/>
+                                <field name="cw_ssm_parameter" invisible="not cw_monitoring"/>
+                                <field name="cw_agent_state" widget="pcm_status_badge"/>
+                                <field name="cw_agent_error" invisible="not cw_agent_error"/>
+                            </group>
                         </page>
                         <page string="Bases de datos" name="databases">
                             <field name="database_ids">

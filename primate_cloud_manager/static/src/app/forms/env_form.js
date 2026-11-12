@@ -16,7 +16,7 @@ const WIZARD_FIELDS = [
     "db_user", "db_password", "pg_version", "rds_identifier", "rds_instance_class",
     "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
     "ssl_auto", "hosted_zone_id", "ttl", "elastic_ip", "sslip_domain",
-    "pcm_profile",
+    "pcm_profile", "cw_monitoring", "cw_ssm_parameter",
 ];
 
 /**
@@ -90,6 +90,8 @@ export class EnvForm extends Component {
             hosted_zone_id: "",
             ttl: 300,
             pcm_profile: false,
+            cw_monitoring: true,
+            cw_ssm_parameter: "",
         });
         onWillStart(() => this.loadDefaults());
     }

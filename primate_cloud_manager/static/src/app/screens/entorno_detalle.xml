@@ -304,6 +304,44 @@
                     </div>
                 </div>
 
+                <!-- Monitoreo CloudWatch (pedido INCO): el agente de AWS manda
+                     RAM/disco con la config que INCO mantiene en un parámetro
+                     SSM. No destructivo: permitido también cuando el entorno
+                     hospeda a ESTE PCM. Bloqueado para importados. -->
+                <div class="o_pcm_section_head o_pcm_section_bar">
+                    <h2>Monitoreo CloudWatch</h2>
+                    <div class="o_pcm_actions"
+                         t-if="!d.is_imported and (d.state === 'active' or d.state === 'error')">
+                        <button t-if="!d.cw_monitoring" class="o_pcm_btn o_pcm_btn_accent"
+                                t-on-click="() => this.runEnvMethod('action_cw_monitoring_enable')">
+                            <i class="fa fa-area-chart"/> Activar
+                        </button>
+                        <button t-if="d.cw_monitoring" class="o_pcm_btn"
+                                t-on-click="() => this.runEnvMethod('action_cw_monitoring_disable')">
+                            <i class="fa fa-power-off"/> Desactivar
+                        </button>
+                    </div>
+                </div>
+                <div class="o_pcm_card">
+                    <div class="o_pcm_line">
+                        <div class="o_pcm_line_main">
+                            <span t-if="d.cw_monitoring" class="o_pcm_line_name">
+                                RAM y disco → CloudWatch · parámetro <t t-out="d.cw_ssm_parameter"/>
+                            </span>
+                            <span t-else="" class="o_pcm_muted">
+                                Apagado: el servidor no manda RAM/disco a CloudWatch.
+                            </span>
+                        </div>
+                        <PcmStatusBadge value="d.cw_agent_state"
+                                        model="'primate.cloud.environment'"
+                                        field="'cw_agent_state'"
+                                        label="d.cw_agent_state_label"/>
+                    </div>
+                    <div t-if="d.cw_agent_error"
+                         class="o_pcm_muted o_pcm_backup_detail"
+                         t-out="d.cw_agent_error"/>
+                </div>
+
                 <!-- Trazabilidad: repositorios -->
                 <div class="o_pcm_section_head o_pcm_section_bar">
                     <h2>Repositorios y trazabilidad</h2>

@@ -394,6 +394,14 @@ class PrimateCloudDashboard(models.AbstractModel):
             "hosts_self": bool(environment.instance_ids.filtered("is_self")),
             "origin_label": dict(environment._fields["pcm_origin"].selection)
             .get(environment.pcm_origin, ""),
+            # Monitoreo CloudWatch (pedido INCO): estado del agente en la ficha.
+            "cw_monitoring": environment.cw_monitoring,
+            "cw_agent_state": environment.cw_agent_state or "disabled",
+            "cw_agent_state_label": dict(
+                environment._fields["cw_agent_state"].selection).get(
+                environment.cw_agent_state, ""),
+            "cw_agent_error": environment.cw_agent_error or "",
+            "cw_ssm_parameter": environment.cw_ssm_parameter or "",
             "can_destroy": self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_destructive"),
             # Las instancias Odoo del entorno, con o sin servidor EC2 (un
@@ -1211,6 +1219,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
             "hosted_zone_id", "ttl", "region_status", "region_detail",
             "elastic_ip", "ssl_auto", "sslip_domain", "pcm_profile",
+            "cw_monitoring", "cw_ssm_parameter",
         ]
         data = {f: (wiz[f] if wiz[f] not in (None,) else False) for f in char_int_bool}
         region_labels = dict(Wizard._fields["region_status"].selection)

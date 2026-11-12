@@ -38,3 +38,4 @@ from . import test_secretos_jobs
 from . import test_sin_reintento
 from . import test_autogestion_self
 from . import test_perfil_pcm
+from . import test_monitoreo_cloudwatch

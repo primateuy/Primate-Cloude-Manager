@@ -47,6 +47,9 @@
                                 </div>
                                 <field name="disk_size_gb"/>
                                 <field name="pcm_profile"/>
+                                <field name="cw_monitoring"/>
+                                <field name="cw_ssm_parameter"
+                                       invisible="not cw_monitoring"/>
                             </group>
                             <!-- Red: solo admin. El usuario final no la ve; el
                                  discovery la completa. Un valor acá (override del

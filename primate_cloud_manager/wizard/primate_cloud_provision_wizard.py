@@ -28,6 +28,8 @@ PERSISTED_FIELDS = [
     "ssl_auto", "sslip_domain",
     # Perfil PCM (mudanza 2026-11): reutilizable para futuros servidores de PCM.
     "pcm_profile",
+    # Monitoreo CloudWatch (pedido INCO 2026-11).
+    "cw_monitoring", "cw_ssm_parameter",
 ]
 
 
@@ -60,6 +62,21 @@ class PrimateCloudProvisionWizard(models.TransientModel):
              "queue_job con jobs largos (limit_time_real=14400) y genera la "
              "clave de cifrado de credenciales EN el servidor (nunca viaja "
              "por SSM). Reutilizable para futuros servidores de PCM.",
+    )
+    # Monitoreo CloudWatch (pedido INCO 2026-11): default ACTIVADO — todo
+    # servidor que monta PCM nace mandando RAM/disco con la config de INCO.
+    cw_monitoring = fields.Boolean(
+        string="Monitoreo CloudWatch", default=True,
+        help="Instala el agente CloudWatch de AWS al final del montaje, con "
+             "la configuración que INCO mantiene en un parámetro SSM "
+             "(RAM y disco). Un error del agente no bloquea el montaje.",
+    )
+    cw_ssm_parameter = fields.Char(
+        string="Parámetro SSM del agente",
+        default=lambda self: self.env[
+            "primate.cloud.environment"]._default_cw_ssm_parameter(),
+        help="Nombre del parámetro SSM con la config del agente (lo "
+             "mantiene INCO).",
     )
     image_id = fields.Char(
         string="AMI",
@@ -247,6 +264,9 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             # Odoo
             "admin_password": self.admin_password,
             "pcm_profile": self.pcm_profile,
+            # Monitoreo CloudWatch (pedido INCO)
+            "cw_monitoring": self.cw_monitoring,
+            "cw_ssm_parameter": self.cw_ssm_parameter,
         }
 
     @api.onchange("image_id")
