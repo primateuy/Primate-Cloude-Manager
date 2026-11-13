@@ -305,9 +305,10 @@
                 </div>
 
                 <!-- Monitoreo CloudWatch (pedido INCO): el agente de AWS manda
-                     RAM/disco con la config que INCO mantiene en un parámetro
-                     SSM. No destructivo: permitido también cuando el entorno
-                     hospeda a ESTE PCM. Bloqueado para importados. -->
+                     RAM/disco con la config de INCO embebida (archivo local;
+                     parámetro SSM opcional por entorno). No destructivo:
+                     permitido también cuando el entorno hospeda a ESTE PCM.
+                     Bloqueado para importados. -->
                 <div class="o_pcm_section_head o_pcm_section_bar">
                     <h2>Monitoreo CloudWatch</h2>
                     <div class="o_pcm_actions"

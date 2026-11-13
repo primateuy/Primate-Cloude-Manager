@@ -20,6 +20,7 @@ se leen con el perfil aws local de solo-operación).
 """
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -108,7 +109,16 @@ def abrir_app(page):
     page.wait_for_timeout(1200)
 
 
+def cerrar_modales(page):
+    """Cierra el modal de progreso si quedó abierto (tapa los clics)."""
+    cerrar = page.locator(".modal button", has_text="Cerrar")
+    if cerrar.count():
+        ox.clic(page, cerrar.first)
+        page.wait_for_timeout(800)
+
+
 def nav(page, item):
+    cerrar_modales(page)
     ox.clic(page, page.locator(".o_pcm_nav_item", has_text=item).first)
     page.wait_for_timeout(1200)
 
@@ -187,19 +197,19 @@ def t1_montaje(page):
     ox.clic(page, page.locator("button", has_text="Nuevo entorno").first)
     page.wait_for_selector("input#name_0", timeout=15000)
     ox.tipear(page, page.locator("input#name_0"), ENV_NOMBRE, 40)
-    proy = page.locator("div[name=project_id] input").first
-    proy.click()
-    page.wait_for_timeout(600)
-    proy.fill("Primate (ensayo self)")
-    page.wait_for_timeout(1200)
-    page.keyboard.press("Enter")
-    tipo = page.locator("div[name=env_type] input, select#env_type_0").first
-    try:
-        tipo.click()
-        page.wait_for_timeout(400)
-        page.locator("li", has_text="Producción").first.click()
-    except Exception:   # noqa: BLE001 — select nativo
-        page.select_option("select#env_type_0", label="Producción")
+    # Proyecto y cuenta: autocompletes del form backend (igual que el ensayo).
+    for fid, texto in (("#project_id_0", "Primate (ensayo self)"),
+                       ("#account_id_0", "Personal Prueba Real")):
+        ox.clic(page, page.locator(fid))
+        page.locator(fid).fill(texto[:14])
+        page.wait_for_timeout(1300)
+        ox.clic(page, page.locator(".o-autocomplete--dropdown-item",
+                                   has_text=texto).first)
+        page.wait_for_timeout(600)
+    ox.clic(page, page.locator("#env_type_0"))
+    page.wait_for_timeout(700)
+    ox.clic(page, page.locator(".o_select_menu_item, .dropdown-item",
+                               has_text="Producción").first)
     ox.clic(page, page.locator(".o_form_button_save").first)
     page.wait_for_timeout(3500)
     marca("entorno creado")
@@ -218,7 +228,9 @@ def t1_montaje(page):
             const c = campos.find(f => f.textContent.includes('Contraseña admin'));
             const inp = c && c.querySelector('input');
             if (inp) {
-                inp.value = valor;
+                const seteador = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                seteador.call(inp, valor);
                 inp.dispatchEvent(new Event('input', {bubbles: true}));
             }
         }""", MASTER)
@@ -231,19 +243,35 @@ def t1_montaje(page):
         ox.clic(page, monitoreo)
     ox.rotulo(page, "La opción nueva, ACTIVADA por default",
               "El agente de AWS se instala al final del montaje con la "
-              "config que mantiene INCO (parámetro SSM)", 4200)
+              "config de INCO embebida (archivo local)", 4200)
     marca("wizard con monitoreo activado")
-    ox.clic(page, page.locator("button", has_text="Aprovisionar").last)
-    page.wait_for_timeout(2500)
+    ox.clic(page, page.locator(".o_pcm_drawer button",
+                               has_text="Aprovisionar").last)
+    page.wait_for_selector(".modal", timeout=10000)
+    ox.clic(page, page.locator(".modal footer button.btn-primary").first)
     marca("aprovisionamiento encolado")
     env_id = rpc("primate.cloud.environment", "search",
                  [[["name", "=", ENV_NOMBRE]]])[0]
     ox.rotulo(page, "Montando el servidor",
               "EC2 + bootstrap + Odoo 19 Community — espera real acelerada ×%d"
               % FACTORES["montaje"], 3000)
-    esperar(page, lambda: entorno_campos(env_id, ["state"])["state"] == "active",
-            1800, "montaje", FACTORES["montaje"], recargar_cada=8)
+    estado = esperar(
+        page, lambda: (entorno_campos(env_id, ["state"])["state"]
+                       if entorno_campos(env_id, ["state"])["state"]
+                       in ("active", "error") else None),
+        1800, "montaje", FACTORES["montaje"], recargar_cada=8)
+    assert estado == "active", "el montaje terminó en error"
     evento("entorno %d → active" % env_id)
+    # El modal de progreso queda abierto al terminar: mostrarlo (incluye el
+    # paso nuevo «Instalando el agente CloudWatch…») y cerrarlo.
+    if page.locator(".modal button", has_text="Cerrar").count():
+        ox.rotulo(page, "Montaje completo",
+                  "El progreso incluye el paso nuevo: «Instalando el agente "
+                  "CloudWatch…»", 3800)
+        cerrar_modales(page)
+    page.reload(wait_until="load")
+    page.wait_for_selector(".o_pcm_detalle", timeout=20000)
+    page.wait_for_timeout(1500)
     marca("servidor activo")
     evento("TRAMO 1 OK")
     return env_id
@@ -344,7 +372,11 @@ def t4_toggle(page, env_id):
     abrir_entorno(page)
     ox.desplazar(page, 900)
     page.wait_for_timeout(1200)
-    ox.clic(page, page.get_by_role("button", name="Desactivar", exact=True).first)
+    # Por textContent y NO por rol: el nombre accesible arrastra el glifo del
+    # ícono FontAwesome (::before) y el exact=True nunca matchea. La regex
+    # anclada evita que «Activar» caze «Desactivar».
+    ox.clic(page, page.locator(
+        "button.o_pcm_btn", has_text=re.compile(r"^\s*Desactivar\s*$")).first)
     page.wait_for_timeout(2000)
     esperar(page, lambda: entorno_campos(env_id, ["cw_agent_state"])
             ["cw_agent_state"] == "disabled",
@@ -355,7 +387,8 @@ def t4_toggle(page, env_id):
     ox.rotulo(page, "Desactivado: el servicio se DETIENE",
               "Sin desinstalar — reactivar es instantáneo", 3200)
     marca("monitoreo desactivado")
-    ox.clic(page, page.get_by_role("button", name="Activar", exact=True).first)
+    ox.clic(page, page.locator(
+        "button.o_pcm_btn", has_text=re.compile(r"^\s*Activar\s*$")).first)
     page.wait_for_timeout(2000)
     esperar(page, lambda: entorno_campos(env_id, ["cw_agent_state"])
             ["cw_agent_state"] == "active",
@@ -404,8 +437,8 @@ def t5_teardown(page, env_id, grupo):
     page.wait_for_timeout(2500)
     ox.rotulo(page, "Servidor terminado",
               "Recurso efímero: nada queda corriendo en la cuenta", 3400)
-    rpc("primate.cloud.environment", "write", [[env_id]],
-        {"name": ENV_NOMBRE + " — demo (terminado)"})
+    rpc("primate.cloud.environment", "write",
+        [[env_id], {"name": ENV_NOMBRE + " — demo (terminado)"}])
     rpc("res.users", "write", [[2], {"group_ids": [[3, grupo]]}])
     marca("recursos terminados")
     evento("TRAMO 5 OK")
@@ -432,8 +465,8 @@ def grabar():
         excepcion = None
         page.set_content("<html><body style='background:#111'></body></html>")
         ox.tarjeta(page, "Monitoreo CloudWatch en servidores PCM",
-                   "Pedido INCO: RAM y disco con el agente de AWS y la config "
-                   "de un parámetro SSM — demo real en el sandbox",
+                   "Pedido INCO: RAM y disco con el agente de AWS y su config "
+                   "embebida (archivo local) — demo real en el sandbox",
                    [("Servidor", "t3.small efímero · Ubuntu 24.04"),
                     ("Config", "la de INCO, embebida (archivo local)"),
                     ("Métricas", "mem_used_percent · disk_used_percent")], 6000)

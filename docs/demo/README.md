@@ -1,5 +1,31 @@
 # Videos de ensayo de PCM (fuera de git)
 
+## `demo_monitoreo_cloudwatch.mp4` — 3:36, 1080p
+
+Demo real del **Monitoreo CloudWatch** (pedido INCO 2026-11-12) en la sandbox
+(`pcm_demo`, cuenta «Personal Prueba Real», us-east-1, t3.small efímero,
+Ubuntu 24.04). Config de INCO **embebida** (archivo local, sin Parameter
+Store). Driver `grabar_demo_cw.py`, toma 9 con **0 incidentes** (las tomas
+1–8 cazaron bugs del driver y un hallazgo real: el stack `-cfn` de la sandbox
+actualiza `pcm-ssm-role-cfn` pero los montajes usan `pcm-ssm-role` → la
+policy se adjuntó a mano; en la cuenta real el Sufijo vacío pega en el rol
+correcto).
+
+| Minuto | Tramo |
+|---|---|
+| 0:00 | Portada |
+| 0:12 | Montaje nuevo con la opción **activada por default** en el wizard (espera ×16) |
+| 1:26 | Servidor activo; agente **Activo** en la ficha + bitácora («Monitoreo CloudWatch: activar») |
+| 1:58 | Espera de las primeras métricas (×16) → tarjeta: **mem 22.0 % · disk 27.0 %** en CWAgent, leídos de CloudWatch de verdad |
+| 2:33 | Desactivar (el servicio se DETIENE, sin desinstalar) y reactivar: Activo de nuevo |
+| 3:00 | Teardown con triple confirmación → EC2 terminated, IP liberada |
+| 3:32 | Resultado: montaje+agente OK, métricas OK, incidentes ninguno |
+
+Revisado entero (fotogramas cada 9 s): sin credenciales visibles; la
+contraseña del paso 3/3 aparece como puntos. Costo AWS de la demo completa
+(9 tomas, 2 días, incluido el 3066 vivo una noche para confirmar métricas):
+≈ US$ 0,80.
+
 ## `ensayo_pcm_self.mp4` — 10:11, 1080p
 
 Ensayo COMPLETO de la mudanza de PCM a su propio servidor (punto 9 del plan,
