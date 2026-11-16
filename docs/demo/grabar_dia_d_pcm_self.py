@@ -290,7 +290,7 @@ def precondiciones(desde=None):
         f.unlink()
     estado = psql("select state from primate_cloud_environment "
                   "where name='pcm-self';")
-    if desde in ("p2", "repo", "dump", "f4"):
+    if desde in ("p2", "repo", "dump", "f4", "f5"):
         assert estado == "active", \
             "reanudar desde P2 exige pcm-self activo (está %r)" % estado
     else:
@@ -905,10 +905,12 @@ def f4_despertar(page):
 
 def f5_fencing(page):
     ox.tarjeta(page, "F5 · Fencing y apagado",
-               "La Mac queda inofensiva y apagada",
-               [("IAM", "keys viejas DESACTIVADAS (Daryl, consola)"),
-                ("La Mac", "proceso apagado + doble cerrojo"),
-                ("Rollback", "a mano (reactivar keys + mv de vuelta)")])
+               "La Mac queda apagada como RESPALDO DE EMERGENCIA",
+               [("IAM", "keys viejas DESACTIVADAS (Daryl, consola) — nunca "
+                 "se borran: son la llave de emergencia"),
+                ("La Mac", "proceso apagado + cerrojo reversible; base y "
+                 "fernet.key locales INTACTAS"),
+                ("Emergencia", "docs/EMERGENCIA_PCM_MAC.md")])
     ox.rotulo(page, "DARYL: desactivá las keys VIEJAS en IAM",
               "IAM → Users → pcm-prod-ro y pcm-prod-prov → Security "
               "credentials → la key vieja → Deactivate (NO borrar)", 4600)
@@ -921,23 +923,37 @@ def f5_fencing(page):
     r = correr(["pgrep", "-f", "odoo-bin.*pcm_produccion.conf"])
     assert r.returncode != 0, "el Odoo de la Mac sigue vivo"
     base_dir = pathlib.Path.home() / "Odoo" / "clients" / "19.0" / "pcm_produccion"
-    fecha = time.strftime("%Y-%m-%d")
-    stub = base_dir / "levantar.sh"
-    stub_mudado = base_dir / ("levantar.sh.MUDADO-%s" % fecha)
-    stub.rename(stub_mudado)
-    stub.write_text("#!/usr/bin/env bash\necho 'MUDADO a %s el %s'\nexit 1\n"
-                    % (DOMINIO, fecha))
-    stub.chmod(0o755)
-    (base_dir / "pcm_produccion.conf").rename(
-        base_dir / "pcm_produccion.conf.MUDADO")
-    evento("doble cerrojo puesto (levantar.sh stub + conf movido)")
+    # Cerrojo REVERSIBLE: la Mac queda como RESPALDO DE EMERGENCIA. El
+    # script pasa a levantar_emergencia.sh con aviso + confirmación; la
+    # base pcm_produccion, su conf y la fernet.key local quedan INTACTAS.
+    viejo_sh = base_dir / "levantar.sh"
+    emergencia = base_dir / "levantar_emergencia.sh"
+    contenido = viejo_sh.read_text()
+    cuerpo = (contenido.split("\n", 1)[1]
+              if contenido.startswith("#!") else contenido)
+    aviso = (
+        "#!/usr/bin/env bash\n"
+        "echo '⚠️  PCM productivo es https://%s'\n"
+        "echo '   Esto levanta el PCM de EMERGENCIA de la Mac (base local"
+        " DESACTUALIZADA desde la mudanza).'\n"
+        "echo '   Guía: ~/Odoo/clients/19.0/Primate-Cloude-Manager/docs/"
+        "EMERGENCIA_PCM_MAC.md'\n"
+        "printf '   ¿Seguro? Escribí SI para continuar: '\n"
+        "read CONF\n"
+        "[ \"$CONF\" = \"SI\" ] || { echo '   Abortado.'; exit 1; }\n"
+        % DOMINIO)
+    emergencia.write_text(aviso + cuerpo)
+    emergencia.chmod(0o755)
+    viejo_sh.unlink()
+    evento("cerrojo reversible puesto (levantar_emergencia.sh con aviso)")
     try:
         page.goto(VIEJO + "/web/login", timeout=8000)
     except Exception:   # noqa: BLE001 — conexión rechazada: ESA es la prueba
         pass
     page.wait_for_timeout(2500)
-    ox.rotulo(page, "El PCM de la Mac: APAGADO con doble cerrojo",
-              "Y sus keys ya no sirven — inofensiva aunque arranque", 3600)
+    ox.rotulo(page, "El PCM de la Mac: APAGADO, cerrojo reversible",
+              "Respaldo de emergencia: keys desactivadas, base intacta — "
+              "guía en docs/EMERGENCIA_PCM_MAC.md", 3600)
     marca("mac apagada")
     # El nuevo sigue solo: un GET y un job de prueba.
     r = CTX.request.get(NUEVO + "/web/login")
@@ -1007,7 +1023,7 @@ def grabar(desde=None):
             login_de_daryl(page, VIEJO, "Login en el PCM de la Mac (el que se muda)")
             # El login puede aterrizar en la grilla de apps: abrir la app siempre.
             abrir_app(page, VIEJO)
-            if desde in ("p2", "repo", "dump", "f4"):
+            if desde in ("p2", "repo", "dump", "f4", "f5"):
                 # Reanudación: P1 ya corrió entero (toma preservada aparte).
                 env_id = orm(VIEJO, "primate.cloud.environment", "search",
                              [[["name", "=", ENV_NOMBRE]]])[0]
@@ -1015,7 +1031,7 @@ def grabar(desde=None):
             else:
                 env_id = p1_montaje(page)
                 evento("TRAMO P1 OK")
-            if desde in ("dump", "f4"):
+            if desde in ("dump", "f4", "f5"):
                 evento("REANUDACIÓN en %s · Mac congelada" % desde)
             elif desde == "repo":
                 # El dominio apex ya quedó activo en la toma anterior; se
@@ -1031,11 +1047,11 @@ def grabar(desde=None):
                 _p2_repo(page, env_id)
             else:
                 p2_dominio_y_repo(page, env_id)
-            if desde not in ("dump", "f4"):
+            if desde not in ("dump", "f4", "f5"):
                 evento("TRAMO P2 OK")
                 f1_congelar(page)
                 evento("TRAMO F1 OK")
-            if desde == "f4":
+            if desde in ("f4", "f5"):
                 # El restore ya corrió (lo ejecutó Daryl a mano en la toma
                 # 13); se verifica por bitácora y se salta directo a F4.
                 ok = psql(
@@ -1048,11 +1064,18 @@ def grabar(desde=None):
             else:
                 ruta = f2_dump(page, reusar=(desde == "dump"))
                 evento("TRAMO F2 OK")
-            if desde != "f4":
+            if desde not in ("f4", "f5"):
                 f3_restore(page, env_id, ruta)
                 evento("TRAMO F3 OK")
-            f4_despertar(page)
-            evento("TRAMO F4 OK")
+            if desde != "f5":
+                f4_despertar(page)
+                evento("TRAMO F4 OK")
+            else:
+                # F4 quedó EN VERDE en la toma anterior (checklist completo):
+                # solo falta la sesión en el nuevo para operar el cierre.
+                login_de_daryl(page, NUEVO,
+                               "Login en el PCM NUEVO (F4 ya verificado)")
+                evento("REANUDACIÓN en F5 · F4 verificado en la toma anterior")
             f5_fencing(page)
             evento("TRAMO F5 OK")
         except Exception as error:   # noqa: BLE001 — video y estado se salvan
@@ -1134,5 +1157,7 @@ if __name__ == "__main__":
         grabar("dump")
     elif len(sys.argv) > 1 and sys.argv[1] == "desde_f4":
         grabar("f4")
+    elif len(sys.argv) > 1 and sys.argv[1] == "desde_f5":
+        grabar("f5")
     else:
         grabar()

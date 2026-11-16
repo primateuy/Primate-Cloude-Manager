@@ -375,3 +375,54 @@ días, F6+30).
       `exception=2`, 0 SMTP.
 - [ ] Pendiente CC (cuando fijes el día): comandos exactos de F2 listos
       para pegar (desinstalación en la copia + dump + zip + sha256).
+
+---
+
+## Resultado del día D (2026-11-16) — la mudanza se COMPLETÓ
+
+**PCM productivo: `https://primatecloudmanager.com`** · instancia
+`i-0b257f2e063135df3` · IP fija `184.197.245.80` · t3.medium · Ubuntu 24.04 ·
+Odoo 19 Community · ~US$ 38/mes. Video: `docs/demo/mudanza_pcm_self.mp4`.
+
+### Cambios sobre el plan original
+
+- **La Mac NO se desmantela: queda como RESPALDO DE EMERGENCIA.** Base
+  `pcm_produccion`, filestore, conf y `fernet.key` locales INTACTAS; el
+  arranque pasó a `levantar_emergencia.sh` (aviso + confirmación «SI»).
+  Procedimiento completo: **`docs/EMERGENCIA_PCM_MAC.md`**.
+- **Las keys IAM viejas NO se borran nunca** (se elimina el pendiente «borrado
+  a los 30 días»): quedan DESACTIVADAS en IAM como llave de la emergencia.
+- La triple confirmación destructiva no apareció en el restore (la base
+  destino estaba vacía... hasta que PCM la registró: el camino destructivo SÍ
+  saltó y exigió el grupo «PCM: operaciones destructivas» + contraseña + TOTP).
+
+### Lo que la mudanza real destapó (todo corregido y testeado el mismo día)
+
+1. `_provision_dns` upsertea la fila del registro + savepoint en el job
+   (reintentos tras corte parcial) — commit `cc2466f`.
+2. Re-autenticación destructiva: API TOTP real de v19 + limpieza de espacios
+   del código — `cc2466f`.
+3. «Agregar repositorio» desde un entorno ahora dispara el flujo completo con
+   clone (`action_add_addon_ui`) — `cc2466f`.
+4. Deploys: tolerancia a `InvocationDoesNotExist` (carrera de SSM), restart
+   diferido (`systemd-run`) para la instancia self, y auth git por askpass
+   con el token cifrado — commit `7513e0c`.
+5. Operativos: el módulo clonado vive en `addons/Primate-Cloude-Manager/` y
+   Odoo no mira subdirectorios → **symlink** del módulo en `addons/` (deuda:
+   decidir diseño en el flujo de addons). El código del server se trae por
+   **deploy Pull desde git** — el día D exigió push de 19.0 (el server corre
+   lo pusheado, no lo local).
+
+### Pendientes post-corte
+
+- [ ] **Token del repo en el PCM nuevo**: la base restaurada guarda el PAT
+      revocado → «Sincronizar commits» da 401. Pegar el PAT vigente en la
+      ficha del repo del NUEVO.
+- [ ] F6 (día después): revisión en frío, primer backup diario automático,
+      costos.
+- [ ] Mover bj-uat a `barracajuliav19.primatecloudmanager.com` (PCM ya no
+      escribe en la zona vieja).
+- [ ] Rotación de la contraseña maestra (quedó en el llavero).
+- [ ] Allowlist de IP para `/web/database/manager` (hoy 404 vía nginx).
+- [ ] Diseño definitivo del addons_path para repos clonados (symlink vs
+      entrada por repo en el conf).

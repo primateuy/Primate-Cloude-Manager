@@ -139,3 +139,16 @@ Notas:
   contraseñas visibles; el bloque de credenciales de la cuenta AWS se oculta
   en la grabación.
 - Scripts de grabación y armado: scratchpad de la sesión (`f7/`).
+
+## mudanza_pcm_self.mp4 — EL DÍA REAL (2026-11-16, 10:36)
+
+La mudanza REAL de PCM a su propio servidor: P1 montaje (wizard verificado
+campo a campo, maestra de Daryl a puntos) → P2 dominio APEX
+`primatecloudmanager.com` + repo clonado con PAT (revocado en cámara) → F1
+congelamiento → F2 dump espejo sin Enterprise (sha256 en tarjeta) → F3
+restore con triple confirmación destructiva → F4 despertar (2FA, keys
+nuevas, is_self, backup real, bj-uat) → F5 fencing + Mac apagada como
+respaldo de emergencia. Ensamblado de 6 tomas (las credenciales se tipearon
+en campos password o fuera de cámara; un fotograma muestra un código TOTP
+parcial ya vencido). Driver: `grabar_dia_d_pcm_self.py` (modos de
+reanudación desde_p2/repo/dump/f4/f5).
