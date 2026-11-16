@@ -6,6 +6,7 @@ reinicio de servicios. Todo corre async (queue_job) vía SSM, registrando commit
 origen/destino, el log completo y dejando traza en la bitácora. Los deploys
 sobre git pueden revertirse (checkout al commit origen).
 """
+import base64
 import logging
 import shlex
 
@@ -263,20 +264,54 @@ class PrimateCloudDeployment(models.Model):
         deploy_type = self.deployment_type
         target = self._target_odoo_instance()
         service = shlex.quote(target.service_name or "odoo")
+
+        def reinicio(unit):
+            # Instancia que hospeda a ESTE PCM: el restart va desacoplado y
+            # con delay (systemd-run) para que el comando TERMINE y PCM
+            # alcance a registrar el resultado antes de reiniciarse a sí
+            # mismo (si no, el job muere a mitad del poll).
+            if target.is_self:
+                return ("sudo systemd-run --collect --on-active=10 "
+                        "systemctl restart %s" % unit)
+            return "sudo systemctl restart %s" % unit
+
         if deploy_type in GIT_TYPES:
             path = shlex.quote(self.repository_id.local_path or "")
-            lines = ["set -e", "cd %s" % path,
-                     'echo "PCM_ORIGIN:$(git rev-parse HEAD)"', "git fetch --all --prune"]
+            lines = ["set -e", "cd %s" % path]
+            # El git corre como «odoo» (dueño del clone: git rechaza operar
+            # repos de otro dueño) y, si el repo tiene token, va por askpass
+            # temporal — NUNCA en la URL/git-config/argv (misma técnica que
+            # el clone), con trap que lo borra pase lo que pase.
+            token = self.repository_id._get_github_token()
+            if token:
+                token_b64 = base64.b64encode(
+                    token.encode("utf-8")).decode("ascii")
+                lines += [
+                    'TF=$(mktemp); AK=$(mktemp)',
+                    'trap \'rm -f "$TF" "$AK"\' EXIT',
+                    "printf '%%s' %s | base64 -d > \"$TF\""
+                    % shlex.quote(token_b64),
+                    'printf \'#!/bin/sh\\ncat "%s"\\n\' "$TF" > "$AK"',
+                    'chown odoo:odoo "$TF" "$AK"; chmod 600 "$TF"; '
+                    'chmod 700 "$AK"',
+                    'GITRUN="sudo -u odoo env GIT_ASKPASS=$AK '
+                    'GIT_TERMINAL_PROMPT=0 git"',
+                ]
+            else:
+                lines.append(
+                    'GITRUN="sudo -u odoo env GIT_TERMINAL_PROMPT=0 git"')
+            lines += ['echo "PCM_ORIGIN:$($GITRUN rev-parse HEAD)"',
+                      "$GITRUN fetch --all --prune"]
             if deploy_type == "pull":
-                lines.append("git pull --ff-only")
+                lines.append("$GITRUN pull --ff-only")
             elif deploy_type == "checkout_branch":
-                lines += ["git checkout %s" % shlex.quote(self.target_branch or ""),
-                          "git pull --ff-only"]
+                lines += ["$GITRUN checkout %s" % shlex.quote(self.target_branch or ""),
+                          "$GITRUN pull --ff-only"]
             elif deploy_type == "checkout_commit":
-                lines.append("git checkout %s" % shlex.quote(self.target_commit or ""))
-            lines.append('echo "PCM_TARGET:$(git rev-parse HEAD)"')
+                lines.append("$GITRUN checkout %s" % shlex.quote(self.target_commit or ""))
+            lines.append('echo "PCM_TARGET:$($GITRUN rev-parse HEAD)"')
             if deploy_type in ("checkout_branch", "checkout_commit"):
-                lines.append("sudo systemctl restart %s" % service)
+                lines.append(reinicio(service))
             return "\n".join(lines)
         if deploy_type == "module_update":
             db = shlex.quote(self._db_name())
@@ -288,11 +323,11 @@ class PrimateCloudDeployment(models.Model):
                     shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin"),
                     shlex.quote(target.conf_path or "/etc/odoo/odoo.conf"),
                     db, mods),
-                "sudo systemctl restart %s" % service,
+                reinicio(service),
             ])
         # service_restart
-        return ("set -e\nsudo systemctl restart %s\n"
-                "sudo systemctl restart nginx || true" % service)
+        return ("set -e\n%s\n"
+                "sudo systemctl restart nginx || true" % reinicio(service))
 
     @staticmethod
     def _parse_commits(stdout):

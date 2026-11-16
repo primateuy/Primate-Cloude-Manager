@@ -366,7 +366,20 @@ class AwsSsmService:
 
         waited = 0
         while waited < timeout:
-            output = self.get_command_output(command_id, instance_id, region=region)
+            try:
+                output = self.get_command_output(
+                    command_id, instance_id, region=region)
+            except Exception as error:  # noqa: BLE001 — solo la carrera de SSM
+                # Consistencia eventual de SSM: recién enviado, la invocación
+                # puede no estar registrada (InvocationDoesNotExist) aunque el
+                # comando exista y vaya a correr. Se sigue esperando dentro
+                # del timeout en vez de reventar al primer poll.
+                code = (getattr(error, "response", None) or {}).get(
+                    "Error", {}).get("Code", "")
+                if code != "InvocationDoesNotExist":
+                    raise
+                output = {"status": "Pending", "stdout": "", "stderr": "",
+                          "response_code": None, "request_id": None}
             if output["status"] in SSM_TERMINAL_STATES:
                 output["command_id"] = command_id
                 break

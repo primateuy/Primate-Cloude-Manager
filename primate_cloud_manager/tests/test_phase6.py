@@ -536,15 +536,43 @@ class TestDeployment(TransactionCase):
     # --- Construcción del script ---
     def test_build_script_pull(self):
         script = self._deploy(deployment_type="pull")._build_deploy_script()
-        self.assertIn("git pull --ff-only", script)
+        # El git corre como «odoo» (dueño del clone) vía $GITRUN.
+        self.assertIn("$GITRUN pull --ff-only", script)
+        self.assertIn('GITRUN="sudo -u odoo env GIT_TERMINAL_PROMPT=0 git"',
+                      script)
         self.assertIn("PCM_ORIGIN", script)
         self.assertIn("PCM_TARGET", script)
+
+    def test_build_script_pull_con_token_askpass(self):
+        """Repo con token: el pull va autenticado por askpass temporal — el
+        token NUNCA en claro en el script, ni en URL/git-config/argv."""
+        self.repo.github_token = "tok-secreto-123"
+        script = self._deploy(deployment_type="pull")._build_deploy_script()
+        self.assertIn("GIT_ASKPASS", script)
+        self.assertIn("sudo -u odoo env GIT_ASKPASS=", script)
+        self.assertIn("trap 'rm -f \"$TF\" \"$AK\"' EXIT", script)
+        self.assertNotIn("tok-secreto-123", script)   # solo el b64
+        import base64 as _b64
+        self.assertIn(_b64.b64encode(b"tok-secreto-123").decode(), script)
 
     def test_build_script_checkout_commit_reinicia(self):
         dep = self._deploy(deployment_type="checkout_commit", target_commit="abc123")
         script = dep._build_deploy_script()
-        self.assertIn("git checkout abc123", script)
+        self.assertIn("$GITRUN checkout abc123", script)
         self.assertIn("systemctl restart odoo", script)
+
+    def test_build_script_restart_diferido_en_self(self):
+        """La instancia que hospeda a ESTE PCM: el restart va desacoplado
+        (systemd-run con delay) para que el comando termine y el resultado
+        quede registrado antes del reinicio."""
+        self.env_rec.primary_instance_id.is_self = True
+        dep = self._deploy(deployment_type="service_restart",
+                           repository_id=False)
+        script = dep._build_deploy_script()
+        self.assertIn("systemd-run --collect --on-active=10 "
+                      "systemctl restart odoo", script)
+        # nginx sigue sincrónico (no mata a PCM).
+        self.assertIn("sudo systemctl restart nginx || true", script)
 
     def test_build_script_service_restart(self):
         dep = self._deploy(deployment_type="service_restart", repository_id=False)
@@ -642,3 +670,47 @@ class TestDeployment(TransactionCase):
         self.assertTrue(ok)
         self.assertEqual(revert.state, "success")
         self.assertEqual(orig.state, "reverted")
+
+
+class TestSsmInvocacionRecienEnviada(TransactionCase):
+    """run_script no muere si GetCommandInvocation todavía no registró la
+    invocación (InvocationDoesNotExist: consistencia eventual de SSM).
+    Caso real del día D: el primer poll del deploy llegaba antes que el
+    registro y el job fallaba aunque el comando corría igual."""
+
+    @staticmethod
+    def _service_con_cliente(client):
+        from odoo.addons.primate_cloud_manager.services import aws_ssm
+        base = mock.Mock()
+        base.get_client.return_value = client
+        return aws_ssm.AwsSsmService(base)
+
+    def test_tolera_invocation_does_not_exist(self):
+        class _InvErr(Exception):
+            response = {"Error": {"Code": "InvocationDoesNotExist"}}
+
+        client = mock.Mock()
+        client.send_command.return_value = {"Command": {"CommandId": "c-1"}}
+        client.get_command_invocation.side_effect = [
+            _InvErr(), _InvErr(),
+            {"Status": "Success", "StandardOutputContent": "ok",
+             "StandardErrorContent": "", "ResponseCode": 0,
+             "ResponseMetadata": {"RequestId": "r-1"}},
+        ]
+        service = self._service_con_cliente(client)
+        out = service.run_script("i-1", "echo hola", region="us-east-1",
+                                 _sleep=lambda s: None)
+        self.assertEqual(out["status"], "Success")
+        self.assertEqual(client.get_command_invocation.call_count, 3)
+
+    def test_otros_errores_siguen_reventando(self):
+        class _OtroErr(Exception):
+            response = {"Error": {"Code": "AccessDeniedException"}}
+
+        client = mock.Mock()
+        client.send_command.return_value = {"Command": {"CommandId": "c-2"}}
+        client.get_command_invocation.side_effect = _OtroErr()
+        service = self._service_con_cliente(client)
+        with self.assertRaises(_OtroErr):
+            service.run_script("i-1", "echo hola", region="us-east-1",
+                               _sleep=lambda s: None)
