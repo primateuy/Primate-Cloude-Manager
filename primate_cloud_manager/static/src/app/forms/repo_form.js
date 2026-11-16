@@ -145,8 +145,15 @@ export class RepoForm extends Component {
             if (this.isEdit) {
                 await this.orm.write(
                     "primate.cloud.repository", [this.props.recordId], vals);
+            } else if (this.props.environmentId) {
+                // Alta desde un entorno: flujo COMPLETO (registra y encola el
+                // clone en la instancia) — un create pelado deja una ficha
+                // que nunca clona.
+                await this.orm.call(
+                    "primate.cloud.environment", "action_add_addon_ui",
+                    [[this.props.environmentId], vals]);
             } else {
-                vals.environment_id = this.props.environmentId || false;
+                vals.environment_id = false;
                 await this.orm.create("primate.cloud.repository", [vals]);
             }
             this.env.pcm?.notify(

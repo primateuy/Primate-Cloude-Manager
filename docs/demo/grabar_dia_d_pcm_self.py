@@ -56,6 +56,7 @@ MAQ = "pcm"                      # nombre de la EC2 (instance_name del wizard)
 # primatecloudmanager.com (Z06178081BO0Q1OK7MTAO); el resto de los servidores
 # va en *.primatecloudmanager.com.
 DOMINIO = "primatecloudmanager.com"
+ZONA_ID = "Z06178081BO0Q1OK7MTAO"
 NUEVO = "https://" + DOMINIO
 DB_DESTINO = "pcm_produccion"
 SALIDA = HERE
@@ -280,16 +281,20 @@ def psql(sql, db=DB):
 
 # ------------------------------------------------------------ tramos
 
-def precondiciones():
+def precondiciones(desde=None):
     r = correr(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
                 "--max-time", "4", VIEJO + "/web/login"])
     assert r.stdout.strip() == "200", "pcm_produccion no responde en :19190"
     HANDOFF.mkdir(parents=True, exist_ok=True)
     for f in HANDOFF.glob("flag_*"):
         f.unlink()
-    assert psql("select state from primate_cloud_environment "
-                "where name='pcm-self';") == "draft", \
-        "el entorno pcm-self no está en draft"
+    estado = psql("select state from primate_cloud_environment "
+                  "where name='pcm-self';")
+    if desde in ("p2", "repo", "dump", "f4"):
+        assert estado == "active", \
+            "reanudar desde P2 exige pcm-self activo (está %r)" % estado
+    else:
+        assert estado == "draft", "el entorno pcm-self no está en draft"
     assert psql("select latest_version from ir_module_module "
                 "where name='primate_cloud_manager';") == "19.0.1.8.0"
     evento("precondiciones OK")
@@ -384,9 +389,40 @@ def p1_montaje(page):
 
 def p2_dominio_y_repo(page, env_id):
     ox.tarjeta(page, "P2 · Dominio y repo",
-               "pcm.erp.primateuy.com + el módulo por clone con PAT",
-               [("DNS", "Route 53, zona primateuy.com"),
+               "https://%s (apex) + el módulo por clone con PAT" % DOMINIO,
+               [("DNS", "Route 53, zona %s" % DOMINIO),
                 ("PAT", "fine-grained, solo lectura, se revoca al toque")])
+    # Defaults de «Crear DNS ahora»: la precarga del 13-nov quedó con la zona
+    # vieja; se fijan por ORM de la MISMA sesión (el proceso vivo corre con
+    # workers=0: un set_param desde otro proceso le dejaría la caché vieja).
+    orm(VIEJO, "ir.config_parameter", "set_param",
+        ["pcm.route53_default_zone_id", ZONA_ID])
+    orm(VIEJO, "ir.config_parameter", "set_param",
+        ["pcm.route53_default_domain_suffix", DOMINIO])
+    leido = orm(VIEJO, "ir.config_parameter", "get_param",
+                ["pcm.route53_default_domain_suffix"])
+    assert leido == DOMINIO, "el sufijo no quedó fijado: %r" % leido
+    evento("defaults DNS fijados: zona %s · sufijo %s" % (ZONA_ID, DOMINIO))
+    # Si quedó un intento de dominio fallido (p. ej. IAM sin permiso sobre la
+    # zona), se descarta: el reintento del formulario NO re-crea el registro,
+    # el camino bueno es «Crear DNS ahora» de nuevo.
+    inst = orm(VIEJO, "primate.cloud.instance", "search_read",
+               [[["environment_id", "=", env_id]],
+                ["id", "domain_switch_state"]], {"limit": 1})[0]
+    if inst["domain_switch_state"] == "failed":
+        orm(VIEJO, "primate.cloud.instance", "action_dismiss_domain_switch",
+            [[inst["id"]]])
+        evento("intento de dominio fallido descartado")
+    elif inst["domain_switch_state"] == "running":
+        # «running» huérfano (el job murió a nivel queue_job): la acción de
+        # descartar lo rechaza por diseño, se limpia directo. Acá no puede
+        # haber un switch corriendo de verdad: el driver recién arranca y el
+        # job anterior figura failed en la cola.
+        orm(VIEJO, "primate.cloud.instance", "write",
+            [[inst["id"]], {"domain_switch_state": False,
+                            "domain_switch_target": False,
+                            "domain_switch_error": False}])
+        evento("switch running huérfano limpiado")
     # El repo placeholder de la precarga se quita: el alta real (con clone)
     # es «Agregar repositorio» del entorno.
     viejos = orm(VIEJO, "primate.cloud.repository", "search",
@@ -434,7 +470,12 @@ def p2_dominio_y_repo(page, env_id):
     ox.rotulo(page, "HTTPS en el dominio nuevo + /web/database en 404",
               "Verificado con un GET real", 3200)
 
-    # --- Repo con PAT
+    _p2_repo(page, env_id)
+
+
+def _p2_repo(page, env_id):
+    # --- Repo con PAT (el submit del drawer llama a add_addon: registra
+    # y encola el clone; un create pelado no clonaría nada)
     abrir_entorno(page, VIEJO, ENV_NOMBRE)
     ox.desplazar(page, 1100)
     ox.clic(page, boton_texto(page, "Agregar repositorio"))
@@ -460,7 +501,8 @@ def p2_dominio_y_repo(page, env_id):
     abrir_entorno(page, VIEJO, ENV_NOMBRE)
     abrir_servidor(page)
     comando(page, "ls /opt/pcm/instances/pcm/addons/ && "
-                  "ls /opt/pcm/instances/pcm/addons/primate_cloud_manager | head -5",
+                  "ls /opt/pcm/instances/pcm/addons/Primate-Cloude-Manager"
+                  "/primate_cloud_manager | head -5",
             "El módulo PCM quedó en el addons dir de la instancia")
     marca("repo clonado")
     ox.rotulo(page, "DARYL: REVOCÁ el PAT en GitHub AHORA",
@@ -507,12 +549,39 @@ def f1_congelar(page):
           % (len(ids), correo))
 
 
-def f2_dump(page):
+def f2_dump(page, reusar=False):
     ox.tarjeta(page, "F2 · El dump, espejo del ensayo",
                "La base real NO se toca: todo sale de una copia",
                [("Se quita en la copia", "13 módulos Enterprise (2 pasadas)"),
                 ("Queda", "30 módulos, 0 OEEL"),
                 ("Formato", "zip estilo Odoo: dump.sql + filestore")])
+    if reusar:
+        # El dump ya se armó y verificó en la toma anterior: se re-chequea
+        # (zip íntegro, 0 OEEL, congelamiento vigente) y NO se rehace — la
+        # ventana de corte no espera 10 minutos de nuevo.
+        zipf = HANDOFF / ("pcm_self_%s.zip" % time.strftime("%Y-%m-%d"))
+        assert zipf.exists(), "no hay zip previo para reutilizar"
+        r = correr(["unzip", "-t", "-qq", str(zipf)])
+        assert r.returncode == 0, "el zip previo no pasa la verificación"
+        oeel = psql("select count(*) from ir_module_module where "
+                    "state='installed' and license like 'OEEL%';",
+                    "pcm_mudanza")
+        assert oeel == "0", "quedan %s módulos OEEL" % oeel
+        modulos = psql("select count(*) from ir_module_module "
+                       "where state='installed';", "pcm_mudanza")
+        assert psql(
+            "select count(*) from ir_cron c join ir_model_data d on "
+            "d.res_id=c.id and d.model='ir.cron' where "
+            "d.module='primate_cloud_manager' and c.active;") == "0", \
+            "los crons de PCM no están congelados"
+        sha = correr(["shasum", "-a", "256", str(zipf)]).stdout.split()[0]
+        (HANDOFF / "SHA256SUMS.txt").write_text(
+            "%s  %s\n" % (sha, zipf.name))
+        (HANDOFF / "fuente.dump").unlink(missing_ok=True)
+        correr(["rm", "-rf", str(HANDOFF / "arma")])
+        ox.rotulo(page, "Dump reutilizado de la toma anterior",
+                  "zip íntegro + 0 OEEL + congelamiento re-verificados", 3200)
+        return _f2_entrega(page, zipf, sha, modulos)
     ox.rotulo(page, "Copia + desinstalación + dump",
               "pg_dump → pcm_mudanza → shell quitar_enterprise → zip + sha256 "
               "— espera real acelerada ×%d" % FACTORES["dump"], 3200)
@@ -548,11 +617,16 @@ def f2_dump(page):
         zipf = HANDOFF / ("pcm_self_%s.zip" % time.strftime("%Y-%m-%d"))
         zipf.unlink(missing_ok=True)
         r = correr(["ditto", "-c", "-k", str(arma), str(zipf)])
-        assert r.returncode == 0 and zipf.stat().st_size > 10_000_000
+        # Umbral real: el zip comprime MUCHO (SQL ~10x); 5 MB es lo normal.
+        assert r.returncode == 0 and zipf.stat().st_size > 3_000_000
         sha = correr(["shasum", "-a", "256", str(zipf)]).stdout.split()[0]
         (HANDOFF / "SHA256SUMS.txt").write_text("%s  %s\n" % (sha, zipf.name))
         bruto.unlink(missing_ok=True)
         correr(["rm", "-rf", str(arma)])
+    return _f2_entrega(page, zipf, sha, modulos)
+
+
+def _f2_entrega(page, zipf, sha, modulos):
     peso = zipf.stat().st_size
     evento("dump listo: %s · %d MB · sha256 %s · módulos=%s"
            % (zipf, peso // 1048576, sha, modulos))
@@ -597,8 +671,11 @@ def f3_restore(page, env_id, ruta_s3):
     if conf.count():
         ox.tipear(page, conf, ENV_NOMBRE, 40)
     ox.clic(page, page.locator("button[name=action_restore]").first)
-    page.wait_for_selector(".modal button:has-text('Ok')", timeout=10000)
-    ox.clic(page, page.locator(".modal button", has_text="Ok").first)
+    # El diálogo nativo en es_UY dice «De acuerdo» (el ensayo decía «Ok»).
+    boton_conf = page.locator(
+        ".modal button", has_text=re.compile(r"^\s*(De acuerdo|Ok)\s*$"))
+    boton_conf.first.wait_for(state="visible", timeout=10000)
+    ox.clic(page, boton_conf.first)
     page.wait_for_timeout(2500)
     if page.locator("#typed_name_0").count() or page.locator(
             "button[name=action_next_from_impact]").count():
@@ -610,11 +687,52 @@ def f3_restore(page, env_id, ruta_s3):
         ox.tipear(page, page.locator("#typed_name_0"), DB_DESTINO, 45)
         ox.clic(page, page.locator("button[name=action_confirm_name]").first)
         page.wait_for_timeout(1500)
-        ox.rotulo(page, "DARYL: tu contraseña para ejecutar",
-                  "Avisá en el chat cuando esté tipeada", 3600)
-        esperar_flag(page, "flag_password_f3", "Esperando la re-autenticación",
-                     "Daryl tipea su contraseña en el modal")
-        ox.clic(page, page.locator("button[name=action_execute]").first)
+        ox.rotulo(page, "DARYL: contraseña Y código 2FA (los DOS campos)",
+                  "Se vacían tras cada intento. El driver ejecuta solo al "
+                  "verlos completos — el token del wizard dura 5 min.", 4200)
+        evento("PAUSA · esperando contraseña + TOTP en el modal")
+
+        def _campos_llenos():
+            try:
+                pw = page.locator("#password_0").evaluate(
+                    "el => el.value.length")
+                tc = page.locator("#totp_code_0").evaluate(
+                    "el => el.value.length")
+            except Exception:   # noqa: BLE001 — modal re-renderizando
+                return 0, 0
+            return pw, tc
+
+        for intento in range(3):
+            t0 = time.time()
+            while time.time() - t0 < 240:
+                pw, tc = _campos_llenos()
+                if pw >= 4 and tc >= 6:
+                    page.wait_for_timeout(1300)   # que termine de tipear
+                    if _campos_llenos() == (pw, tc):
+                        break
+                page.wait_for_timeout(700)
+            else:
+                raise AssertionError("re-autenticación no tipeada en 240 s")
+            evento("campos completos · ejecutando")
+            ox.clic(page, page.locator("button[name=action_execute]").first)
+            page.wait_for_timeout(4000)
+            if not page.locator("button[name=action_execute]").count():
+                break   # el modal se cerró: ejecutó
+            evento("re-autenticación RECHAZADA · reintento %d (tipeá los dos "
+                   "campos de nuevo, código 2FA fresco)" % (intento + 1))
+        else:
+            raise AssertionError("re-autenticación rechazada 3 veces")
+    # Verificación dura: el job tiene que estar en la cola (la marca de la
+    # toma 9 mintió: el wizard había rechazado y acá se siguió igual).
+    t0 = time.time()
+    encolado = ""
+    while time.time() - t0 < 30 and not encolado:
+        encolado = psql("select id from queue_job where name like "
+                        "'Restaurar backup%' and date_created > "
+                        "now() - interval '2 minutes' limit 1;")
+        if not encolado:
+            page.wait_for_timeout(2000)
+    assert encolado, "el job de restore NO quedó en la cola"
     marca("restore encolado")
     ox.rotulo(page, "Restaurando", "S3 → stop → drop → restore → filestore → "
               "start — espera real acelerada ×%d" % FACTORES["restore"], 3200)
@@ -855,9 +973,9 @@ def _dur(segundos):
     return "%d:%02d" % (segundos // 60, segundos % 60)
 
 
-def grabar():
+def grabar(desde=None):
     global T0, CTX
-    precondiciones()
+    precondiciones(desde)
     bruto = SALIDA / "bruto"
     bruto.mkdir(exist_ok=True)
     with sync_playwright() as navegador:
@@ -887,16 +1005,52 @@ def grabar():
                    6500)
         try:
             login_de_daryl(page, VIEJO, "Login en el PCM de la Mac (el que se muda)")
-            env_id = p1_montaje(page)
-            evento("TRAMO P1 OK")
-            p2_dominio_y_repo(page, env_id)
-            evento("TRAMO P2 OK")
-            f1_congelar(page)
-            evento("TRAMO F1 OK")
-            ruta = f2_dump(page)
-            evento("TRAMO F2 OK")
-            f3_restore(page, env_id, ruta)
-            evento("TRAMO F3 OK")
+            # El login puede aterrizar en la grilla de apps: abrir la app siempre.
+            abrir_app(page, VIEJO)
+            if desde in ("p2", "repo", "dump", "f4"):
+                # Reanudación: P1 ya corrió entero (toma preservada aparte).
+                env_id = orm(VIEJO, "primate.cloud.environment", "search",
+                             [[["name", "=", ENV_NOMBRE]]])[0]
+                evento("REANUDACIÓN desde %s · env %d" % (desde, env_id))
+            else:
+                env_id = p1_montaje(page)
+                evento("TRAMO P1 OK")
+            if desde in ("dump", "f4"):
+                evento("REANUDACIÓN en %s · Mac congelada" % desde)
+            elif desde == "repo":
+                # El dominio apex ya quedó activo en la toma anterior; se
+                # quita la ficha sin clone que dejó el submit viejo y se
+                # repite solo la parte del repo.
+                sin_clone = orm(VIEJO, "primate.cloud.repository", "search",
+                                [[["environment_id", "=", env_id],
+                                  ["name", "=", "primate_cloud_manager"]]])
+                if sin_clone:
+                    orm(VIEJO, "primate.cloud.repository", "unlink",
+                        [sin_clone])
+                    evento("ficha de repo sin clone quitada (%s)" % sin_clone)
+                _p2_repo(page, env_id)
+            else:
+                p2_dominio_y_repo(page, env_id)
+            if desde not in ("dump", "f4"):
+                evento("TRAMO P2 OK")
+                f1_congelar(page)
+                evento("TRAMO F1 OK")
+            if desde == "f4":
+                # El restore ya corrió (lo ejecutó Daryl a mano en la toma
+                # 13); se verifica por bitácora y se salta directo a F4.
+                ok = psql(
+                    "select count(*) from primate_cloud_operation_log "
+                    "where action_type='backup_restore' and "
+                    "result='success' and create_date > current_date;")
+                assert ok != "0", "no hay restore exitoso hoy en la bitácora"
+                evento("REANUDACIÓN en F4 · restore ya hecho y verificado")
+                ruta = None
+            else:
+                ruta = f2_dump(page, reusar=(desde == "dump"))
+                evento("TRAMO F2 OK")
+            if desde != "f4":
+                f3_restore(page, env_id, ruta)
+                evento("TRAMO F3 OK")
             f4_despertar(page)
             evento("TRAMO F4 OK")
             f5_fencing(page)
@@ -972,5 +1126,13 @@ def ensamblar():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "ensamblar":
         ensamblar()
+    elif len(sys.argv) > 1 and sys.argv[1] == "desde_p2":
+        grabar("p2")
+    elif len(sys.argv) > 1 and sys.argv[1] == "desde_repo":
+        grabar("repo")
+    elif len(sys.argv) > 1 and sys.argv[1] == "desde_dump":
+        grabar("dump")
+    elif len(sys.argv) > 1 and sys.argv[1] == "desde_f4":
+        grabar("f4")
     else:
         grabar()

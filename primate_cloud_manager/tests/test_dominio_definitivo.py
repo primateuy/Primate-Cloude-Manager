@@ -402,6 +402,9 @@ class TestDominioDefinitivo(TransactionCase):
                 mock.patch.object(type(self.inst), "with_delay") as delay:
             wiz.action_confirm()
         delay.assert_called_once()
+        # El confirm anterior dejó un switch «en curso» (el job está mockeado
+        # y nunca corre): se limpia el estado para poder confirmar de nuevo.
+        self.inst.domain_switch_state = False
         # El APEX (el sufijo mismo) también vale: el stack otorga <sufijo> y
         # *.<sufijo> — el manager vive en el dominio raíz (2026-11-16).
         wiz = Wiz.create({"domain": "erp.primateuy.com"})

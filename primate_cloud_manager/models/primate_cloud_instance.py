@@ -816,10 +816,14 @@ class PrimateCloudInstance(models.Model):
                     "El servidor no tiene máquina activa con IP pública."))
             machine._exigir_gestion_habilitada("dns_write")
             base = self.account_id._get_aws_service()
-            change_id = env_rec._provision_dns(
-                base, self.account_id, machine,
-                {"create_dns": True, "hosted_zone_id": hosted_zone_id,
-                 "ttl": ttl or 300}, domain, instance=self)
+            # Savepoint: si algo revienta a nivel SQL acá adentro, la
+            # transacción sigue viva y el fallo se puede anotar en la
+            # bitácora (sin esto quedaría abortada y el switch «en curso»).
+            with self.env.cr.savepoint():
+                change_id = env_rec._provision_dns(
+                    base, self.account_id, machine,
+                    {"create_dns": True, "hosted_zone_id": hosted_zone_id,
+                     "ttl": ttl or 300}, domain, instance=self)
             nameservers = aws_route53.AwsRoute53Service(
                 base).get_zone_nameservers(hosted_zone_id)
         except Exception as error:  # noqa: BLE001 - se anota, no se traga

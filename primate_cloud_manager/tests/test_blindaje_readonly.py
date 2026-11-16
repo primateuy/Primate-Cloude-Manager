@@ -417,6 +417,32 @@ class TestTripleConfirmacion(TransactionCase):
         with self.assertRaises(UserError):
             T.destruction_reauth(t2["ticket_id"], t2["token"], "mal")
 
+    def test_reauth_totp_api_v19_y_codigo_con_espacio(self):
+        """2FA real en el paso 3: la validación va por _check_credentials
+        tipo «totp» (la API de v19 — _totp_check no existe, y el except
+        genérico lo disfrazaba de «código inválido» con CUALQUIER código)
+        y el código vale tal como lo muestra la app («123 456»)."""
+        import base64 as _b64
+        import time as _time
+        from odoo.addons.auth_totp.models.totp import TIMESTEP, hotp
+        secreto = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        self.destructor.sudo().totp_secret = secreto
+        self.assertTrue(self.destructor.sudo().totp_enabled)
+        codigo = hotp(_b64.b32decode(secreto), int(_time.time() / TIMESTEP))
+        con_espacio = "%03d %03d" % (codigo // 1000, codigo % 1000)
+        T = self.Ticket.with_user(self.destructor)
+        t1 = self._paso1()
+        t2 = T.destruction_confirm_name(t1["ticket_id"], t1["token"],
+                                        "srv-pcm-1")
+        # El rate-limit de auth_totp exige un request HTTP (acá no hay);
+        # no es lo que se prueba.
+        Users = type(self.env["res.users"])
+        with mock.patch.object(Users, "_totp_rate_limit"), \
+                mock.patch.object(Users, "_totp_rate_limit_purge"):
+            t3 = T.destruction_reauth(t2["ticket_id"], t2["token"],
+                                      "clave-ok-123", con_espacio)
+        self.assertTrue(t3["token"])
+
     def test_ticket_de_otro_usuario(self):
         otro = new_test_user(
             self.env, login="otro_destructor", password="otra-clave-9",

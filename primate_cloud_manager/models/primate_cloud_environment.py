@@ -2251,7 +2251,20 @@ class PrimateCloudEnvironment(models.Model):
         }
         if instance is not None:
             vals["instance_id"] = instance.id
-        record = self.env["primate.cloud.dns.record"].create(vals)
+        # Reintento tras un corte parcial: en Route 53 el cambio es UPSERT,
+        # pero la fila puede haber quedado de un intento anterior y hay
+        # constraint única (cuenta, zona, nombre, tipo) — se upsertea igual.
+        Record = self.env["primate.cloud.dns.record"]
+        record = Record.search([
+            ("account_id", "=", account.id),
+            ("hosted_zone_id", "=", params["hosted_zone_id"]),
+            ("name", "=", domain),
+            ("record_type", "=", "A"),
+        ], limit=1)
+        if record:
+            record.write({k: v for k, v in vals.items() if k != "name"})
+        else:
+            record = Record.create(vals)
         self.message_post(body=_("Registro DNS creado: %s -> %s.")
                           % (domain, machine.public_ip))
         self._log("dns_create", name=_("Crear DNS: %s") % domain,
@@ -5703,6 +5716,13 @@ class PrimateCloudEnvironment(models.Model):
             description=_("Agregar addon: %s") % repo.name
         ).job_add_addon(repo.id)
         return repo
+
+    def action_add_addon_ui(self, vals):
+        """Alta de repo DESDE LA UI (drawer OWL): mismo flujo completo que
+        add_addon (registro + clone encolado), devolviendo el id plano apto
+        para RPC (add_addon devuelve un recordset, que JSON no serializa)."""
+        self.ensure_one()
+        return self.add_addon(vals).id
 
     def job_add_addon(self, repo_id):
         """Job: clona el addon, activa el addons_path (reusa B3) y verifica."""

@@ -251,8 +251,16 @@ class PrimateCloudDestructionTicket(models.Model):
             ticket._audit("failed", _("Paso 3/3: contraseña incorrecta"))
             raise UserError(_("Contraseña incorrecta."))
         if getattr(user.sudo(), "totp_enabled", False):
+            # Las apps muestran el código con espacio («123 456»): se limpia
+            # todo lo que no sea dígito, igual que el login de Odoo. La
+            # verificación va por _check_credentials tipo «totp» (la API real
+            # de auth_totp en v19; _totp_check no existe y el except lo
+            # disfrazaba de «código inválido» con cualquier código).
+            codigo = "".join(c for c in (totp_code or "") if c.isdigit())
             try:
-                user.sudo()._totp_check(int(totp_code or 0))
+                user._check_credentials(
+                    {"type": "totp", "token": int(codigo or 0)},
+                    {"interactive": True})
             except Exception:  # noqa: BLE001
                 ticket._audit("failed", _("Paso 3/3: TOTP inválido"))
                 raise UserError(_("Código TOTP inválido."))
