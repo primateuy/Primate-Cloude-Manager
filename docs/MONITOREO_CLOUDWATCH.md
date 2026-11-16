@@ -56,8 +56,9 @@ instante, sin reinicio).
 1. **Update del stack `pcm-prerequisitos`** (consola → CloudFormation →
    stack → Update → Replace template → subir
    `infra/cloudformation/pcm-prerequisitos.yaml`), manteniendo los
-   parámetros: `Sufijo` vacío, **`ZonaDns=Z06154501H54LEU4PFGH2`** y
-   **`NombresDns=*.erp.primateuy.com`**. Revisar el change set: **un único
+   parámetros: `Sufijo` vacío, **`ZonaDns=Z06178081BO0Q1OK7MTAO`** y
+   **`NombresDns=primatecloudmanager.com,*.primatecloudmanager.com`** (zona
+   nueva 2026-11-16; hecho ese día). Revisar el change set: **un único
    Modify de `RolSSM`**. Ejecutar.
 2. **Activar en bj-uat**: PCM → Entornos → bj-uat → sección «Monitoreo
    CloudWatch» → **Activar**. En ~1 minuto la ficha pasa a **Activo** (si da

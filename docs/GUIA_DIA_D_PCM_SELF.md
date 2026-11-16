@@ -29,8 +29,10 @@ salirse de eso, Claude **frena y pregunta**.
 1. [ ] YO · **Update del stack `pcm-prerequisitos`** en la cuenta real
    (CloudFormation → Update → Replace template → subir
    `infra/cloudformation/pcm-prerequisitos.yaml`), parámetros: `Sufijo`
-   **vacío**, `ZonaDns=Z06154501H54LEU4PFGH2`,
-   `NombresDns=*.erp.primateuy.com`. Change set: **un único Modify de
+   **vacío**, `ZonaDns=Z06178081BO0Q1OK7MTAO` (zona
+   **primatecloudmanager.com**, 2026-11-16),
+   `NombresDns=primatecloudmanager.com,*.primatecloudmanager.com`.
+   Change set: **un único Modify de
    `RolSSM`** (suma `CloudWatchAgentServerPolicy`). Acá el Sufijo vacío pega
    en `pcm-ssm-role`, el rol que usan los montajes (la trampa del `-cfn` era
    solo de la sandbox).
@@ -104,7 +106,7 @@ salirse de eso, Claude **frena y pregunta**.
 | # | Tramo | Quién | Detalle |
 |---|---|---|---|
 | P1 | Montaje de `pcm-self` (puede ser el día antes) | PCM · YO | [§P1](#p1--montaje-de-pcm-self-pcm--yo) |
-| P2 | Dominio `pcm.erp.primateuy.com` + clone del repo + revocar PAT | PCM · YO | [§P2](#p2--dominio--repo--revocar-pat) |
+| P2 | Dominio **`primatecloudmanager.com`** (apex) + clone del repo + revocar PAT | PCM · YO | [§P2](#p2--dominio--repo--revocar-pat) |
 | F1 | Congelar la Mac (abre la ventana) | YO | [§F1](#f1--congelar-la-mac-yo--abre-la-ventana) |
 | F2 | Dump espejo + subida | YO · CC | [§F2](#f2--dump-espejo--subida-yo) |
 | F3 | Restore sin neutralizar (disparado desde el PCM de la Mac) | PCM | [§F3](#f3--restore-pcm-desde-la-mac) |
@@ -163,7 +165,10 @@ se tocó: **rollback total, costo = minutos de EC2**.
 ## P2 · Dominio + repo + revocar PAT
 
 1. [ ] PCM · Instancia `pcm` → **«Crear DNS ahora»** → propone
-   **`pcm.erp.primateuy.com`** (slug `pcm` + sufijo default) → en ~70 s:
+   `pcm.primatecloudmanager.com` (slug + sufijo default) y se **reemplaza
+   por el APEX `primatecloudmanager.com`** (el manager vive en el dominio
+   raíz; registro **A en el apex** con la IP fija — la validación del wizard
+   acepta el apex desde el patch del 2026-11-16) → en ~70 s:
    registro A en la zona, certificado de producción, sslip retirado,
    `web.base.url` actualizado (igual que bj-uat el 28-oct).
 2. [ ] YO · Pegá el PAT (de `~/.pcm_produccion/pat_mudanza_pcm.txt`) en
@@ -174,7 +179,7 @@ se tocó: **rollback total, costo = minutos de EC2**.
 4. [ ] YO · **Revocar el PAT en GitHub ya mismo** (aunque le queden días) y
    borrar `~/.pcm_produccion/pat_mudanza_pcm.txt`. Las actualizaciones
    futuras de código van por la deploy key SSH del BACKLOG.
-5. [ ] YO · Login en `https://pcm.erp.primateuy.com/web/login`: candado
+5. [ ] YO · Login en `https://primatecloudmanager.com/web/login`: candado
    válido; `/web/database/manager` → **404**. (La base todavía es la vacía
    del install: el login real llega con el restore.)
 
@@ -258,9 +263,9 @@ mañana. La Mac sigue intacta y puede reactivar crons en 1 min.
 
 El orden importa: **2FA primero, secretos después**.
 
-1. [ ] YO · Login en `https://pcm.erp.primateuy.com` con tu admin → **el 2FA
+1. [ ] YO · Login en `https://primatecloudmanager.com` con tu admin → **el 2FA
    pide código** (viajó en el dump). Sin 2FA verde NO se carga ninguna key.
-2. [ ] YO · Parámetros: `web.base.url = https://pcm.erp.primateuy.com` +
+2. [ ] YO · Parámetros: `web.base.url = https://primatecloudmanager.com` +
    `web.base.url.freeze = True`; `report.url = http://127.0.0.1:<puerto>`
    (lección wkhtmltopdf). Confirmar que NO existe
    `primate_cloud_manager.fernet_key` en parámetros (la clave vive en
@@ -308,7 +313,7 @@ día: **hasta acá no ocurrió nada destructivo**.
    después — regla no-relanzar-sin-pgrep).
 3. [ ] YO · Doble cerrojo anti-arranque:
    `mv levantar.sh levantar.sh.MUDADO-<fecha>` (queda un stub que imprime
-   «MUDADO a pcm.erp.primateuy.com») y
+   «MUDADO a primatecloudmanager.com») y
    `mv pcm_produccion.conf pcm_produccion.conf.MUDADO`.
 4. [ ] YO · Archivar `~/.pcm_produccion/fernet.key` offline (se destruye al
    cerrar los 30 días). La base local queda como respaldo frío 30 días.
@@ -329,6 +334,12 @@ días, F6+30).
       borra si salió bien).
 - [ ] YO · **Aviso a INCO** (texto abajo).
 - [ ] CC · KB actualizada (estado + decisiones) + marcar esta guía.
+- [ ] Pendiente post-corte: **mover bj-uat a
+      `barracajuliav19.primatecloudmanager.com`** («Asociar dominio» o
+      «Crear DNS ahora» en la zona nueva). Sigue en
+      `barracajuliav19.erp.primateuy.com`, pero **PCM ya no puede escribir en
+      esa zona** (el stack 2026-11-16 solo otorga `primatecloudmanager.com` y
+      `*.primatecloudmanager.com`).
 
 ---
 
@@ -339,7 +350,7 @@ días, F6+30).
 > Hola. Mudamos nuestra consola de gestión (PCM) a un servidor propio en la
 > cuenta: **us-east-1, t3.medium, gp3 50 GB, Ubuntu 24.04**, instancia
 > **`<i-xxxxxxxxxxxxxxxxx>`**, IP fija **`<x.x.x.x>`**,
-> `https://pcm.erp.primateuy.com`. No es productivo de clientes, pero sí
+> `https://primatecloudmanager.com`. No es productivo de clientes, pero sí
 > crítico para nuestra operación.
 >
 > Les pedimos configurarle, como a bj-uat: **backups** (snapshots del EBS),

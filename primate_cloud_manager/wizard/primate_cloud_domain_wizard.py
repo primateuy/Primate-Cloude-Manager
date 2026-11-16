@@ -23,7 +23,7 @@ _logger = logging.getLogger(__name__)
 DOMAIN_RE = re.compile(
     r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 # Subdominio por defecto de «Crear DNS ahora» (2026-10-28): el permiso de
-# Route 53 del stack (NombresDns) solo alcanza a *.<sufijo>.
+# Route 53 del stack (NombresDns) alcanza a <sufijo> (apex) y *.<sufijo>.
 SUFFIX_PARAM = "pcm.route53_default_domain_suffix"
 RESERVED_SUFFIXES = (".local", ".invalid", ".localhost", ".test", ".example",
                      ".internal", ".lan")
@@ -116,11 +116,13 @@ class PrimateCloudDomainWizard(models.TransientModel):
             if not zone:
                 raise UserError(_("Falta el Hosted Zone ID."))
             suffix = self._default_suffix()
-            if suffix and not domain.endswith("." + suffix):
+            # El apex (el sufijo mismo) vale: el stack otorga <sufijo> y
+            # *.<sufijo> — el manager vive en el dominio raíz (2026-11-16).
+            if suffix and domain != suffix and not domain.endswith("." + suffix):
                 raise UserError(_(
                     "PCM solo puede crear registros dentro de %(s)s (el "
-                    "permiso de Route 53 del stack alcanza a *.%(s)s): "
-                    "«%(d)s» queda afuera. No se cambió nada.",
+                    "permiso de Route 53 del stack alcanza a %(s)s y "
+                    "*.%(s)s): «%(d)s» queda afuera. No se cambió nada.",
                     s=suffix, d=domain))
             instance.environment_id._check_hosted_zone(
                 instance.account_id, zone)

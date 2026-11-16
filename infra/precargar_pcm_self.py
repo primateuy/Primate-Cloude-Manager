@@ -20,6 +20,10 @@ Lo que queda VACÍO a propósito (lo cargás vos en el wizard, el día D):
 
 CUENTA = "pcm-prod-prov"
 REPO_URL = "https://github.com/primateuy/Primate-Cloude-Manager"
+# Zona nueva (2026-11-16): el manager va en el APEX primatecloudmanager.com;
+# los demás servidores en *.primatecloudmanager.com.
+ZONA_ID = "Z06178081BO0Q1OK7MTAO"
+SUFIJO_DNS = "primatecloudmanager.com"
 
 Account = env["primate.cloud.account"]
 Project = env["primate.cloud.project"]
@@ -101,6 +105,12 @@ if not rep:
     print("creado repo primate_cloud_manager (%d), SIN token" % rep.id)
 else:
     print("repo primate_cloud_manager ya existía (%d)" % rep.id)
+
+# Defaults de «Crear DNS ahora»: zona primatecloudmanager.com.
+P = env["ir.config_parameter"].sudo()
+P.set_param("pcm.route53_default_zone_id", ZONA_ID)
+P.set_param("pcm.route53_default_domain_suffix", SUFIJO_DNS)
+print("defaults DNS: zona %s · sufijo %s" % (ZONA_ID, SUFIJO_DNS))
 
 env.cr.commit()
 print("LISTO: entorno pcm-self en Borrador con el formulario precargado.")

@@ -402,6 +402,13 @@ class TestDominioDefinitivo(TransactionCase):
                 mock.patch.object(type(self.inst), "with_delay") as delay:
             wiz.action_confirm()
         delay.assert_called_once()
+        # El APEX (el sufijo mismo) también vale: el stack otorga <sufijo> y
+        # *.<sufijo> — el manager vive en el dominio raíz (2026-11-16).
+        wiz = Wiz.create({"domain": "erp.primateuy.com"})
+        with mock.patch.object(type(self.server), "_check_hosted_zone"), \
+                mock.patch.object(type(self.inst), "with_delay") as delay:
+            wiz.action_confirm()
+        delay.assert_called_once()
 
     # ======================================================= camino PCM
     def test_pcm_crea_registro_espera_insync_y_cambia(self):
