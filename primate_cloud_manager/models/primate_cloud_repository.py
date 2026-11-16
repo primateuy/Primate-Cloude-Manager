@@ -13,6 +13,7 @@ from odoo.exceptions import UserError
 
 from ..services import github_api
 from ..tools import bus, crypto
+from ..tools.git_seguro import git_servidor
 
 _logger = logging.getLogger(__name__)
 
@@ -269,7 +270,9 @@ class PrimateCloudRepository(models.Model):
         if not self.local_path:
             raise UserError(_("Indicá la ruta local del repositorio en el servidor."))
         instance = self._get_target_instance()
-        command = "git -C %s rev-parse HEAD" % shlex.quote(self.local_path)
+        # Como el dueño del clon y con safe.directory: git como root sobre
+        # un repo de «odoo» revienta con «dubious ownership».
+        command = git_servidor(self.local_path, "rev-parse HEAD")
         try:
             output = instance._get_ssm_service().run_script(
                 instance.aws_instance_id, command, region=instance.region,

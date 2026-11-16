@@ -25,6 +25,7 @@ from odoo.tools import file_open
 
 from ..services import aws_base, aws_ec2, aws_rds, aws_route53, aws_s3, aws_ssm, github_api
 from ..tools import bus, crypto, dates
+from ..tools.git_seguro import git_servidor
 from .primate_cloud_ec2_instance import CUSTOM_ADDONS_DIR
 from .primate_cloud_instance import LEGACY_SERVICE
 from .primate_cloud_destruction import durable_log, exigir_primera_corrida
@@ -3638,12 +3639,10 @@ class PrimateCloudEnvironment(models.Model):
     @staticmethod
     def _build_repo_update_script(path, ref):
         """fetch + checkout de un repo ya clonado en el staging."""
-        quoted_path = shlex.quote(path)
         return "\n".join([
             "set -e",
-            "cd %s" % quoted_path,
-            "git fetch --all --tags --prune",
-            "git checkout %s" % shlex.quote(ref),
+            git_servidor(path, "fetch --all --tags --prune"),
+            git_servidor(path, "checkout %s" % shlex.quote(ref)),
         ])
 
     def _staging_neutralize(self, instance, params, region, staging_url):
@@ -5662,8 +5661,7 @@ class PrimateCloudEnvironment(models.Model):
             "sudo -u odoo git clone %s %s" % (shlex.quote(url), quoted_path),
         ]
         if ref:
-            lines.append("sudo -u odoo git -C %s checkout %s"
-                         % (quoted_path, shlex.quote(ref)))
+            lines.append(git_servidor(path, "checkout %s" % shlex.quote(ref)))
         return "\n".join(lines)
 
     @staticmethod
@@ -5716,6 +5714,53 @@ class PrimateCloudEnvironment(models.Model):
             description=_("Agregar addon: %s") % repo.name
         ).job_add_addon(repo.id)
         return repo
+
+    def action_repair_repo_permissions(self):
+        """Repara el dueño de los clones del entorno (chown idempotente).
+
+        Los clones deben pertenecer al usuario que corre Odoo («odoo»): un
+        clon con otro dueño rompe todo git posterior («detected dubious
+        ownership»). Solo entornos montados por PCM."""
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("repo_repair")
+        repos = self.repository_ids.filtered("local_path")
+        if not repos:
+            raise UserError(_("El entorno no tiene repos con ruta local."))
+        self.with_delay(
+            description=_("Reparar permisos de repos: %s") % self.name
+        ).job_repair_repo_permissions()
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info", "sticky": False,
+                       "message": _("Reparación de permisos encolada "
+                                    "(%d repo(s)).") % len(repos)},
+        }
+
+    def job_repair_repo_permissions(self):
+        """Job: ``chown -R odoo:odoo`` de cada clon registrado (idempotente)."""
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("repo_repair")
+        instance = self.ec2_instance_ids[:1]
+        if not instance:
+            raise UserError(_("El entorno no tiene una instancia EC2."))
+        repos = self.repository_ids.filtered("local_path")
+        script = "\n".join(
+            ["set -e"] + ["chown -R odoo:odoo %s" % shlex.quote(r.local_path)
+                          for r in repos])
+        out = instance._get_ssm_service().run_script(
+            instance.aws_instance_id, script, region=instance.region,
+            comment="pcm repo repair: %s" % self.name, timeout=120,
+            check=False)   # el resultado va a bitácora, con motivo si falló
+        ok = out.get("status") == "Success"
+        self._log("ssm_command", result="success" if ok else "failed",
+                  name=_("Reparar permisos de repos (%d)") % len(repos),
+                  error_message=None if ok else (out.get("stderr")
+                                                 or out.get("status")),
+                  aws_request_id=out.get("command_id"))
+        if ok:
+            self.message_post(body=_("Permisos de repos reparados: %s.")
+                              % ", ".join(repos.mapped("name")))
+        return ok
 
     def action_add_addon_ui(self, vals):
         """Alta de repo DESDE LA UI (drawer OWL): mismo flujo completo que

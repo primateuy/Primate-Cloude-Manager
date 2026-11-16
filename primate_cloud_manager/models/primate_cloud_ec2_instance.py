@@ -1373,22 +1373,26 @@ class PrimateCloudEc2Instance(models.Model):
         ``addons_dir`` = el dir de LA instancia (R4-B2)."""
         qpath, qurl = shlex.quote(path), shlex.quote(url)
         branch = ("--branch %s " % shlex.quote(ref)) if ref else ""
+        # El clone corre como «odoo» (el dueño con el que después se opera:
+        # git rechaza repos de otro dueño — «dubious ownership»).
         lines = ["set -e",
                  "mkdir -p %s" % shlex.quote(addons_dir),
+                 "chown odoo:odoo %s" % shlex.quote(addons_dir),
                  "rm -rf %s" % qpath]
         if token_b64:
             lines += [
                 'TF=$(mktemp); AK=$(mktemp)',
                 'trap \'rm -f "$TF" "$AK"\' EXIT',
-                "printf '%%s' %s | base64 -d > \"$TF\"; chmod 600 \"$TF\""
+                "printf '%%s' %s | base64 -d > \"$TF\""
                 % shlex.quote(token_b64),
-                'printf \'#!/bin/sh\\ncat "%s"\\n\' "$TF" > "$AK"; chmod 700 "$AK"',
-                'GIT_ASKPASS="$AK" GIT_TERMINAL_PROMPT=0 git clone %s%s %s'
-                % (branch, qurl, qpath),
+                'printf \'#!/bin/sh\\ncat "%s"\\n\' "$TF" > "$AK"',
+                'chown odoo:odoo "$TF" "$AK"; chmod 600 "$TF"; chmod 700 "$AK"',
+                'sudo -u odoo env GIT_ASKPASS="$AK" GIT_TERMINAL_PROMPT=0 '
+                'git clone %s%s %s' % (branch, qurl, qpath),
             ]
         else:
-            lines.append("GIT_TERMINAL_PROMPT=0 git clone %s%s %s"
-                         % (branch, qurl, qpath))
+            lines.append("sudo -u odoo env GIT_TERMINAL_PROMPT=0 "
+                         "git clone %s%s %s" % (branch, qurl, qpath))
         lines += ["chown -R odoo:odoo %s" % qpath,
                   "echo PCM_CLONE:ok"]
         return "\n".join(lines)
@@ -1532,13 +1536,37 @@ class PrimateCloudEc2Instance(models.Model):
 
         R4-B3: usa el runtime/conf de LA instancia (``target``), no las rutas
         legacy — en multi-Odoo apunta al odoo-bin/venv/conf del slug correcto.
+
+        Aviso de caché (M1 de primate_bundle): el script corre en un proceso
+        APARTE del Odoo que ya está sirviendo a la instancia. Lo que confirma
+        (vistas, idioma, parámetros, grupos) no llega a ese servidor hasta que
+        invalida sus cachés, y eso solo pasa si alguien lo señala por la base
+        (``registry.signal_changes()``). Por eso TODO script va envuelto: al
+        terminar —también si falló después de confirmar algo— se invalidan
+        las cachés y se señala. El script hace sus propios commits; la señal
+        va después, para que el otro proceso no vuelva a cachear lo viejo.
         """
         return ("sudo -u odoo %s %s shell -c %s -d %s "
                 "--no-http <<'PCM_SHELL_EOF'\n%s\nPCM_SHELL_EOF"
                 % (shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3"),
                    shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin"),
                    shlex.quote(target.conf_path or LEGACY_CONF_PATH),
-                   shlex.quote(db), script))
+                   shlex.quote(db), self._shell_script_with_cache_signal(script)))
+
+    @staticmethod
+    def _shell_script_with_cache_signal(script):
+        """El script (en base64: sin choque posible con el heredoc ni con su
+        indentación) + invalidación y señal de cachés al final, siempre."""
+        script_b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        return (
+            "import base64 as _pcm_sig_b64\n"
+            "try:\n"
+            "    exec(compile(_pcm_sig_b64.b64decode('%s').decode('utf-8'), "
+            "'pcm_shell_script', 'exec'))\n"
+            "finally:\n"
+            "    env.registry.clear_all_caches()\n"
+            "    env.registry.signal_changes()\n"
+            "    print('PCM_CACHE_SIGNALED')\n" % script_b64)
 
     def deploy_impersonate(self, dbs, pcm_ip=None, odoo_instance=None):
         """Despliega el companion de LA instancia: envía el addon a SU addons_dir,

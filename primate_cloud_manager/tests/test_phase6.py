@@ -536,12 +536,47 @@ class TestDeployment(TransactionCase):
     # --- Construcción del script ---
     def test_build_script_pull(self):
         script = self._deploy(deployment_type="pull")._build_deploy_script()
-        # El git corre como «odoo» (dueño del clone) vía $GITRUN.
+        # El git corre como «odoo» (dueño del clone) y con safe.directory
+        # explícito (sin eso: «detected dubious ownership»).
         self.assertIn("$GITRUN pull --ff-only", script)
-        self.assertIn('GITRUN="sudo -u odoo env GIT_TERMINAL_PROMPT=0 git"',
-                      script)
+        self.assertIn('GITRUN="sudo -u odoo env GIT_TERMINAL_PROMPT=0 '
+                      'git -c safe.directory=/opt/odoo/odoo"', script)
         self.assertIn("PCM_ORIGIN", script)
         self.assertIn("PCM_TARGET", script)
+
+    def test_check_sync_corre_como_odoo_con_safe_directory(self):
+        """«Verificar estado» corría git como root sobre un clon de «odoo»:
+        dubious ownership. Ahora va con sudo -u odoo + safe.directory."""
+        patcher, fake = self._patch_ssm(
+            {"status": "Success", "stdout": "abc123\n", "stderr": ""})
+        with patcher:
+            self.repo.job_check_sync_state()
+        comando = fake.run_script.call_args[0][1]
+        self.assertIn(
+            "sudo -u odoo git -c safe.directory=/opt/odoo/odoo "
+            "-C /opt/odoo/odoo rev-parse HEAD", comando)
+        self.assertEqual(self.repo.current_commit, "abc123")
+
+    def test_reparar_permisos_de_repos(self):
+        """Acción idempotente: chown -R al usuario correcto, por SSM, con
+        bitácora. Bloqueada para entornos importados."""
+        patcher, fake = self._patch_ssm({"status": "Success", "stdout": "",
+                                         "stderr": "", "command_id": "c-9"})
+        with patcher:
+            ok = self.env_rec.job_repair_repo_permissions()
+        self.assertTrue(ok)
+        script = fake.run_script.call_args[0][1]
+        self.assertIn("chown -R odoo:odoo /opt/odoo/odoo", script)
+        registro = self.env["primate.cloud.operation.log"].search(
+            [("action_type", "=", "ssm_command"),
+             ("name", "like", "Reparar permisos")], limit=1)
+        self.assertEqual(registro.result, "success")
+        # Importado: ni la acción ni el job (la marca solo la pone el
+        # import → mismo contexto que usa ese flujo).
+        self.env_rec.with_context(
+            pcm_import_sync=True).pcm_origin = "imported_aws"
+        with self.assertRaises(Exception):
+            self.env_rec.action_repair_repo_permissions()
 
     def test_build_script_pull_con_token_askpass(self):
         """Repo con token: el pull va autenticado por askpass temporal — el

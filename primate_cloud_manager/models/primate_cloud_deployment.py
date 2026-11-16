@@ -295,11 +295,12 @@ class PrimateCloudDeployment(models.Model):
                     'chown odoo:odoo "$TF" "$AK"; chmod 600 "$TF"; '
                     'chmod 700 "$AK"',
                     'GITRUN="sudo -u odoo env GIT_ASKPASS=$AK '
-                    'GIT_TERMINAL_PROMPT=0 git"',
+                    'GIT_TERMINAL_PROMPT=0 git -c safe.directory=%s"' % path,
                 ]
             else:
                 lines.append(
-                    'GITRUN="sudo -u odoo env GIT_TERMINAL_PROMPT=0 git"')
+                    'GITRUN="sudo -u odoo env GIT_TERMINAL_PROMPT=0 '
+                    'git -c safe.directory=%s"' % path)
             lines += ['echo "PCM_ORIGIN:$($GITRUN rev-parse HEAD)"',
                       "$GITRUN fetch --all --prune"]
             if deploy_type == "pull":

@@ -351,6 +351,10 @@
                     <button t-if="!d.is_imported" class="o_pcm_btn" t-on-click="() => this.addRepo()">
                         <i class="fa fa-plus"/> Agregar repositorio
                     </button>
+                    <button t-if="!d.is_imported &amp;&amp; d.repositories.length" class="o_pcm_btn"
+                            t-on-click="() => this.runEnvMethod('action_repair_repo_permissions', { confirm: '¿Reparar el dueño de los clones de este entorno? (chown idempotente al usuario odoo)' })">
+                        <i class="fa fa-wrench"/> Reparar permisos
+                    </button>
                 </div>
                 <div t-if="!d.repositories.length" class="o_pcm_card o_pcm_muted">
                     Este entorno no tiene repositorios registrados.
