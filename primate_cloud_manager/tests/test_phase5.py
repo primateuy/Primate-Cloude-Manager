@@ -3,12 +3,14 @@
 
 GitHub (PyGithub) y SSM se mockean; los tests no tocan red ni infra real.
 """
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 
 from ..services import github_api
+from ..tools import dates
 
 
 def _fake_github_commit(sha, message="msg", author="Ana", date=None):
@@ -62,6 +64,33 @@ class TestGithubService(TransactionCase):
         ]
         latest = github_api.GithubApiService(client=client).get_latest_commit("o/r")
         self.assertEqual(latest["commit_hash"], "top")
+
+
+# ----------------------------------------------------------------------------
+# Helper de fechas externas (tools/dates.py)
+# ----------------------------------------------------------------------------
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestToNaiveUtc(TransactionCase):
+    def test_datetime_con_zona_a_naive_utc(self):
+        utc = datetime(2026, 11, 16, 19, 30, 6, tzinfo=timezone.utc)
+        uy = datetime(2026, 11, 16, 16, 30, 6,
+                      tzinfo=timezone(timedelta(hours=-3)))
+        esperado = datetime(2026, 11, 16, 19, 30, 6)
+        self.assertEqual(dates.to_naive_utc(utc), esperado)
+        self.assertEqual(dates.to_naive_utc(uy), esperado)
+
+    def test_string_iso_con_zona(self):
+        esperado = datetime(2026, 11, 16, 19, 30, 6)
+        self.assertEqual(dates.to_naive_utc("2026-11-16 19:30:06+00:00"), esperado)
+        self.assertEqual(dates.to_naive_utc("2026-11-16 16:30:06-03:00"), esperado)
+        self.assertEqual(dates.to_naive_utc("2026-11-16T19:30:06Z"), esperado)
+
+    def test_naive_y_basura_pasan_sin_tocar(self):
+        naive = datetime(2026, 11, 16, 19, 30, 6)
+        self.assertEqual(dates.to_naive_utc(naive), naive)
+        self.assertEqual(dates.to_naive_utc("2026-11-16 19:30:06"), naive)
+        self.assertIs(dates.to_naive_utc(None), False)
+        self.assertIs(dates.to_naive_utc("no es fecha"), False)
 
 
 # ----------------------------------------------------------------------------
@@ -125,6 +154,32 @@ class TestRepository(TransactionCase):
              ("result", "=", "success")]
         )
         self.assertTrue(log)
+
+    def test_sync_commits_fecha_con_zona_horaria(self):
+        """Bug día D: PyGithub devuelve datetimes tz-aware y el campo
+        ``commit_date`` exige naive UTC — antes del fix el upsert reventaba
+        con «Datetime field expects a naive datetime: ...+00:00»."""
+        utc = datetime(2026, 11, 16, 19, 30, 6, tzinfo=timezone.utc)
+        uy = datetime(2026, 11, 16, 16, 30, 6,
+                      tzinfo=timezone(timedelta(hours=-3)))
+        fake = mock.Mock()
+        fake.list_commits.return_value = [
+            {"commit_hash": "tz1", "message": "uno", "author": "Ana",
+             "commit_date": utc, "branch": "19.0"},
+            {"commit_hash": "tz2", "message": "dos", "author": "Beto",
+             "commit_date": uy, "branch": "19.0"},
+        ]
+        with mock.patch.object(github_api, "GithubApiService", return_value=fake):
+            ok = self.repo.job_sync_commits()
+        self.assertTrue(ok)
+        Commit = self.env["primate.cloud.commit"]
+        c_utc = Commit.search([("repository_id", "=", self.repo.id),
+                               ("commit_hash", "=", "tz1")])
+        c_uy = Commit.search([("repository_id", "=", self.repo.id),
+                              ("commit_hash", "=", "tz2")])
+        esperado = datetime(2026, 11, 16, 19, 30, 6)  # ambos = mismo instante UTC
+        self.assertEqual(c_utc.commit_date, esperado)
+        self.assertEqual(c_uy.commit_date, esperado)
 
     def test_job_sync_commits_error(self):
         fake = mock.Mock()

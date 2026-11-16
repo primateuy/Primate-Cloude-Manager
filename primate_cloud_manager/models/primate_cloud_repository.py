@@ -12,7 +12,7 @@ from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 from ..services import github_api
-from ..tools import bus, crypto
+from ..tools import bus, crypto, dates
 from ..tools.git_seguro import git_servidor
 
 _logger = logging.getLogger(__name__)
@@ -238,7 +238,8 @@ class PrimateCloudRepository(models.Model):
             vals = {
                 "message": data.get("message"),
                 "author": data.get("author"),
-                "commit_date": data.get("commit_date"),
+                # PyGithub devuelve datetimes tz-aware; Odoo exige naive UTC.
+                "commit_date": dates.to_naive_utc(data.get("commit_date")),
                 "branch": data.get("branch"),
             }
             existing = Commit.search(
