@@ -302,6 +302,7 @@ User=odoo
 # El «-» hace opcional el env file: solo existe con el perfil PCM (clave
 # Fernet); en el resto de las instancias la línea es inocua.
 EnvironmentFile=-/etc/odoo/%%SLUG%%.env
+%%UNIT_LIMITS%%
 ExecStart=/opt/pcm/runtime/odoo-%%ODOO_VERSION%%/venv/bin/python3 /opt/pcm/runtime/odoo-%%ODOO_VERSION%%/src/odoo-bin -c /etc/odoo/%%SLUG%%.conf
 Restart=on-failure
 

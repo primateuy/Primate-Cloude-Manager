@@ -136,4 +136,33 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- 10. Portal con credencial por fecha de nacimiento (portal_identity, 2026-11):
+--     la fecha ES la credencial y el padron real NO va a staging. Si la
+--     columna existe: se ANONIMIZA (NULL en todos), se desactivan los
+--     usuarios portal de contactos con ref externo (ya no pueden entrar), y
+--     se siembran dos alumnos de PRUEBA claramente ficticios para poder
+--     probar el login en staging (/entrar con fecha 2000-01-01).
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'res_partner'
+                 AND column_name = 'portal_birthdate') THEN
+        UPDATE res_users SET active = FALSE
+         WHERE share AND partner_id IN
+               (SELECT id FROM res_partner
+                 WHERE coalesce(ref, '') <> ''
+                   AND portal_birthdate IS NOT NULL);
+        UPDATE res_partner SET portal_birthdate = NULL;
+        INSERT INTO res_partner
+               (name, ref, portal_birthdate, company_type, active,
+                create_date, write_date)
+        SELECT v.nombre, v.ref, DATE '2000-01-01', 'person', TRUE,
+               now(), now()
+          FROM (VALUES ('[STAGING] Alumno Prueba 1', 'STAGING-TEST-1'),
+                       ('[STAGING] Alumno Prueba 2', 'STAGING-TEST-2'))
+               AS v(nombre, ref)
+         WHERE NOT EXISTS (SELECT 1 FROM res_partner p
+                            WHERE p.ref = v.ref);
+    END IF;
+END $$;
+
 COMMIT;

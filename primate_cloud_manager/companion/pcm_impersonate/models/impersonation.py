@@ -81,9 +81,9 @@ class PcmImpersonationNonce(models.Model):
     _description = "Nonces de impersonación consumidos (anti-replay)"
 
     nonce = fields.Char(required=True, index=True)
-    _sql_constraints = [
-        ("nonce_uniq", "unique(nonce)", "Nonce ya usado."),
-    ]
+    # API v19: _sql_constraints ya NO se aplica (quedaba un unique anti-replay
+    # declarado pero inexistente en la base — hallazgo 2026-11-17).
+    _nonce_uniq = models.UniqueIndex("(nonce)", "Nonce ya usado.")
 
     @api.model
     def _consume(self, nonce):

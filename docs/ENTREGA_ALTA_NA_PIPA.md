@@ -39,11 +39,19 @@ válido y renovación automática, y el gestor de bases de datos oculto.
   rotarlo, o mejor, reemplazarlo por **deploy keys SSH** por repositorio
   (no vencen y tienen alcance por repo). Queda recordatorio en la ficha
   del cliente.
-- Primer respaldo automático: asignar la política de respaldo diaria al
-  entorno (hoy el entorno quedó sin política; el respaldo manual está
-  disponible desde el panel en cualquier momento).
+- ~~Primer respaldo automático~~ **HECHO**: política «Alta na Pipa diario»
+  asignada (diaria 03:00 UTC, retención 30 días, bucket
+  `pcm-backups-512060111009`), con el primer respaldo manual ya verificado
+  en S3. **Dónde se asigna/cambia**: Entornos → (el entorno) → sección
+  Respaldos → botón «Asignar política…». Desde ahí mismo, «Respaldar
+  ahora» dispara uno manual.
 - Ambiente de staging para pruebas (segunda instancia en el mismo
   servidor, con copia neutralizada de producción) — planificado.
+- Nota técnica del log de instalación: los avisos «_sql_constraints is no
+  longer supported» que aparecieron NO venían de los módulos del cliente
+  (revisados los cuatro repos: cero usos de la API vieja — bien ahí),
+  sino de una herramienta interna de administración, ya corregida. Nada
+  que migrar del lado de Alta na Pipa.
 
 ## Operación diaria
 

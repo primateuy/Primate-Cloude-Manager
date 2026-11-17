@@ -566,9 +566,15 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "status_check_failed": inst.last_status_check_failed,
                 "at": fields.Datetime.to_string(inst.last_metric_date) or "",
                 "has_data": bool(inst.last_metric_date),
-                # RAM/disco no se relevan sin agente CloudWatch.
-                "ram_available": False,
-                "disk_available": False,
+                # RAM/disco: llegan del agente CloudWatch (CWAgent) cuando
+                # está activo; sin dato del agente, la UI sigue diciendo
+                # «requiere agente» (nunca un 0 inventado).
+                "ram": inst.last_ram,
+                "disk": inst.last_disk,
+                "ram_available": bool(inst.last_agent_date),
+                "disk_available": bool(inst.last_agent_date and inst.last_disk),
+                "agent_at": fields.Datetime.to_string(
+                    inst.last_agent_date) or "",
             },
             # Costo del servidor: el CRUDO de la máquina + cómo se reparte (R6-B2).
             "cost": self._server_cost_breakdown(env),

@@ -168,6 +168,10 @@ class PrimateCloudProvisionWizard(models.TransientModel):
         string="limit_time_real", default=1200,
         help="Límite de tiempo real por request (segundos). El perfil PCM "
              "lo eleva solo a 14400 (jobs largos del jobrunner).")
+    backup_policy_id = fields.Many2one(
+        "primate.cloud.backup.policy", string="Política de respaldo",
+        help="Un montaje de PRODUCCIÓN no termina sin política: vacía, se "
+             "usa (o se crea) la diaria por defecto de la cuenta.")
 
     # --- Semáforo de descubrimiento de red (Bloque B4) ---
     region_status = fields.Selection(
@@ -305,6 +309,7 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             "wkhtml_version": (self.wkhtml_version or "").strip(),
             "limit_time_cpu": self.limit_time_cpu,
             "limit_time_real": self.limit_time_real,
+            "backup_policy_id": self.backup_policy_id.id,
         }
 
     @api.onchange("image_id")
@@ -363,7 +368,34 @@ class PrimateCloudProvisionWizard(models.TransientModel):
         if version and not WKHTML_VERSION_RE.match(version):
             raise UserError(_(
                 "Versión de wkhtmltopdf inválida: %r (ej.: 0.12.6.1-3).")
-                % version)
+            % version)
+        # Gap de backup (2026-11-17): un montaje de PRODUCCIÓN no puede
+        # terminar en verde sin política. Sin elección explícita, se usa —
+        # o se CREA — la diaria por defecto de la cuenta (bucket
+        # pcm-backups-<account_id>, retención 30, 03:00 UTC).
+        if (self.environment_id.env_type == "production"
+                and not self.backup_policy_id):
+            self.backup_policy_id = self._ensure_default_backup_policy()
+
+    def _ensure_default_backup_policy(self):
+        """Busca (o crea) la política diaria por defecto de la cuenta."""
+        self.ensure_one()
+        Policy = self.env["primate.cloud.backup.policy"]
+        bucket = "pcm-backups-%s" % (self.account_id.aws_account_id or "")
+        policy = Policy.search([("s3_bucket", "=", bucket),
+                                ("expected_frequency", "=", "daily"),
+                                ("active", "=", True)], limit=1)
+        if not policy:
+            policy = Policy.create({
+                "name": _("Diaria %s") % bucket,
+                "policy_type": "custom",
+                "expected_frequency": "daily",
+                "expected_retention_days": 30,
+                "s3_bucket": bucket,
+                "execution_hour": 3.0,
+                "managed_by_pcm": True,
+            })
+        return policy
 
     def _raw_values(self):
         """Valores crudos del wizard a persistir (para precargar al reintentar)."""

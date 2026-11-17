@@ -42,3 +42,4 @@ from . import test_autogestion_self
 from . import test_perfil_pcm
 from . import test_monitoreo_cloudwatch
 from . import test_montaje_a_la_carta
+from . import test_staging_alta

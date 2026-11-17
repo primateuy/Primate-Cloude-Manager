@@ -181,9 +181,11 @@
                             <span t-elif="d.metrics.has_data">OK</span>
                             <span t-else="" class="o_pcm_muted">sin datos aún</span></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">RAM</span>
-                            <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
+                            <span t-if="d.metrics.ram_available"><t t-out="d.metrics.ram.toFixed(1)"/> %</span>
+                            <span t-else="" class="o_pcm_muted">requiere agente CloudWatch</span></div>
                         <div class="o_pcm_kv"><span class="o_pcm_muted">Disco</span>
-                            <span class="o_pcm_muted">requiere agente CloudWatch</span></div>
+                            <span t-if="d.metrics.disk_available"><t t-out="d.metrics.disk.toFixed(1)"/> %</span>
+                            <span t-else="" class="o_pcm_muted">requiere agente CloudWatch</span></div>
                     </div>
                 </div>
             </t>

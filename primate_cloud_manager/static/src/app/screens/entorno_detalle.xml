@@ -262,6 +262,10 @@
                                 t-on-click="() => this.runEnvMethod('action_run_backup')">
                             <i class="fa fa-database"/> Respaldar ahora
                         </button>
+                        <button t-if="!d.is_imported" class="o_pcm_btn"
+                                t-on-click="() => this.assignBackupPolicy()">
+                            <i class="fa fa-calendar-check-o"/> Asignar política…
+                        </button>
                     </div>
                 </div>
                 <div class="o_pcm_card">

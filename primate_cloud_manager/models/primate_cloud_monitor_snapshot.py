@@ -47,6 +47,8 @@ class PrimateCloudMonitorSnapshot(models.Model):
 
     # --- Métricas EC2 (None = ausente, no cero) ---
     cpu = fields.Float(string="CPU %")
+    ram = fields.Float(string="RAM %")
+    disk = fields.Float(string="Disco %")
     network_in = fields.Float(string="Red entrante (bytes)")
     network_out = fields.Float(string="Red saliente (bytes)")
     status_check_failed = fields.Float(

@@ -130,6 +130,30 @@ export class EntornoDetalle extends Component {
         );
     }
 
+    // Asignar la política de respaldo del entorno (gap 2026-11-17: no había
+    // NINGÚN camino en el panel; la política se muestra pero no se elegía).
+    async assignBackupPolicy() {
+        const policies = await this.orm.searchRead(
+            "primate.cloud.backup.policy", [["active", "=", true]],
+            ["name", "expected_frequency"]);
+        if (!policies.length) {
+            this.env.pcm?.notify("No hay políticas de respaldo definidas.",
+                { type: "warning" });
+            return;
+        }
+        const lineas = policies.map(
+            (p) => `${p.id}: ${p.name} (${p.expected_frequency})`).join("\n");
+        const elegido = parseInt(window.prompt(
+            `¿Id de la política a asignar?\n${lineas}`), 10);
+        if (!elegido || !policies.some((p) => p.id === elegido)) {
+            return;
+        }
+        await this.orm.write("primate.cloud.environment", [this.props.envId],
+            { backup_policy_id: elegido });
+        this.env.pcm?.notify("Política de respaldo asignada.");
+        await this.load(this.props.envId);
+    }
+
     // Verificar instalación: módulos instalados vs archivo de referencia
     // versionado en un repo del entorno. Si la referencia no está configurada
     // todavía, se pide acá (una vez) y queda persistida en el entorno.

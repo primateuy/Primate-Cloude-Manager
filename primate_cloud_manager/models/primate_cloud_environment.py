@@ -1127,6 +1127,14 @@ class PrimateCloudEnvironment(models.Model):
         limit_real = int(limit_real)
         if not (0 <= limit_cpu <= 86400 and 0 <= limit_real <= 86400):
             raise UserError(_("limit_time fuera de rango [0, 86400]."))
+        # Con workers=0 Odoo IGNORA limit_memory_soft/hard (solo prefork):
+        # la protección de producción vive en la UNIT de systemd del staging
+        # (cgroups): techo de RAM y pesos bajos de CPU/IO. Producción queda
+        # sin límites (prioridad implícita).
+        unit_limits = ""
+        if instance.env_type == "staging":
+            unit_limits = ("MemoryMax=1G\nMemoryHigh=768M\n"
+                           "CPUWeight=30\nIOWeight=30")
         return self._render_script_template(INSTANCE_INSTALL_SCRIPT_PATH, {
             "SLUG": slug,
             "ODOO_VERSION": instance.odoo_version,
@@ -1149,6 +1157,7 @@ class PrimateCloudEnvironment(models.Model):
             "LOAD_LANGUAGE": load_language,
             "LIMIT_TIME_CPU": limit_cpu,
             "LIMIT_TIME_REAL": limit_real,
+            "UNIT_LIMITS": unit_limits,
         })
 
     @api.model
@@ -1362,6 +1371,10 @@ class PrimateCloudEnvironment(models.Model):
             vals = {"state": "active"}
             if not instance_rec.database_id and self.database_ids:
                 vals["database_id"] = self.database_ids[:1].id
+            # Gap de backup: la política elegida/creada en el wizard queda
+            # asignada al terminar — producción nunca nace sin respaldo.
+            if params.get("backup_policy_id"):
+                vals["backup_policy_id"] = params["backup_policy_id"]
             instance_rec.write(vals)
         self.message_post(body=_("Entorno aprovisionado y activo en %s.") % domain)
         self._log("provision", name=_("Aprovisionar: %s") % self.name, result="success")
@@ -3559,10 +3572,12 @@ class PrimateCloudEnvironment(models.Model):
                 "pcm_fresh_clone": True})  # la BD nació en ESTE flujo
             if not ok:
                 raise UserError(_("Falló la copia de la base al staging."))
-            # 3. Repos del origen → addons_dir del slug del staging.
+            # 3. Repos del origen → repos/ de la instancia staging (esquema
+            #    por-repo, con overrides de rama del wizard).
             if origin:
                 self._staging_clone_repos_to_instance(
-                    origin, machine, instance, region)
+                    origin, machine, instance, region,
+                    branch_overrides=params.get("branch_overrides"))
         except Exception as error:  # noqa: BLE001 - se audita, no re-lanza
             instance.state = "error"
             self.message_post(body=_("Staging (instancia) fallido: %s") % error)
@@ -3579,34 +3594,69 @@ class PrimateCloudEnvironment(models.Model):
             "Staging montado como instancia %s.") % instance.display_name)
         return True
 
-    def _staging_clone_repos_to_instance(self, origin, machine, instance, region):
-        """Clona los repos del origen al addons_dir del slug del staging (B5)."""
+    def _staging_clone_repos_to_instance(self, origin, machine, instance,
+                                         region, branch_overrides=None):
+        """Clona los repos del origen a la instancia del staging (esquema
+        por-repo, 2026-11-17).
+
+        Fichas ESPEJO por repo (mismo ``sequence``; el token CIFRADO se copia
+        tal cual — misma clave Fernet de la base, nadie re-pega nada), clones
+        bajo ``instances/<slug>/repos/`` con ``clone_addon`` (token por
+        askpass, dueño odoo) en la rama del origen o la del override
+        (``branch_overrides = {nombre: rama}``, p. ej. alta_na_pipa →
+        19.0_staging), y al final el addons_path POR REPO de la instancia.
+        Un clone fallido corta (freno), no deja fichas mentirosas.
+        """
         Repo = self.env["primate.cloud.repository"]
-        ssm = machine._get_ssm_service()
-        addons_dir = instance.addons_dir or CUSTOM_ADDONS_DIR
-        for source in origin.repository_ids:
-            if not source.github_url or not source.local_path:
-                continue
-            # Ruta en el slug del staging (no la del origen).
-            name = source.local_path.rstrip("/").split("/")[-1]
-            dest_path = "%s/%s" % (addons_dir, name)
-            ref = source.current_commit or source.configured_branch or ""
-            output = ssm.run_script(
-                machine.aws_instance_id,
-                self._build_clone_script(source.github_url, dest_path, ref),
-                region=region, comment="pcm staging clone: %s" % source.name,
-                timeout=900)
-            ok = output.get("status") == "Success"
-            Repo.create({
-                "name": source.name, "environment_id": self.id,
-                "instance_id": instance.id, "repo_type": source.repo_type,
+        overrides = branch_overrides or {}
+        base_repos = "/opt/pcm/instances/%s/repos" % (instance.slug or "odoo")
+        fuentes = origin.repository_ids.filtered(
+            lambda r: r.github_url and r.local_path
+            and (not r.instance_id or r.instance_id != instance)).sorted(
+            key=lambda r: (r.sequence, r.name or "", r.id))
+        if not fuentes:
+            return   # sin repos en el origen no hay nada que clonar ni cablear
+        for source in fuentes:
+            rama = overrides.get(source.name) or source.configured_branch
+            dest_path = "%s/%s" % (base_repos, source.name)
+            mirror = Repo.search([
+                ("environment_id", "=", self.id),
+                ("instance_id", "=", instance.id),
+                ("name", "=", source.name)], limit=1)
+            vals = {
+                "repo_type": source.repo_type,
                 "github_url": source.github_url,
                 "organization": source.organization,
-                "configured_branch": source.configured_branch,
+                "configured_branch": rama,
                 "local_path": dest_path,
-                "current_commit": source.current_commit if ok else False,
-            })
-        self.message_post(body=_("Repositorios clonados al staging."))
+                "sequence": source.sequence,
+                "github_token_encrypted": source.github_token_encrypted,
+            }
+            if mirror:
+                mirror.write(vals)
+            else:
+                mirror = Repo.create(dict(
+                    vals, name=source.name, environment_id=self.id,
+                    instance_id=instance.id))
+            token = mirror._get_github_token()
+            clone_url = "https://%sgithub.com/%s.git" % (
+                "x-access-token@" if token else "", mirror._repo_slug())
+            cloned = machine.clone_addon(
+                clone_url, dest_path, ref=rama or None, token=token,
+                odoo_instance=instance)
+            if not cloned:
+                raise UserError(_(
+                    "El clone de «%(r)s» (rama %(b)s) falló en el staging.",
+                    r=source.name, b=rama or "default"))
+            mirror.write({"sync_state": "updated",
+                          "current_commit": False})
+        ensure = machine._ensure_custom_addons_path(odoo_instance=instance)
+        if ensure in ("rolled_back", "error"):
+            raise UserError(_(
+                "El addons_path del staging no quedó activo (%s).") % ensure)
+        self.message_post(body=_(
+            "Repositorios clonados al staging (en orden, con addons_path "
+            "por repo)."))
 
     def action_refresh_staging(self):
         """Abre el wizard de refresco (opciones de la spec §14.5)."""
@@ -5345,16 +5395,27 @@ class PrimateCloudEnvironment(models.Model):
         data_dir = (odoo_instance.data_dir
                     or "/opt/odoo/.local/share/Odoo").rstrip("/")
         db = shlex.quote(db_name)
+        # `odoo neutralize` OFICIAL (pedido 2026-11-17): corre DESPUÉS de
+        # nuestro SQL y ANTES del checklist, con la unit todavía parada. El
+        # comando se arma acá (paths de LA instancia destino) y viaja a los
+        # builders como string ya citado.
+        neutralize_cli = None
+        if neutralize_sql and odoo_instance.python_bin and odoo_instance.odoo_bin:
+            neutralize_cli = "sudo -u odoo %s %s neutralize -c %s -d %s" % (
+                shlex.quote(odoo_instance.python_bin),
+                shlex.quote(odoo_instance.odoo_bin),
+                shlex.quote(odoo_instance.conf_path or "/etc/odoo/odoo.conf"),
+                db)
         if not origin:
             return self._build_restore_script_catalogo(
                 db_name, backup, has_filestore, service, pg_user, data_dir, db,
-                neutralize_sql=neutralize_sql)
+                neutralize_sql=neutralize_sql, neutralize_cli=neutralize_cli)
         return self._build_restore_script_externo(
             db_name, origin, origin_size_mb, service, pg_user, data_dir, db,
-            neutralize_sql=neutralize_sql)
+            neutralize_sql=neutralize_sql, neutralize_cli=neutralize_cli)
 
     @staticmethod
-    def _restore_lineas_neutralizacion(db, service, sql, say):
+    def _restore_lineas_neutralizacion(db, service, sql, say, cli=None):
         """Piezas del restore que neutraliza ANTES de arrancar Odoo.
 
         El orden viejo —restore, arrancar la unit, y recién después un segundo
@@ -5400,7 +5461,15 @@ class PrimateCloudEnvironment(models.Model):
                 "-v ON_ERROR_STOP=1 -d %s; then PCM_NEUTRALIZED=1; "
                 '%s "PCM_NEUTRALIZED"; else %s "PCM_NEUTRALIZE_FAILED"; exit 1; fi'
                 % (shlex.quote(b64), db, say, say),
-            ] + PrimateCloudEnvironment._restore_lineas_checklist(
+            ] + ([
+                # El neutralize OFICIAL de Odoo, SIEMPRE después del SQL (lo
+                # que el core sepa neutralizar de más, bienvenido); el
+                # checklist de abajo sigue siendo el juez final.
+                "if %s >>/var/log/pcm-neutralize.log 2>&1; then "
+                '%s "PCM_NEUTRALIZE_CLI_OK"; else PCM_NEUTRALIZED=0; '
+                '%s "PCM_NEUTRALIZE_FAILED cli oficial (ver '
+                '/var/log/pcm-neutralize.log)"; exit 1; fi' % (cli, say, say),
+            ] if cli else []) + PrimateCloudEnvironment._restore_lineas_checklist(
                 db, say, PrimateCloudEnvironment._neutralized_url(sql)),
         }
 
@@ -5503,7 +5572,8 @@ class PrimateCloudEnvironment(models.Model):
 
     def _build_restore_script_catalogo(self, db_name, backup, has_filestore,
                                        service, pg_user, data_dir, db,
-                                       neutralize_sql=None):
+                                       neutralize_sql=None,
+                                       neutralize_cli=None):
         """Camino histórico: el dump sale de un registro del catálogo.
 
         Se conserva TAL CUAL (incluidos el orden de las guardas y la forma del
@@ -5529,7 +5599,8 @@ class PrimateCloudEnvironment(models.Model):
         la necesita). Sin él, el script sigue igual byte por byte.
         """
         neu = (self._restore_lineas_neutralizacion(
-            db, service, neutralize_sql, "echo") if neutralize_sql else None)
+            db, service, neutralize_sql, "echo", cli=neutralize_cli)
+            if neutralize_sql else None)
         # El dueño de las tablas del destino, en crudo (ver el docstring).
         rol = shlex.split(pg_user)[0] if pg_user else "odoo"
         set_role = shlex.quote('SET ROLE "%s"' % rol.replace('"', '""'))
@@ -5654,10 +5725,12 @@ class PrimateCloudEnvironment(models.Model):
     @api.model
     def _build_restore_script_externo(self, db_name, origin, origin_size_mb,
                                       service, pg_user, data_dir, db,
-                                      neutralize_sql=None):
+                                      neutralize_sql=None,
+                                      neutralize_cli=None):
         """Script del restore desde un dump externo (F1)."""
         neu = (self._restore_lineas_neutralizacion(
-            db, service, neutralize_sql, "say") if neutralize_sql else None)
+            db, service, neutralize_sql, "say", cli=neutralize_cli)
+            if neutralize_sql else None)
         # El dueño de la base destino, en crudo. Un dump externo suele venir
         # `--no-owner`: si se carga como `postgres`, TODAS las tablas quedan a
         # nombre de `postgres` y Odoo —que se conecta como `pg_user`, dueño de

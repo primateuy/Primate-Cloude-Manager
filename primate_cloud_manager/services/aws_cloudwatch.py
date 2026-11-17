@@ -51,6 +51,64 @@ class AwsCloudWatchService:
             EC2_METRICS, {"Name": "InstanceId", "Value": instance_id},
             region, start, end, period)
 
+    def get_agent_metrics(self, instance_id, region, start, end, period=300):
+        """RAM y disco del agente CloudWatch (namespace ``CWAgent``).
+
+        ``mem_used_percent`` publica con la dimensión ``InstanceId`` sola
+        (append_dimensions de la config de INCO). ``disk_used_percent`` suma
+        ``device/fstype/path`` automáticamente, así que primero se DESCUBREN
+        sus dimensiones reales con ``list_metrics`` y se consulta con ese set
+        exacto (sin aggregation_dimensions, el query por InstanceId pelado
+        devuelve vacío — causa del «requiere agente» eterno del panel).
+
+        Returns:
+            dict: ``{"ram": pct|None, "disk": pct|None}`` (None = sin datos).
+        """
+        client = self._base.get_client("cloudwatch", region=region)
+        result = {"ram": None, "disk": None}
+        queries = [{
+            "Id": "ram",
+            "MetricStat": {"Metric": {
+                "Namespace": "CWAgent", "MetricName": "mem_used_percent",
+                "Dimensions": [{"Name": "InstanceId", "Value": instance_id}]},
+                "Period": period, "Stat": "Average"},
+            "ReturnData": True,
+        }]
+        disk_dims = None
+        try:
+            listado = client.list_metrics(
+                Namespace="CWAgent", MetricName="disk_used_percent",
+                Dimensions=[{"Name": "InstanceId", "Value": instance_id}])
+            metricas = listado.get("Metrics") or []
+            # Si hay varios discos, el de path "/" (la config de INCO solo
+            # publica "/", pero un agente ajeno puede publicar más).
+            for m in metricas:
+                dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+                if dims.get("path", "/") == "/":
+                    disk_dims = m["Dimensions"]
+                    break
+            if disk_dims is None and metricas:
+                disk_dims = metricas[0]["Dimensions"]
+        except Exception:  # noqa: BLE001 — sin ListMetrics, el disco degrada
+            disk_dims = None
+        if disk_dims:
+            queries.append({
+                "Id": "disk",
+                "MetricStat": {"Metric": {
+                    "Namespace": "CWAgent",
+                    "MetricName": "disk_used_percent",
+                    "Dimensions": disk_dims},
+                    "Period": period, "Stat": "Average"},
+                "ReturnData": True,
+            })
+        response = client.get_metric_data(
+            MetricDataQueries=queries, StartTime=start, EndTime=end)
+        for r in response.get("MetricDataResults", []):
+            values = r.get("Values") or []
+            if r["Id"] in result:
+                result[r["Id"]] = values[0] if values else None
+        return result
+
     def get_rds_metrics(self, rds_identifier, region, start, end, period=300):
         """Métricas de una RDS en la ventana ``[start, end]``."""
         return self._get_metrics(

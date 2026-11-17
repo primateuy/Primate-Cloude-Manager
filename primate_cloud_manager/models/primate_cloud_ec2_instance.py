@@ -127,6 +127,11 @@ class PrimateCloudEc2Instance(models.Model):
         help="≥1 = falló algún chequeo de estado de EC2 (señal de error real).",
     )
     last_metric_date = fields.Datetime(string="Métricas al", readonly=True)
+    # RAM/disco del agente CloudWatch (namespace CWAgent): solo con agente
+    # activo; last_agent_date vacío = «requiere agente» en la UI.
+    last_ram = fields.Float(string="RAM % (última)", readonly=True)
+    last_disk = fields.Float(string="Disco % (último)", readonly=True)
+    last_agent_date = fields.Datetime(string="RAM/disco al", readonly=True)
 
     # True solo si la instancia fue APROVISIONADA por PCM (layout estándar de
     # install_odoo.sh garantizado). Para las importadas por sync queda en False:
@@ -2201,8 +2206,24 @@ class PrimateCloudEc2Instance(models.Model):
         for key in ("cpu", "network_in", "network_out", "status_check_failed"):
             if metrics.get(key) is not None:
                 vals[key] = metrics[key]
-        snapshot = self.env["primate.cloud.monitor.snapshot"].sudo().create(vals)
         cache = {"last_metric_date": end}
+        # RAM/disco: SOLO con el agente CloudWatch activo (namespace CWAgent).
+        # Un None del agente no se persiste (ausente ≠ cero, mismo criterio).
+        if self.environment_id.cw_agent_state == "active":
+            try:
+                agente = cw.get_agent_metrics(
+                    self.aws_instance_id, self.region, start, end)
+            except Exception:  # noqa: BLE001 — el agente nunca rompe el snapshot
+                agente = {}
+            if agente.get("ram") is not None:
+                vals["ram"] = agente["ram"]
+                cache["last_ram"] = agente["ram"]
+                cache["last_agent_date"] = end
+            if agente.get("disk") is not None:
+                vals["disk"] = agente["disk"]
+                cache["last_disk"] = agente["disk"]
+                cache["last_agent_date"] = end
+        snapshot = self.env["primate.cloud.monitor.snapshot"].sudo().create(vals)
         if metrics.get("cpu") is not None:
             cache["last_cpu"] = metrics["cpu"]
         if metrics.get("status_check_failed") is not None:

@@ -1107,6 +1107,12 @@ class PrimateCloudInstance(models.Model):
         """Job: copia la base del origen sobre este staging (pipeline B4)."""
         self.ensure_one()
         exigir_primera_corrida(self, _('Refrescar staging (instancia)'))
+        # Contrato duro (2026-11-17, con test): el DESTINO de un refresco
+        # JAMÁS puede ser producción — ni llamando el job directo.
+        if self.env_type != "staging":
+            raise UserError(_(
+                "Refrescar solo escribe sobre instancias de STAGING; esta "
+                "instancia es %s.") % self.env_type)
         env = self.environment_id
         machine = self._machine()
         if not machine or not self.database_id:

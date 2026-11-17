@@ -5,6 +5,8 @@ Captura los parámetros del staging destino (cómputo, base, DNS y bucket de
 transferencia) y encola el flujo de 12 pasos en un nuevo entorno staging.
 La contraseña de la base se usa solo para crear/restaurar: no se persiste.
 """
+import re
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
@@ -121,6 +123,11 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
     hosted_zone_id = fields.Char(string="Hosted Zone ID")
     ttl = fields.Integer(string="TTL", default=300)
     admin_password = fields.Char(string="Contraseña admin (odoo.conf)", password="True")
+    branch_overrides = fields.Char(
+        string="Ramas por repo (override)",
+        help="Opcional: repos del staging en OTRA rama que el origen. "
+             "Formato nombre:rama separado por comas — ej.: "
+             "alta_na_pipa:19.0_staging")
 
     @api.model
     def default_get(self, fields_list):
@@ -180,6 +187,24 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
         if machine and machine.region:
             self.region = machine.region
 
+    def _parse_branch_overrides(self):
+        """``"repo:rama, otro:rama"`` → dict validado (charset de rama git)."""
+        self.ensure_one()
+        overrides = {}
+        for pedazo in (self.branch_overrides or "").split(","):
+            pedazo = pedazo.strip()
+            if not pedazo:
+                continue
+            if ":" not in pedazo:
+                raise UserError(_(
+                    "Override de rama inválido: %r (formato nombre:rama).")
+                    % pedazo)
+            nombre, rama = (p.strip() for p in pedazo.split(":", 1))
+            if not nombre or not re.match(r"^[\w./-]+$", rama):
+                raise UserError(_("Rama inválida en override: %r.") % pedazo)
+            overrides[nombre] = rama
+        return overrides
+
     def _prepare_params(self):
         """Construye el dict de parámetros para el flujo de staging."""
         self.ensure_one()
@@ -226,6 +251,7 @@ class PrimateCloudStagingCreateWizard(models.TransientModel):
             "hosted_zone_id": self.hosted_zone_id,
             "ttl": self.ttl,
             "admin_password": self.admin_password,
+            "branch_overrides": self._parse_branch_overrides(),
         }
 
     @api.onchange("image_id")
