@@ -130,6 +130,37 @@ export class EntornoDetalle extends Component {
         );
     }
 
+    // Verificar instalación: módulos instalados vs archivo de referencia
+    // versionado en un repo del entorno. Si la referencia no está configurada
+    // todavía, se pide acá (una vez) y queda persistida en el entorno.
+    async verifyInstallation() {
+        const d = this.d;
+        let vals = null;
+        if (!d.modules_ref_path) {
+            const repos = (d.repositories || []);
+            let repoId = repos.length === 1 ? repos[0].id : null;
+            if (!repoId) {
+                const nombres = repos.map((r) => `${r.id}: ${r.name}`).join("\n");
+                const elegido = window.prompt(
+                    `¿Id del repo que versiona la referencia?\n${nombres}`);
+                repoId = parseInt(elegido, 10);
+                if (!repoId) { return; }
+            }
+            const path = window.prompt(
+                "Ruta del archivo de referencia dentro del repo:",
+                "docs/MODULES_PROD.txt");
+            if (!path) { return; }
+            vals = { repo_id: repoId, path };
+        }
+        const ran = await runPcmModelAction(
+            this.env, this.orm, this.model, "action_verify_installation",
+            [this.props.envId], { args: vals ? [vals] : [] }
+        );
+        if (ran) {
+            await this.load(this.props.envId);
+        }
+    }
+
     async runDeploymentMethod(depId, method, { confirm } = {}) {
         const ran = await runPcmModelAction(
             this.env, this.orm, "primate.cloud.deployment", method, [depId], { confirm }

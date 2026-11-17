@@ -17,6 +17,8 @@ const WIZARD_FIELDS = [
     "rds_storage_gb", "rds_multi_az", "backup_retention_days", "create_dns",
     "ssl_auto", "hosted_zone_id", "ttl", "elastic_ip", "sslip_domain",
     "pcm_profile", "cw_monitoring", "cw_ssm_parameter",
+    "init_modules", "load_language", "pip_packages", "wkhtml_version",
+    "limit_time_cpu", "limit_time_real",
 ];
 
 /**
@@ -92,6 +94,13 @@ export class EnvForm extends Component {
             pcm_profile: false,
             cw_monitoring: true,
             cw_ssm_parameter: "",
+            // Montaje a la carta (Alta na Pipa, reutilizable)
+            init_modules: "",
+            load_language: "",
+            pip_packages: "",
+            wkhtml_version: "",
+            limit_time_cpu: 600,
+            limit_time_real: 1200,
         });
         onWillStart(() => this.loadDefaults());
     }

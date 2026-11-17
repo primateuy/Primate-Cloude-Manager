@@ -57,9 +57,13 @@ class PrimateCloudRepository(models.Model):
     _name = "primate.cloud.repository"
     _description = "Repositorio Git"
     _inherit = ["mail.thread", "primate.cloud.instance.linked"]
-    _order = "name"
+    _order = "sequence, name, id"
 
     name = fields.Char(string="Nombre", required=True)
+    # Orden EXPLÍCITO del addons_path (Alta na Pipa): los repos entran al
+    # conf en este orden, después del runtime y antes del dir suelto de la
+    # instancia. En Odoo, ante módulos homónimos gana el primero del path.
+    sequence = fields.Integer(string="Orden", default=10)
     environment_id = fields.Many2one(
         "primate.cloud.environment",
         string="Entorno",

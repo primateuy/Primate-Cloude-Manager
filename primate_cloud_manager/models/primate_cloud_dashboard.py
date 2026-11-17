@@ -360,6 +360,7 @@ class PrimateCloudDashboard(models.AbstractModel):
             return {
                 "id": repo.id, "name": repo.display_name,
                 "repo_type_label": repo_type_labels.get(repo.repo_type, ""),
+                "sequence": repo.sequence,
                 "branch": repo.configured_branch or "",
                 "current_commit": repo.current_commit or "",
                 "latest_commit": repo.latest_commit or "",
@@ -402,6 +403,9 @@ class PrimateCloudDashboard(models.AbstractModel):
                 environment.cw_agent_state, ""),
             "cw_agent_error": environment.cw_agent_error or "",
             "cw_ssm_parameter": environment.cw_ssm_parameter or "",
+            # Verificación post-instalación (referencia persistida).
+            "modules_ref_repo_id": environment.modules_ref_repo_id.id or False,
+            "modules_ref_path": environment.modules_ref_path or "",
             "can_destroy": self.env.user.has_group(
                 "primate_cloud_manager.group_cloud_destructive"),
             # Las instancias Odoo del entorno, con o sin servidor EC2 (un
@@ -1220,6 +1224,8 @@ class PrimateCloudDashboard(models.AbstractModel):
             "hosted_zone_id", "ttl", "region_status", "region_detail",
             "elastic_ip", "ssl_auto", "sslip_domain", "pcm_profile",
             "cw_monitoring", "cw_ssm_parameter",
+            "init_modules", "load_language", "pip_packages", "wkhtml_version",
+            "limit_time_cpu", "limit_time_real",
         ]
         data = {f: (wiz[f] if wiz[f] not in (None,) else False) for f in char_int_bool}
         region_labels = dict(Wizard._fields["region_status"].selection)

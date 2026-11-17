@@ -121,6 +121,55 @@
                         <span>Monitoreo CloudWatch: el agente de AWS manda RAM y disco con la configuración que mantiene INCO (se instala al final del montaje; un error no bloquea)</span>
                     </label>
 
+                    <!-- Montaje a la carta (Alta na Pipa, reutilizable): todo
+                         opcional; vacío = comportamiento de siempre. -->
+                    <div class="o_pcm_form_section_head">Montaje a la carta</div>
+                    <div class="o_pcm_form_row">
+                        <PcmField label="'Módulos a instalar (-i)'"
+                                  help="'La base nace con ellos instalados, antes de arrancar el servicio.'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.init_modules"
+                                   t-att-placeholder="'modulo_a,modulo_b'"
+                                   t-on-input="(ev) => this.onInput('init_modules', ev)"/>
+                        </PcmField>
+                        <PcmField label="'Idioma inicial'"
+                                  help="'--load-language de la instalación inicial (requiere módulos).'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.load_language"
+                                   t-att-placeholder="'pt_BR'"
+                                   t-on-input="(ev) => this.onInput('load_language', ev)"/>
+                        </PcmField>
+                    </div>
+                    <div class="o_pcm_form_row">
+                        <PcmField label="'Paquetes Python extra'"
+                                  help="'pip en el venv del runtime; cada uno se verifica con pip show.'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.pip_packages"
+                                   t-att-placeholder="'openpyxl'"
+                                   t-on-input="(ev) => this.onInput('pip_packages', ev)"/>
+                        </PcmField>
+                        <PcmField label="'wkhtmltopdf (release GitHub)'"
+                                  help="'Versión del release oficial; pisa al de apt (PDF rotos). Vacío = apt.'">
+                            <input class="o_pcm_input" type="text"
+                                   t-att-value="state.wkhtml_version"
+                                   t-att-placeholder="'0.12.6.1-3'"
+                                   t-on-input="(ev) => this.onInput('wkhtml_version', ev)"/>
+                        </PcmField>
+                    </div>
+                    <div class="o_pcm_form_row">
+                        <PcmField label="'limit_time_cpu (s)'">
+                            <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                                   min="0" t-att-value="state.limit_time_cpu"
+                                   t-on-input="(ev) => this.onIntInput('limit_time_cpu', ev)"/>
+                        </PcmField>
+                        <PcmField label="'limit_time_real (s)'"
+                                  help="'El perfil PCM lo eleva solo a 14400.'">
+                            <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                                   min="0" t-att-value="state.limit_time_real"
+                                   t-on-input="(ev) => this.onIntInput('limit_time_real', ev)"/>
+                        </PcmField>
+                    </div>
+
                     <!-- Avanzado (solo admin): AMI + red. Un valor acá gana sobre
                          el auto-discovery de la región. -->
                     <t t-if="state.isCloudAdmin">

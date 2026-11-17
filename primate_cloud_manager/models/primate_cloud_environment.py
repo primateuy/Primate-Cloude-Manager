@@ -38,6 +38,23 @@ NEUTRALIZATION_SQL_PATH = "primate_cloud_manager/data/neutralization.sql"
 # Multi-Odoo (R3): bootstrap del servidor (una vez) + install por instancia.
 BOOTSTRAP_SCRIPT_PATH = "primate_cloud_manager/data/bootstrap_server.sh"
 INSTANCE_INSTALL_SCRIPT_PATH = "primate_cloud_manager/data/install_instance.sh"
+# wkhtmltopdf desde el release oficial de GitHub (el de apt viene sin el Qt
+# parcheado: headers/footers rotos en los PDF). Idempotente, por servidor.
+WKHTML_SCRIPT_PATH = "primate_cloud_manager/data/wkhtmltopdf_install.sh"
+WKHTML_DEFAULT_VERSION = "0.12.6.1-3"
+# Versión del release: dígitos/puntos + sufijo de empaquetado (-3). Validada
+# ANTES de renderizar: viaja inline a una URL y a un shell.
+WKHTML_VERSION_RE = re.compile(r"^[0-9][0-9.]{0,20}(-[0-9]{1,4})?$")
+# Lista de módulos del -i inicial: nombres de módulo Odoo separados por coma.
+INIT_MODULES_RE = re.compile(r"^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$")
+# Código de idioma de --load-language (es_UY, pt_BR, en, sr@latin).
+LOAD_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(_[A-Z]{2})?(@[a-z]+)?$")
+# Un paquete pip: nombre (PEP 508 básico) + ==versión opcional. Sin extras ni
+# URLs: lo que viaja al shell no puede ser otra cosa que un paquete.
+PIP_PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(==[A-Za-z0-9.]+)?$")
+# Dependencias Python del perfil PCM (van por el MISMO mecanismo que los
+# paquetes extra del entorno: un solo bloque pip en el install).
+PCM_PROFILE_PIP = ["boto3", "botocore", "paramiko", "cryptography", "PyGithub"]
 
 # Slug seguro para dirs/units/sites (validado ANTES de renderizar el script:
 # un slug raro no puede convertirse en una ruta o comando inesperado).
@@ -246,6 +263,17 @@ class PrimateCloudEnvironment(models.Model):
     )
     cw_agent_error = fields.Char(
         string="Motivo del error (agente)", copy=False, readonly=True)
+    # Verificación post-instalación contra un archivo de referencia versionado
+    # en un repo del entorno (ej. docs/MODULES_PROD.txt): conteo + diff nombre
+    # a nombre de los módulos instalados. Reutilizable por cliente.
+    modules_ref_repo_id = fields.Many2one(
+        "primate.cloud.repository", string="Repo del archivo de referencia",
+        ondelete="set null", copy=False,
+        help="Repositorio del entorno que versiona la lista de módulos "
+             "esperados (uno por línea).")
+    modules_ref_path = fields.Char(
+        string="Archivo de referencia de módulos", copy=False,
+        help="Ruta DENTRO del repo (ej.: docs/MODULES_PROD.txt).")
     database_ids = fields.One2many(
         "primate.cloud.database", "environment_id", string="Bases de datos"
     )
@@ -947,6 +975,86 @@ class PrimateCloudEnvironment(models.Model):
         return self._render_script_template(
             BOOTSTRAP_SCRIPT_PATH, {"SWAP_MB": int(swap_mb)})
 
+    @api.model
+    def _build_wkhtmltopdf_script(self, version):
+        """Renderiza wkhtmltopdf_install.sh (release de GitHub, idempotente)."""
+        version = (version or "").strip()
+        if not WKHTML_VERSION_RE.match(version):
+            raise UserError(_(
+                "Versión de wkhtmltopdf inválida: %r (ej.: %s).")
+                % (version, WKHTML_DEFAULT_VERSION))
+        return self._render_script_template(
+            WKHTML_SCRIPT_PATH, {"WKHTML_VERSION": version})
+
+    def _provision_wkhtmltopdf(self, ssm, machine, region, version):
+        """Instala wkhtmltopdf del release en el servidor y verifica la versión.
+
+        Corre por SSM con el centinela ``PCM_WKHTML_OK``; un fallo levanta
+        ``UserError`` con el detalle (``PCM_WKHTML_FAIL``). Idempotente: si la
+        versión ya está activa, el script no toca nada.
+        """
+        self.ensure_one()
+        script = self._build_wkhtmltopdf_script(version)
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm wkhtmltopdf %s" % version, timeout=420,
+            check=False)   # el éxito se mide por el centinela
+        stdout = output.get("stdout") or ""
+        ok = output.get("status") == "Success" and "PCM_WKHTML_OK:" in stdout
+        detalle = ""
+        for line in stdout.splitlines():
+            if line.startswith(("PCM_WKHTML_OK:", "PCM_WKHTML_FAIL:")):
+                detalle = line.split(":", 1)[1].strip()
+        self._log("ssm_command",
+                  name=_("wkhtmltopdf %s (release GitHub)") % version,
+                  result="success" if ok else "failed",
+                  error_message=None if ok else (detalle or output.get("status")),
+                  aws_request_id=output.get("command_id"))
+        if not ok:
+            raise UserError(_(
+                "wkhtmltopdf %(v)s no quedó instalado: %(d)s",
+                v=version, d=detalle or output.get("status")))
+        return detalle
+
+    def action_install_wkhtmltopdf(self, version=None):
+        """Acción idempotente: wkhtmltopdf del release en un servidor YA montado."""
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("wkhtmltopdf_install")
+        version = (version or "").strip() or WKHTML_DEFAULT_VERSION
+        # Validación temprana (feedback inmediato en la UI; el job revalida).
+        self._build_wkhtmltopdf_script(version)
+        self.with_delay(
+            description=_("wkhtmltopdf %s: %s") % (version, self.name)
+        ).job_install_wkhtmltopdf(version)
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info", "sticky": False,
+                       "message": _("Instalación de wkhtmltopdf %s encolada.")
+                       % version},
+        }
+
+    def job_install_wkhtmltopdf(self, version):
+        """Job: corre el instalador de wkhtmltopdf en el servidor del entorno."""
+        self.ensure_one()
+        machine = self._active_machine()
+        if not machine:
+            raise UserError(_("El entorno no tiene una máquina activa."))
+        ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+        region = machine.region or self.account_id.default_region
+        try:
+            detalle = self._provision_wkhtmltopdf(ssm, machine, region, version)
+        except UserError as error:
+            self.message_post(body=_("wkhtmltopdf: %s") % error)
+            bus.toast(self.env, str(error), title=_("wkhtmltopdf"),
+                      ntype="danger", sticky=True)
+            return False
+        self.message_post(body=_(
+            "wkhtmltopdf instalado desde el release de GitHub y verificado: "
+            "%s.") % detalle)
+        bus.toast(self.env, _("wkhtmltopdf verificado: %s") % detalle,
+                  title=_("wkhtmltopdf"), ntype="success")
+        return True
+
     def _build_instance_install_script(self, instance, params, is_default):
         """Renderiza install_instance.sh para UNA instancia (por slug).
 
@@ -992,6 +1100,33 @@ class PrimateCloudEnvironment(models.Model):
         workers = params.get("workers")
         if workers in (None, False, ""):
             workers = 2 if pcm_profile else 0
+        # Opciones nuevas del montaje (Alta na Pipa, reutilizables). Todo lo
+        # que viaja inline al shell se valida acá con charset cerrado.
+        init_modules = (params.get("init_modules") or "").replace(" ", "")
+        if init_modules and not INIT_MODULES_RE.match(init_modules):
+            raise UserError(_(
+                "Módulos iniciales inválidos: %r. Se espera una lista de "
+                "nombres de módulo separados por coma.") % init_modules)
+        load_language = (params.get("load_language") or "").strip()
+        if load_language and not LOAD_LANGUAGE_RE.match(load_language):
+            raise UserError(_("Código de idioma inválido: %r (ej.: pt_BR).")
+                            % load_language)
+        if load_language and not init_modules:
+            raise UserError(_(
+                "El idioma de la instalación inicial requiere indicar los "
+                "módulos a instalar."))
+        pip_packages = self._clean_pip_packages(params.get("pip_packages"))
+        if pcm_profile:
+            pip_packages = PCM_PROFILE_PIP + [
+                p for p in pip_packages if p not in PCM_PROFILE_PIP]
+        limit_cpu = int(params.get("limit_time_cpu") or 600)
+        limit_real = params.get("limit_time_real")
+        if limit_real in (None, False, ""):
+            # Lección bj-uat: el jobrunner del perfil necesita jobs largos.
+            limit_real = 14400 if pcm_profile else 1200
+        limit_real = int(limit_real)
+        if not (0 <= limit_cpu <= 86400 and 0 <= limit_real <= 86400):
+            raise UserError(_("limit_time fuera de rango [0, 86400]."))
         return self._render_script_template(INSTANCE_INSTALL_SCRIPT_PATH, {
             "SLUG": slug,
             "ODOO_VERSION": instance.odoo_version,
@@ -1009,7 +1144,32 @@ class PrimateCloudEnvironment(models.Model):
             "DOMAIN": params.get("domain") or instance.main_url or "",
             "ADMIN_PASSWORD": params.get("admin_password") or "",
             "IS_DEFAULT": "1" if is_default else "0",
+            "PIP_PACKAGES": " ".join(pip_packages),
+            "INIT_MODULES": init_modules,
+            "LOAD_LANGUAGE": load_language,
+            "LIMIT_TIME_CPU": limit_cpu,
+            "LIMIT_TIME_REAL": limit_real,
         })
+
+    @api.model
+    def _clean_pip_packages(self, raw):
+        """Normaliza y valida la lista de paquetes pip extra del entorno.
+
+        Acepta separadores coma/espacio. Cada entrada debe ser un nombre de
+        paquete (con ``==versión`` opcional): nada de extras, flags ni URLs —
+        la lista viaja inline a un shell.
+        """
+        packages = []
+        for chunk in re.split(r"[,\s]+", raw or ""):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if not PIP_PACKAGE_RE.match(chunk):
+                raise UserError(_(
+                    "Paquete pip inválido: %r. Se espera nombre (y "
+                    "opcionalmente ==versión).") % chunk)
+            packages.append(chunk)
+        return packages
 
     # ------------------------------------------------------------------
     # Jobs de aprovisionamiento (flujo 7.1, partido en R2: D6)
@@ -1158,6 +1318,13 @@ class PrimateCloudEnvironment(models.Model):
             bus.provision_step(self.env, self,
                                _("Preparando el servidor (bootstrap multi-Odoo)…"))
             self._ensure_server_bootstrap(ssm, machine, region)
+            # wkhtmltopdf del release (opcional): ANTES del install de la
+            # instancia, así el primer arranque ya genera PDFs correctos.
+            if params.get("wkhtml_version"):
+                bus.provision_step(self.env, self,
+                                   _("Instalando wkhtmltopdf (release GitHub)…"))
+                self._provision_wkhtmltopdf(
+                    ssm, machine, region, params["wkhtml_version"])
             bus.provision_step(self.env, self,
                                _("Instalando Odoo por SSM (puede tardar varios minutos)…"))
             self._materialize_multiodoo_layout(instance_rec, params)
@@ -1619,10 +1786,15 @@ class PrimateCloudEnvironment(models.Model):
         """
         script = self._build_instance_install_script(
             instance, dict(params, domain=domain), is_default=is_default)
+        # Con instalación inicial de módulos el install tarda MUCHO más (el
+        # -i de un sitio entero en t3.medium ronda los 10-15 min): el timeout
+        # acompaña, salvo override explícito.
+        timeout = params.get("install_timeout") or (
+            2700 if params.get("init_modules") else 900)
         output = ssm.run_script(
             machine.aws_instance_id, script, region=region,
             comment="pcm instance install: %s" % instance.slug,
-            timeout=params.get("install_timeout") or 900,
+            timeout=timeout,
             check=False,   # inspecciona status + centinela PCM_INSTALL_OK
         )
         stdout = output.get("stdout") or ""
@@ -5761,6 +5933,212 @@ class PrimateCloudEnvironment(models.Model):
             self.message_post(body=_("Permisos de repos reparados: %s.")
                               % ", ".join(repos.mapped("name")))
         return ok
+
+    # ------------------------------------------------------------------
+    # Blindar http_interface en instancias YA montadas: la clave es
+    # read-only para el editor de usuario (mal puesta impide el arranque),
+    # así que viaja como internal_key por el guardado quirúrgico de B3
+    # (backup + restart + health + rollback; self → restart diferido).
+    # ------------------------------------------------------------------
+    def action_harden_http_interface(self):
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("http_interface_harden")
+        if not self.primary_instance_id:
+            raise UserError(_("El entorno no tiene instancia primaria."))
+        self.with_delay(
+            description=_("http_interface 127.0.0.1: %s") % self.name
+        ).job_harden_http_interface()
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info", "sticky": False,
+                       "message": _("Blindaje de http_interface encolado "
+                                    "(reinicia Odoo).")},
+        }
+
+    def job_harden_http_interface(self):
+        """Job: fija ``http_interface = 127.0.0.1`` en el conf de la primaria."""
+        self.ensure_one()
+        instance = self.ec2_instance_ids[:1]
+        if not instance:
+            raise UserError(_("El entorno no tiene una instancia EC2."))
+        target = self.primary_instance_id
+        cfg = instance.fetch_config(odoo_instance=target)
+        actual = cfg.get("readonly", {}).get("http_interface", "")
+        if actual == "127.0.0.1":
+            self.message_post(body=_(
+                "http_interface ya está en 127.0.0.1; nada que hacer."))
+            return "ready"
+        outcome = instance.job_save_config(
+            {"http_interface": "127.0.0.1"}, cfg.get("config_hash"),
+            internal_keys={"http_interface"}, instance_id=target.id)
+        self.message_post(body=_(
+            "Blindaje de http_interface: %s.") % outcome)
+        return outcome
+
+    # ------------------------------------------------------------------
+    # Migración al addons_path por repo (gap d): aplica el esquema nuevo a
+    # un entorno YA montado — entradas ordenadas + limpieza de symlinks.
+    # ------------------------------------------------------------------
+    def action_apply_addons_path(self):
+        """Recalcula el addons_path de la instancia primaria con el esquema
+        por-repo (sequence) y reemplaza los symlinks del esquema viejo. Para
+        la instancia self el restart va diferido (sin corte largo)."""
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("addons_path_apply")
+        if not self.repository_ids.filtered("local_path"):
+            raise UserError(_("El entorno no tiene repos con ruta local."))
+        self.with_delay(
+            description=_("Aplicar addons_path por repo: %s") % self.name
+        ).job_apply_addons_path()
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info", "sticky": False,
+                       "message": _("Aplicación del addons_path encolada.")},
+        }
+
+    def job_apply_addons_path(self):
+        """Job: corre el ensure (ordenado + symlinks) sobre la primaria."""
+        self.ensure_one()
+        instance = self.ec2_instance_ids[:1]
+        if not instance:
+            raise UserError(_("El entorno no tiene una instancia EC2."))
+        outcome = instance._ensure_custom_addons_path(
+            odoo_instance=self.primary_instance_id)
+        ok = outcome in ("ready", "restarted")
+        self._log("ssm_command", result="success" if ok else "failed",
+                  name=_("Aplicar addons_path por repo"),
+                  error_message=None if ok else outcome)
+        self.message_post(body=_(
+            "addons_path por repo: %(r)s.",
+            r={"ready": _("ya estaba aplicado"),
+               "restarted": _("aplicado y reiniciado"),
+               "rolled_back": _("falló y se restauró la config anterior"),
+               }.get(outcome, outcome)))
+        bus.toast(self.env, _("addons_path por repo: %s") % outcome,
+                  title=_("Repositorios"),
+                  ntype="success" if ok else "danger", sticky=not ok)
+        return ok
+
+    # ------------------------------------------------------------------
+    # Verificación post-instalación: módulos instalados vs archivo de
+    # referencia versionado en un repo del entorno (opción reutilizable).
+    # ------------------------------------------------------------------
+    def action_verify_installation(self, vals=None):
+        """Encola la verificación. ``vals`` opcional ({repo_id, path}) persiste
+        la referencia en el entorno para las corridas siguientes."""
+        self.ensure_one()
+        self._pcm_assert_env_not_imported("install_verify")
+        if vals:
+            escribir = {}
+            if vals.get("repo_id"):
+                escribir["modules_ref_repo_id"] = int(vals["repo_id"])
+            if vals.get("path"):
+                escribir["modules_ref_path"] = vals["path"]
+            if escribir:
+                self.write(escribir)
+        repo = self.modules_ref_repo_id
+        path = (self.modules_ref_path or "").strip()
+        if not repo or not repo.local_path or not path:
+            raise UserError(_(
+                "Indicá el repo y la ruta del archivo de referencia de "
+                "módulos (ej.: docs/MODULES_PROD.txt)."))
+        self._ref_path_segura(path)
+        if not self.primary_instance_id.database_id:
+            raise UserError(_("La instancia primaria no tiene base asociada."))
+        self.with_delay(
+            description=_("Verificar instalación: %s") % self.name
+        ).job_verify_installation()
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {"type": "info", "sticky": False,
+                       "message": _("Verificación de instalación encolada.")},
+        }
+
+    @api.model
+    def _ref_path_segura(self, path):
+        """Valida la ruta relativa del archivo de referencia (viaja al shell)."""
+        if (not re.match(r"^[A-Za-z0-9._/-]+$", path) or path.startswith("/")
+                or ".." in path):
+            raise UserError(_("Ruta de referencia inválida: %r.") % path)
+        return path
+
+    def job_verify_installation(self):
+        """Job: módulos instalados (ir_module_module) vs archivo de referencia.
+
+        Conteo + diff nombre a nombre. Verde solo si el diff es vacío; los
+        faltantes/sobrantes quedan en la bitácora y el chatter.
+        """
+        self.ensure_one()
+        instance = self.ec2_instance_ids[:1]
+        repo = self.modules_ref_repo_id
+        path = self._ref_path_segura((self.modules_ref_path or "").strip())
+        db_name = self.primary_instance_id.database_id.name
+        title = _("Verificar instalación: %s") % self.name
+        if not instance or not repo.local_path or not db_name:
+            raise UserError(_("Falta instancia, repo de referencia o base."))
+        ref_file = "%s/%s" % (repo.local_path.rstrip("/"), path)
+        script = "\n".join([
+            "set -e",
+            "echo PCM_MODS_BEGIN",
+            "sudo -u postgres psql -d %s -At -c \"select name from "
+            "ir_module_module where state='installed' order by name\""
+            % shlex.quote(db_name),
+            "echo PCM_MODS_END",
+            "echo PCM_REF_BEGIN",
+            "sudo -u odoo cat %s" % shlex.quote(ref_file),
+            "echo PCM_REF_END",
+        ])
+        out = instance._get_ssm_service().run_script(
+            instance.aws_instance_id, script, region=instance.region,
+            comment="pcm verify install: %s" % self.name, timeout=90,
+            check=False)   # el veredicto se arma del stdout; el status se audita
+        stdout = out.get("stdout") or ""
+        if out.get("status") != "Success":
+            detalle = (out.get("stderr") or out.get("status") or "?")
+            self._log("ssm_command", result="failed", name=title,
+                      error_message=detalle, aws_request_id=out.get("command_id"))
+            bus.toast(self.env, _("Verificación fallida: %s") % detalle,
+                      title=_("Verificar instalación"), ntype="danger",
+                      sticky=True)
+            return False
+        instalados = set(self._bloque_marcado(stdout, "PCM_MODS"))
+        esperados = set(self._bloque_marcado(stdout, "PCM_REF"))
+        faltan = sorted(esperados - instalados)
+        sobran = sorted(instalados - esperados)
+        ok = bool(instalados) and not faltan and not sobran
+        detalle = _(
+            "Instalados: %(i)d — esperados: %(e)d (%(ref)s).",
+            i=len(instalados), e=len(esperados), ref=path)
+        if faltan:
+            detalle += _("\nFALTAN (%d): %s") % (len(faltan), ", ".join(faltan))
+        if sobran:
+            detalle += _("\nSOBRAN (%d): %s") % (len(sobran), ", ".join(sobran))
+        self._log("ssm_command", result="success" if ok else "failed",
+                  name=title, error_message=None if ok else detalle,
+                  aws_request_id=out.get("command_id"))
+        self.message_post(body=_("Verificación de instalación: %(v)s\n%(d)s",
+                                 v=_("VERDE") if ok else _("ROJA"), d=detalle))
+        bus.toast(self.env,
+                  (_("Instalación verificada: %d módulos, idénticos a la "
+                     "referencia.") % len(instalados)) if ok else detalle,
+                  title=_("Verificar instalación"),
+                  ntype="success" if ok else "danger", sticky=not ok,
+                  reload=False)
+        return ok
+
+    @staticmethod
+    def _bloque_marcado(stdout, marca):
+        """Líneas entre ``<marca>_BEGIN`` y ``<marca>_END`` (limpias, sin vacías)."""
+        lineas, dentro = [], False
+        for linea in (stdout or "").splitlines():
+            linea = linea.strip()
+            if linea == marca + "_BEGIN":
+                dentro = True
+            elif linea == marca + "_END":
+                dentro = False
+            elif dentro and linea:
+                lineas.append(linea)
+        return lineas
 
     def action_add_addon_ui(self, vals):
         """Alta de repo DESDE LA UI (drawer OWL): mismo flujo completo que

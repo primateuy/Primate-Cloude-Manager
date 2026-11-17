@@ -53,12 +53,20 @@
                     </PcmField>
                 </div>
 
-                <PcmField label="'Ruta local en la EC2'"
-                          help="'Dónde vive el repo en el servidor. Ej.: /opt/odoo/addons'">
-                    <input class="o_pcm_input" type="text" t-att-value="state.local_path"
-                           t-att-placeholder="'/opt/odoo/addons'"
-                           t-on-input="(ev) => this.onInput('local_path', ev)"/>
-                </PcmField>
+                <div class="o_pcm_form_row">
+                    <PcmField label="'Ruta local en la EC2'"
+                              help="'Dónde vive el repo en el servidor. Ej.: /opt/odoo/addons'">
+                        <input class="o_pcm_input" type="text" t-att-value="state.local_path"
+                               t-att-placeholder="'/opt/odoo/addons'"
+                               t-on-input="(ev) => this.onInput('local_path', ev)"/>
+                    </PcmField>
+                    <PcmField label="'Orden (addons_path)'"
+                              help="'Posición del repo en el addons_path: ante módulos homónimos gana el menor.'">
+                        <input class="o_pcm_input o_pcm_input_narrow" type="number"
+                               min="0" t-att-value="state.sequence"
+                               t-on-input="(ev) => this.onInput('sequence', ev)"/>
+                    </PcmField>
+                </div>
 
                 <PcmField label="'Token de GitHub'" help="tokenHelp">
                     <input class="o_pcm_input" type="password"

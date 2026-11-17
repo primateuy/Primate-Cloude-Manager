@@ -205,6 +205,11 @@ class PrimateCloudDeployment(models.Model):
         # Reflejar el commit desplegado en el repositorio.
         if self.repository_id and (target := vals.get("target_commit")):
             self.repository_id.current_commit = target
+        # Un checkout de rama exitoso ES el cambio de rama del repo: la ficha
+        # refleja la rama que quedó desplegada (fetch+checkout, sin reinstalar).
+        if (self.deployment_type == "checkout_branch" and self.repository_id
+                and self.target_branch):
+            self.repository_id.configured_branch = self.target_branch
         # Si es una reversión, marcar el deploy original como revertido.
         if self.reverts_deployment_id:
             self.reverts_deployment_id.state = "reverted"

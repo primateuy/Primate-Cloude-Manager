@@ -25,6 +25,13 @@
 #                       pip extra en el venv del runtime, conf con jobrunner de
 #                       queue_job + jobs largos, y clave Fernet generada EN el
 #                       servidor (EnvironmentFile; nunca pasa por stdout/SSM).
+#   %%PIP_PACKAGES%%    paquetes Python extra (separados por espacio; el builder
+#                       ya mergeó acá los del perfil PCM). Vacío = ninguno.
+#   %%INIT_MODULES%%    módulos para la instalación inicial (-i a,b,c) ANTES de
+#                       arrancar el servicio. Vacío = la base nace como siempre.
+#   %%LOAD_LANGUAGE%%   idioma a cargar en la instalación inicial (ej. pt_BR).
+#   %%LIMIT_TIME_CPU%%  limit_time_cpu del conf (default 600).
+#   %%LIMIT_TIME_REAL%% limit_time_real del conf (default 1200; perfil PCM 14400).
 #
 set -euo pipefail
 
@@ -143,14 +150,24 @@ RUNTIME_LOG="/var/log/pcm-runtime-odoo-${ODOO_VERSION}.log"
     fi
 ) 9>"${PCM_ROOT}/runtime/.lock-${ODOO_VERSION}"
 
-# --- 3b. Perfil PCM: dependencias Python de PCM en el venv del runtime -------
-#     Idempotente y fuera del lock del runtime: corre también cuando el
-#     runtime ya existía (pip resuelve "ya instalado" en segundos).
-if [ "${PCM_PROFILE}" = "1" ]; then
-    log "Perfil PCM: instalando dependencias Python (detalle en ${RUNTIME_LOG})…"
-    sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/pip" install \
-        boto3 botocore paramiko cryptography PyGithub \
+# --- 3b. Paquetes Python extra en el venv del runtime -------------------------
+#     Genérico (opción del entorno) y también el camino del perfil PCM: el
+#     builder mergea los paquetes del perfil en este mismo token. Idempotente y
+#     fuera del lock del runtime (pip resuelve "ya instalado" en segundos).
+#     Cada paquete se verifica con pip show: un typo no pasa en silencio.
+PIP_PACKAGES="%%PIP_PACKAGES%%"
+if [ -n "${PIP_PACKAGES}" ]; then
+    log "Instalando paquetes Python extra: ${PIP_PACKAGES} (detalle en ${RUNTIME_LOG})…"
+    # shellcheck disable=SC2086 — la expansión por palabra es a propósito.
+    sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/pip" install ${PIP_PACKAGES} \
         >>"${RUNTIME_LOG}" 2>&1
+    for paquete in ${PIP_PACKAGES}; do
+        nombre="${paquete%%[=<>~!]*}"
+        if ! sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/pip" show "${nombre}" \
+            >/dev/null 2>&1; then
+            fail "PCM_ERR_PIP: el paquete ${nombre} no quedó instalado."
+        fi
+    done
 fi
 
 # --- 4. Credencial PostgreSQL PROPIA (D-R3.10; jamás se loguea) ---------------
@@ -180,7 +197,10 @@ dbfilter = ^%%DB_NAME%%$
 list_db = False
 http_port = %%HTTP_PORT%%
 gevent_port = %%GEVENT_PORT%%
+http_interface = 127.0.0.1
 workers = %%WORKERS%%
+limit_time_cpu = %%LIMIT_TIME_CPU%%
+limit_time_real = %%LIMIT_TIME_REAL%%
 data_dir = /opt/pcm/instances/%%SLUG%%/data
 addons_path = /opt/pcm/runtime/odoo-%%ODOO_VERSION%%/src/addons,/opt/pcm/instances/%%SLUG%%/addons
 logfile = /opt/pcm/instances/%%SLUG%%/log/odoo.log
@@ -189,12 +209,12 @@ CONF
 
 # Perfil PCM: jobrunner de queue_job + jobs largos (lección bj-uat: con el
 # limit_time_real default Odoo se reinicia a mitad de un restore y queue_job
-# lo relanza). Las claves sueltas siguen bajo [options]; [queue_job] va al
-# final a propósito.
+# lo relanza — por eso el builder fija el TOKEN limit_time_real en 14400 para
+# el perfil; acá no se repite la clave: una duplicada rompe el configparser).
+# Las claves sueltas siguen bajo [options]; [queue_job] va al final a propósito.
 if [ "${PCM_PROFILE}" = "1" ]; then
     cat >> "${CONF}" <<'CONFPCM'
 server_wide_modules = base,web,queue_job
-limit_time_real = 14400
 limit_time_real_cron = -1
 max_cron_threads = 2
 
@@ -250,6 +270,26 @@ cat > "${LOGROTATE}" <<'ROTATE'
 }
 ROTATE
 
+# --- 5d. Instalación inicial: módulos + idioma ANTES de arrancar el servicio --
+#     La base nace completa (-i … --load-language=…) y el health check de abajo
+#     valida el resultado. Falla => rollback clean-slate (la BD nació en esta
+#     corrida: se dropea). Vacío => comportamiento de siempre (la BD nace en el
+#     primer arranque del servicio).
+INIT_MODULES="%%INIT_MODULES%%"
+LOAD_LANGUAGE="%%LOAD_LANGUAGE%%"
+if [ -n "${INIT_MODULES}" ]; then
+    log "Instalación inicial: -i ${INIT_MODULES}${LOAD_LANGUAGE:+ --load-language=${LOAD_LANGUAGE}} (detalle en ${RUNTIME_LOG})…"
+    IDIOMA=""
+    [ -n "${LOAD_LANGUAGE}" ] && IDIOMA="--load-language=${LOAD_LANGUAGE}"
+    if ! sudo -u "${ODOO_USER}" "${RUNTIME}/venv/bin/python3" \
+        "${RUNTIME}/src/odoo-bin" -c "${CONF}" \
+        -i "${INIT_MODULES}" ${IDIOMA} --stop-after-init \
+        >>"${RUNTIME_LOG}" 2>&1; then
+        fail "PCM_ERR_INIT_MODULES: la instalación inicial falló (ver ${RUNTIME_LOG})."
+    fi
+    log "Instalación inicial terminada."
+fi
+
 # --- 6. Unit systemd propio ----------------------------------------------------
 cat > "/etc/systemd/system/${UNIT}" <<'UNIT_EOF'
 [Unit]
@@ -278,6 +318,7 @@ if [ "${IS_DEFAULT}" = "1" ]; then
 server {
     listen 80 default_server;
     server_name %%DOMAIN%% _;
+    client_max_body_size 100M;
     # El administrador de bases NO se publica (además de list_db = False).
     location ^~ /web/database {
         return 404;
@@ -289,12 +330,21 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
+    # Estáticos con caché del navegador (assets fingerprinteados de Odoo).
+    location ~ ^/(web/static/|website/image/) {
+        proxy_pass http://127.0.0.1:%%HTTP_PORT%%;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        expires 24h;
+    }
     location / {
         proxy_pass http://127.0.0.1:%%HTTP_PORT%%;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
+        proxy_redirect off;
     }
 }
 NGINX
@@ -303,6 +353,7 @@ else
 server {
     listen 80;
     server_name %%DOMAIN%%;
+    client_max_body_size 100M;
     # El administrador de bases NO se publica (además de list_db = False).
     location ^~ /web/database {
         return 404;
@@ -314,12 +365,21 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
+    # Estáticos con caché del navegador (assets fingerprinteados de Odoo).
+    location ~ ^/(web/static/|website/image/) {
+        proxy_pass http://127.0.0.1:%%HTTP_PORT%%;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        expires 24h;
+    }
     location / {
         proxy_pass http://127.0.0.1:%%HTTP_PORT%%;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
+        proxy_redirect off;
     }
 }
 NGINX

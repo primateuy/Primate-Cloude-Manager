@@ -30,6 +30,8 @@ from . import test_ui_acciones
 from . import test_cadena_validacion
 from . import test_region_y_filestore
 from . import test_dueno_restore_catalogo
+from . import test_public_api_4b
+from . import test_public_api_post_m1
 from . import test_https_ssl
 from . import test_blindaje_readonly
 from . import test_gemelo
@@ -39,3 +41,4 @@ from . import test_sin_reintento
 from . import test_autogestion_self
 from . import test_perfil_pcm
 from . import test_monitoreo_cloudwatch
+from . import test_montaje_a_la_carta

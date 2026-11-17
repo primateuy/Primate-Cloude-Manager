@@ -355,6 +355,22 @@
                             t-on-click="() => this.runEnvMethod('action_repair_repo_permissions', { confirm: '¿Reparar el dueño de los clones de este entorno? (chown idempotente al usuario odoo)' })">
                         <i class="fa fa-wrench"/> Reparar permisos
                     </button>
+                    <button t-if="!d.is_imported &amp;&amp; d.repositories.length" class="o_pcm_btn"
+                            t-on-click="() => this.runEnvMethod('action_apply_addons_path', { confirm: '¿Aplicar el addons_path por repo (orden explícito) a la instancia primaria? Reemplaza los symlinks del esquema viejo y reinicia Odoo (diferido si es la instancia de PCM).' })">
+                        <i class="fa fa-sort-amount-asc"/> Aplicar addons_path
+                    </button>
+                    <button t-if="!d.is_imported &amp;&amp; d.repositories.length" class="o_pcm_btn"
+                            t-on-click="() => this.verifyInstallation()">
+                        <i class="fa fa-clipboard"/> Verificar instalación
+                    </button>
+                    <button t-if="!d.is_imported &amp;&amp; (d.state === 'active' or d.state === 'error')" class="o_pcm_btn"
+                            t-on-click="() => this.runEnvMethod('action_install_wkhtmltopdf', { confirm: '¿Instalar wkhtmltopdf desde el release oficial de GitHub? (idempotente; pisa al de apt, que genera PDF rotos)' })">
+                        <i class="fa fa-file-pdf-o"/> wkhtmltopdf (release)
+                    </button>
+                    <button t-if="!d.is_imported &amp;&amp; (d.state === 'active' or d.state === 'error')" class="o_pcm_btn"
+                            t-on-click="() => this.runEnvMethod('action_harden_http_interface', { confirm: '¿Fijar http_interface = 127.0.0.1 en la instancia primaria? Odoo queda solo detrás de nginx (guardado con backup/health/rollback; reinicio diferido si es la instancia de PCM).' })">
+                        <i class="fa fa-lock"/> Blindar http_interface
+                    </button>
                 </div>
                 <div t-if="!d.repositories.length" class="o_pcm_card o_pcm_muted">
                     Este entorno no tiene repositorios registrados.

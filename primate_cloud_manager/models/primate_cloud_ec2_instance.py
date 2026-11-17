@@ -1220,6 +1220,28 @@ class PrimateCloudEc2Instance(models.Model):
         old_values = self._config_markers(stdout, "PCM_OLD:")
         diff = self._config_diff_text(old_values, edits)
 
+        # Instancia que hospeda a ESTE PCM: el restart va DIFERIDO (systemd-run
+        # con delay, igual que los deploys) para que el job termine y registre
+        # el resultado antes de que PCM se reinicie a sí mismo. Sin health ni
+        # rollback automático (nadie quedaría vivo para correrlos): el backup
+        # queda en el servidor (PCM_BAK) por si hay que volver a mano.
+        if target.is_self:
+            ssm.run_script(
+                self.aws_instance_id,
+                "sudo systemd-run --collect --on-active=10 "
+                "systemctl restart %s" % shlex.quote(service),
+                region=self.region, comment="pcm config restart (self, diferido)",
+                timeout=45, agent_timeout=20, check=False)
+            self._log("config_edit", result="success", name=title,
+                      error_message=_(
+                          "Cambios aplicados (instancia self — reinicio "
+                          "DIFERIDO, sin health/rollback automático; backup "
+                          "en %(b)s):\n%(d)s", b=backup or "?", d=diff))
+            self._notify_config_done(True, _(
+                "Configuración guardada; el Odoo de PCM se reinicia en unos "
+                "segundos (reinicio diferido)."))
+            return "saved_deferred"
+
         # Reinicio + health check con timeout generoso — de LA instancia.
         # check=False A PROPÓSITO: si el restart falla, la RED DE SEGURIDAD es
         # el health_check + rollback de abajo (restaura el conf anterior). Con
@@ -1329,20 +1351,42 @@ class PrimateCloudEc2Instance(models.Model):
         return True
 
     # --- Addons de cliente (Bloque B4) ---
-    def _ensure_custom_addons_path(self, odoo_instance=None):
-        """Garantiza el dir de addons DE LA INSTANCIA + que esté en SU addons_path.
+    def _repo_addons_paths(self, target):
+        """Rutas de clones de LA instancia, en el orden EXPLÍCITO (sequence).
 
-        Retroactivo para instancias viejas: crea el dir si falta y, si el
-        addons_path no lo incluye, lo agrega REUSANDO B3 (surgical edit + backup
-        + restart + health + rollback), sin duplicar. En multi-Odoo el conf del
-        slug YA trae su dir en el addons_path (R3) → devuelve 'ready' sin
-        editar nada. Devuelve:
-        'ready' (ya estaba / se creó) | 'restarted' (se editó addons_path y
-        reinició) | 'rolled_back' (el cambio de addons_path no levantó) | 'error'.
+        Un repo sin ``instance_id`` pertenece a la primaria (mismo criterio
+        que ``job_add_addon``). El orden importa: ante módulos homónimos,
+        Odoo carga el del primer path.
+        """
+        env = self.environment_id
+        primary = env.primary_instance_id if env else None
+        repos = (env.repository_ids if env else []).filtered(
+            lambda r: r.local_path
+            and ((r.instance_id and r.instance_id == target)
+                 or (not r.instance_id and target == primary)))
+        # sorted explícito: un one2many recién creado puede venir en orden de
+        # inserción (caché), no en el _order del modelo.
+        repos = repos.sorted(key=lambda r: (r.sequence, r.name or "", r.id))
+        return [r.local_path.rstrip("/") for r in repos]
+
+    def _ensure_custom_addons_path(self, odoo_instance=None):
+        """Garantiza el addons_path COMPLETO de la instancia: una entrada por
+        repo (en el orden ``sequence``) + el dir suelto de la instancia.
+
+        Esquema nuevo (Alta na Pipa, chau symlinks): los clones entran al conf
+        como entradas propias del addons_path, después del runtime (y de
+        cualquier entrada ajena, que se preserva) y antes del dir suelto. Los
+        symlinks viejos que apuntaban ADENTRO de un repo (el puente de la
+        mudanza PCM) se limpian antes del restart: con la entrada propia ya
+        serían un módulo duplicado. Reusa B3 (surgical edit + backup + restart
+        + health + rollback). Devuelve:
+        'ready' (ya estaba todo) | 'restarted' (se editó y reinició) |
+        'rolled_back' (el cambio no levantó) | 'error'.
         """
         self.ensure_one()
         target = self._panel_target(odoo_instance)
-        addons_dir = target.addons_dir or CUSTOM_ADDONS_DIR
+        addons_dir = (target.addons_dir or CUSTOM_ADDONS_DIR).rstrip("/")
+        repo_paths = self._repo_addons_paths(target)
         ssm = self._get_ssm_service()
         ssm.run_script(
             self.aws_instance_id,
@@ -1352,18 +1396,57 @@ class PrimateCloudEc2Instance(models.Model):
             agent_timeout=30)
         cfg = self.fetch_config(odoo_instance=target)
         addons_path = cfg.get("readonly", {}).get("addons_path", "")
-        parts = [p.strip() for p in addons_path.split(",") if p.strip()]
-        if addons_dir in parts:
+        parts = [p.strip().rstrip("/") for p in addons_path.split(",")
+                 if p.strip()]
+        gestionados = set(repo_paths) | {addons_dir}
+        desired = ([p for p in parts if p not in gestionados]
+                   + repo_paths + [addons_dir])
+        if parts == desired:
             return "ready"
-        new_path = ",".join(parts + [addons_dir])
+        # Symlinks del esquema viejo: los que viven en el dir suelto y
+        # apuntan adentro de un clon se van ANTES del restart (duplicarían
+        # el módulo). Solo symlinks, solo hacia repos registrados.
+        if repo_paths:
+            self._limpiar_symlinks_de_repos(ssm, addons_dir, repo_paths)
         outcome = self.job_save_config(
-            {"addons_path": new_path}, cfg.get("config_hash"),
+            {"addons_path": ",".join(desired)}, cfg.get("config_hash"),
             internal_keys={"addons_path"}, instance_id=target.id)
-        if outcome == "saved":
+        if outcome in ("saved", "saved_deferred"):
             return "restarted"
         if outcome == "rolled_back":
             return "rolled_back"
         return "error"
+
+    def _limpiar_symlinks_de_repos(self, ssm, addons_dir, repo_paths):
+        """Borra los symlinks de ``addons_dir`` que apuntan DENTRO de un clon.
+
+        Puente de la migración al addons_path por repo: idempotente, solo toca
+        symlinks (nunca dirs reales) y solo si el destino resuelto cae dentro
+        de la ruta de un repo registrado.
+        """
+        self.ensure_one()
+        qdir = shlex.quote(addons_dir)
+        lineas = [
+            "set -e",
+            'for enlace in %s/*; do' % qdir,
+            '    [ -L "${enlace}" ] || continue',
+            '    destino=$(readlink -f "${enlace}" || true)',
+            '    case "${destino}" in',
+        ]
+        for path in repo_paths:
+            # El path entra como PATRÓN de case (sin quoting posible): charset
+            # cerrado o se saltea — un path raro no puede inyectar shell.
+            if not re.match(r"^[A-Za-z0-9._/-]+$", path):
+                continue
+            lineas.append('        %s/*) rm -f "${enlace}"; '
+                          'echo "PCM_SYMLINK_FUERA:${enlace}";;' % path)
+        lineas += ["        *) : ;;", "    esac", "done",
+                   "echo PCM_SYMLINKS_OK"]
+        out = ssm.run_script(
+            self.aws_instance_id, "\n".join(lineas), region=self.region,
+            comment="pcm addons symlinks", timeout=45, agent_timeout=30,
+            check=False)   # best-effort: un symlink huérfano no corta el flujo
+        return "PCM_SYMLINKS_OK" in (out.get("stdout") or "")
 
     @staticmethod
     def _build_addon_clone_script(url, path, ref, token_b64=None,

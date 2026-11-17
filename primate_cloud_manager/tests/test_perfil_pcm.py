@@ -92,7 +92,11 @@ class TestPerfilPcm(TransactionCase):
         opciones, _sep, queue = extra.partition("[queue_job]")
         self.assertTrue(queue, "falta la sección [queue_job]")
         self.assertIn("server_wide_modules = base,web,queue_job", opciones)
-        self.assertIn("limit_time_real = 14400", opciones)      # lección bj-uat
+        # Lección bj-uat: jobs largos. Desde el montaje a la carta va por el
+        # TOKEN en el conf base (una clave repetida en el bloque extra rompería
+        # el configparser de Odoo).
+        self.assertIn("limit_time_real = 14400", self._conf_base(script))
+        self.assertNotIn("limit_time_real =", opciones)
         self.assertIn("limit_time_real_cron = -1", opciones)
         self.assertIn("max_cron_threads = 2", opciones)
         self.assertIn("channels = root:2", queue)

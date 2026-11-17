@@ -30,6 +30,9 @@ PERSISTED_FIELDS = [
     "pcm_profile",
     # Monitoreo CloudWatch (pedido INCO 2026-11).
     "cw_monitoring", "cw_ssm_parameter",
+    # Montaje a la carta (Alta na Pipa 2026-11, reutilizable).
+    "init_modules", "load_language", "pip_packages", "wkhtml_version",
+    "limit_time_cpu", "limit_time_real",
 ]
 
 
@@ -138,6 +141,33 @@ class PrimateCloudProvisionWizard(models.TransientModel):
 
     # --- Odoo ---
     admin_password = fields.Char(string="Contraseña admin (odoo.conf)")
+    # Montaje a la carta (Alta na Pipa, reutilizable): todo opcional; vacío =
+    # comportamiento de siempre. Las validaciones de charset viven en el
+    # builder del script y corren temprano vía _validate().
+    init_modules = fields.Char(
+        string="Módulos a instalar",
+        help="Lista separada por coma para el -i inicial (la base nace con "
+             "ellos instalados, antes de arrancar el servicio). Vacío: la "
+             "base nace sola en el primer arranque.")
+    load_language = fields.Char(
+        string="Idioma inicial",
+        help="Código para --load-language en la instalación inicial "
+             "(ej.: pt_BR). Requiere módulos a instalar.")
+    pip_packages = fields.Char(
+        string="Paquetes Python extra",
+        help="Paquetes pip para el venv del runtime, separados por coma o "
+             "espacio (ej.: openpyxl). Cada uno se verifica con pip show.")
+    wkhtml_version = fields.Char(
+        string="wkhtmltopdf (release GitHub)",
+        help="Versión del release oficial (ej.: 0.12.6.1-3): pisa al de apt, "
+             "que genera PDF rotos. Vacío: queda el de apt.")
+    limit_time_cpu = fields.Integer(
+        string="limit_time_cpu", default=600,
+        help="Límite de CPU por request (segundos) del odoo.conf.")
+    limit_time_real = fields.Integer(
+        string="limit_time_real", default=1200,
+        help="Límite de tiempo real por request (segundos). El perfil PCM "
+             "lo eleva solo a 14400 (jobs largos del jobrunner).")
 
     # --- Semáforo de descubrimiento de red (Bloque B4) ---
     region_status = fields.Selection(
@@ -268,6 +298,13 @@ class PrimateCloudProvisionWizard(models.TransientModel):
             # Monitoreo CloudWatch (pedido INCO)
             "cw_monitoring": self.cw_monitoring,
             "cw_ssm_parameter": self.cw_ssm_parameter,
+            # Montaje a la carta (Alta na Pipa)
+            "init_modules": self.init_modules,
+            "load_language": self.load_language,
+            "pip_packages": self.pip_packages,
+            "wkhtml_version": (self.wkhtml_version or "").strip(),
+            "limit_time_cpu": self.limit_time_cpu,
+            "limit_time_real": self.limit_time_real,
         }
 
     @api.onchange("image_id")
@@ -306,6 +343,27 @@ class PrimateCloudProvisionWizard(models.TransientModel):
                 "automático»."))
         if self.create_dns and not (self.hosted_zone_id or "").strip():
             raise UserError(_("Para crear DNS, indicá el Hosted Zone ID de Route 53."))
+        # Montaje a la carta: validar ANTES de crear la EC2 (un typo acá no
+        # puede aparecer recién con la máquina facturando). Mismas reglas que
+        # el builder (que revalida).
+        from ..models.primate_cloud_environment import (
+            INIT_MODULES_RE, LOAD_LANGUAGE_RE, WKHTML_VERSION_RE)
+        Env = self.env["primate.cloud.environment"]
+        Env._clean_pip_packages(self.pip_packages)
+        mods = (self.init_modules or "").replace(" ", "")
+        if mods and not INIT_MODULES_RE.match(mods):
+            raise UserError(_("Módulos a instalar: lista inválida (%r).") % mods)
+        lang = (self.load_language or "").strip()
+        if lang and not LOAD_LANGUAGE_RE.match(lang):
+            raise UserError(_("Idioma inicial inválido: %r (ej.: pt_BR).") % lang)
+        if lang and not mods:
+            raise UserError(_(
+                "El idioma inicial requiere indicar los módulos a instalar."))
+        version = (self.wkhtml_version or "").strip()
+        if version and not WKHTML_VERSION_RE.match(version):
+            raise UserError(_(
+                "Versión de wkhtmltopdf inválida: %r (ej.: 0.12.6.1-3).")
+                % version)
 
     def _raw_values(self):
         """Valores crudos del wizard a persistir (para precargar al reintentar)."""

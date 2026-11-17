@@ -55,11 +55,11 @@ export function pcmErrorMessage(error) {
  * Llama a un método de acción de un modelo (opcionalmente tras confirmar) y
  * despacha su resultado. Devuelve true si se ejecutó, false si se canceló.
  */
-export async function runPcmModelAction(env, orm, model, method, ids, { confirm } = {}) {
+export async function runPcmModelAction(env, orm, model, method, ids, { confirm, args } = {}) {
     if (confirm && !(await env.pcm.confirm(confirm))) {
         return false;
     }
-    const res = await orm.call(model, method, [ids]);
+    const res = await orm.call(model, method, [ids, ...(args || [])]);
     handlePcmActionResult(env, res);
     return true;
 }

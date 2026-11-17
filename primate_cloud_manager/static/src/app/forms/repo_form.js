@@ -53,6 +53,7 @@ export class RepoForm extends Component {
             organization: "",
             configured_branch: "",
             local_path: "",
+            sequence: 10,
             github_token: "",
         });
         if (this.isEdit) {
@@ -71,7 +72,7 @@ export class RepoForm extends Component {
         const recs = await this.orm.read(
             "primate.cloud.repository", [this.props.recordId],
             ["name", "repo_type", "github_url", "organization",
-             "configured_branch", "local_path", "github_token"]);
+             "configured_branch", "local_path", "sequence", "github_token"]);
         this.state.loading = false;
         const r = recs[0];
         if (!r) {
@@ -85,6 +86,7 @@ export class RepoForm extends Component {
             organization: r.organization || "",
             configured_branch: r.configured_branch || "",
             local_path: r.local_path || "",
+            sequence: r.sequence ?? 10,
             tokenAlreadySet: r.github_token === TOKEN_MASK,
             github_token: "",  // nunca se precarga (ni la máscara)
         });
@@ -136,6 +138,7 @@ export class RepoForm extends Component {
                 organization: this.state.organization,
                 configured_branch: this.state.configured_branch,
                 local_path: this.state.local_path,
+                sequence: parseInt(this.state.sequence, 10) || 10,
             };
             // El token sólo se manda si el usuario escribió uno (así en edición
             // no se pisa el guardado, y nunca se reenvía la máscara).
