@@ -152,10 +152,13 @@ DO $$ BEGIN
                  WHERE coalesce(ref, '') <> ''
                    AND portal_birthdate IS NOT NULL);
         UPDATE res_partner SET portal_birthdate = NULL;
+        -- OJO: company_type es un campo CALCULADO sin columna en res_partner
+        -- (rompió el primer montaje del staging de Alta, 2026-11-17); la
+        -- columna almacenada real es is_company.
         INSERT INTO res_partner
-               (name, ref, portal_birthdate, company_type, active,
+               (name, ref, portal_birthdate, is_company, active,
                 create_date, write_date)
-        SELECT v.nombre, v.ref, DATE '2000-01-01', 'person', TRUE,
+        SELECT v.nombre, v.ref, DATE '2000-01-01', FALSE, TRUE,
                now(), now()
           FROM (VALUES ('[STAGING] Alumno Prueba 1', 'STAGING-TEST-1'),
                        ('[STAGING] Alumno Prueba 2', 'STAGING-TEST-2'))
