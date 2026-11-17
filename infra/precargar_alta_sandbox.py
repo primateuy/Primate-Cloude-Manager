@@ -78,7 +78,10 @@ wiz = Wizard.create({
     "environment_id": srv.id,
     "region": "us-east-1",
     "instance_name": SLUG,
-    "instance_type": "t3.medium",
+    # t3.small: la cuenta sandbox está en el plan Free Tier nuevo y AWS
+    # rechaza t3.medium (InvalidParameterCombination, 2026-11-17). El runbook
+    # avala t3.small para staging; PRODUCCIÓN va t3.medium en la cuenta real.
+    "instance_type": "t3.small",
     "os_type": "ubuntu_24",
     "disk_size_gb": 30,
     "db_mode": "local_pg",
