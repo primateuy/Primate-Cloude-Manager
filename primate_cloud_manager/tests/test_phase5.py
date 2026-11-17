@@ -286,6 +286,30 @@ class TestRepository(TransactionCase):
         )
         self.assertTrue(log)
 
+    def test_cruce_de_modulos_filtra_por_nombre(self):
+        """La query a ir_module_module pide SOLO los módulos del repo: la
+        tabla entera pasa los 24.000 caracteres que SSM devuelve como máximo
+        y el truncado silencioso daba «No está en la base» a módulos
+        instalados (falso negativo pcm-self 2026-11-17)."""
+        self.env["primate.cloud.database"].create({
+            "name": "forum", "account_id": self.account.id,
+            "environment_id": self.env_rec.id, "db_type": "local_pg",
+        })
+        scan_json = ('[{"technical_name": "zeta", "version": "1.0"},'
+                     ' {"technical_name": "alfa", "version": "1.0"}]')
+        fake_ssm = mock.Mock()
+        fake_ssm.run_script.side_effect = [
+            {"status": "Success", "stdout": scan_json},
+            {"status": "Success", "stdout": "alfa|installed|1.0"},
+        ]
+        with mock.patch.object(type(self.instance), "_get_ssm_service",
+                               return_value=fake_ssm):
+            self.repo.job_detect_modules()
+        import shlex as _shlex
+        comando = fake_ssm.run_script.call_args_list[1].args[1]
+        consulta = _shlex.split(comando)[-1]   # el argumento de psql -c
+        self.assertIn("WHERE name IN ('alfa', 'zeta')", consulta)
+
     def test_job_detect_modules_sin_base_queda_not_found(self):
         scan_json = '[{"technical_name": "mod_a", "version": "1.0"}]'
         fake_ssm = mock.Mock()

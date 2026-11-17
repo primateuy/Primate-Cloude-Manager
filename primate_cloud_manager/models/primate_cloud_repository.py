@@ -364,7 +364,10 @@ class PrimateCloudRepository(models.Model):
         ssm = instance._get_ssm_service()
         try:
             modules = self._scan_modules(ssm, instance)
-            db_states = self._fetch_db_module_states(ssm, instance)
+            db_states = self._fetch_db_module_states(
+                ssm, instance,
+                [m.get("technical_name") for m in modules
+                 if m.get("technical_name")])
         except Exception as error:  # noqa: BLE001
             self.message_post(body=_("Error al detectar módulos: %s") % error)
             self._log("module_detect", result="failed", error_message=str(error),
@@ -398,16 +401,23 @@ class PrimateCloudRepository(models.Model):
                             % (output.get("stderr") or output.get("status")))
         return json.loads((output.get("stdout") or "[]").strip() or "[]")
 
-    def _fetch_db_module_states(self, ssm, instance):
+    def _fetch_db_module_states(self, ssm, instance, names):
         """Consulta ir_module_module de la base remota. Devuelve {name: (state, ver)}.
 
         Si no hay una base asociada al entorno, devuelve {} (sin cruce: los
-        módulos quedan como 'not_found').
+        módulos quedan como 'not_found'). Pide SOLO los módulos del repo
+        (``names``): la tabla entera (~700 filas en una base 19) pasa los
+        24.000 caracteres que SSM devuelve como máximo, y el truncado
+        SILENCIOSO dejaba módulos instalados como «No está en la base»
+        (falso negativo pcm-self 2026-11-17, sin ningún error visible).
         """
         database = self.environment_id.database_ids[:1]
-        if not database or not database.name:
+        if not database or not database.name or not names:
             return {}
-        query = ("SELECT name, state, latest_version FROM ir_module_module")
+        en_sql = ", ".join(
+            "'%s'" % n.replace("'", "''") for n in sorted(names))
+        query = ("SELECT name, state, latest_version FROM ir_module_module "
+                 "WHERE name IN (%s)" % en_sql)
         command = "sudo -u postgres psql -d %s -tAF'|' -c %s" % (
             shlex.quote(database.name), shlex.quote(query),
         )
