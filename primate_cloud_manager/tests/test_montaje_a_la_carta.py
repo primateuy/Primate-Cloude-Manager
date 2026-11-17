@@ -653,31 +653,42 @@ class TestPullConUAutomatico(_BaseMontaje):
         self.assertIn("__manifest__.py", script)         # detección por manifest
         self.assertIn('echo "PCM_UPDATE:$CAMBIADOS"', script)
         self.assertIn("--no-http", script)               # el -u no choca el puerto
-        self.assertIn("PGOPTIONS='-c lock_timeout=120s'", script)  # vs crons
         self.assertIn("-d altanapipa", script)
-        # El pull reinicia SOLO si hubo -u.
-        self.assertIn('[ -n "$CAMBIADOS" ] && sudo systemctl restart', script)
+        # El -u corre con el servicio DETENIDO (el DDL no compite con el
+        # server vivo) y el servicio SIEMPRE vuelve a arrancar.
+        self.assertIn("systemctl stop ", script)
+        self.assertIn("systemctl start ", script)
+        self.assertIn('if [ -n "$CAMBIADOS" ]; then', script)
+        self.assertIn("bash /var/tmp/pcm_update_deploy.sh", script)
+        # El stop→start ya reinicia: el pull no agrega otro restart.
+        self.assertNotIn("systemctl restart", script)
 
     def test_pull_sin_base_degrada_a_vacio(self):
         script = self._deploy()._build_deploy_script()
         self.assertIn('CAMBIADOS=""', script)
         self.assertNotIn("ir_module_module", script)
-        self.assertIn('[ -n "$CAMBIADOS" ]', script)     # inocuo con vacío
+        # Sin base no hay -u posible: tampoco se genera el ciclo stop→start.
+        self.assertNotIn("pcm_update_deploy.sh", script)
 
     def test_checkout_sigue_reiniciando_siempre(self):
         self._con_db()
         script = self._deploy(deployment_type="checkout_branch",
                               target_branch="19.0")._build_deploy_script()
         self.assertIn('echo "PCM_UPDATE:$CAMBIADOS"', script)
-        # Reinicio incondicional del checkout (una sola vez, fuera del if).
-        self.assertIn("\nsudo systemctl restart", script)
+        # Con cambios de módulos el stop→start del -u ya reinicia; sin
+        # cambios, el checkout reinicia como siempre (guardado por -z).
+        self.assertIn('if [ -z "$CAMBIADOS" ]; then sudo systemctl restart',
+                      script)
 
-    def test_self_reinicia_diferido_tambien_en_el_u(self):
+    def test_self_difiere_el_ciclo_entero_del_u(self):
+        """Para la self, stop→-u→start va DIFERIDO en una unit transitoria:
+        el job reporta (con marcador) antes de que PCM se apague."""
         self._con_db()
         self.inst.is_self = True
         script = self._deploy()._build_deploy_script()
-        self.assertIn('[ -n "$CAMBIADOS" ] && sudo systemd-run --collect '
-                      "--on-active=10 systemctl restart", script)
+        self.assertIn('echo "PCM_UPDATE_DIFERIDO"', script)
+        self.assertIn("sudo systemd-run --collect --on-active=5 "
+                      "bash /var/tmp/pcm_update_deploy.sh", script)
 
     def test_module_update_lleva_no_http(self):
         """El -u manual del deploy tampoco choca el puerto del Odoo vivo."""
@@ -687,7 +698,9 @@ class TestPullConUAutomatico(_BaseMontaje):
                               repository_id=False)._build_deploy_script()
         self.assertIn("-u primate_cloud_manager --no-http --stop-after-init",
                       script)
-        self.assertIn("PGOPTIONS='-c lock_timeout=120s'", script)
+        # También el -u manual corre con el servicio detenido.
+        self.assertIn("systemctl stop ", script)
+        self.assertIn("systemctl start ", script)
 
     def test_script_pull_pasa_bash_n(self):
         self._con_db()

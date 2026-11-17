@@ -307,18 +307,48 @@ class PrimateCloudDeployment(models.Model):
             "export INSTALADOS",
             "CAMBIADOS=$(python3 - %s <<'PYU'\n%s\nPYU\n) || CAMBIADOS=\"\""
             % (qpath, deteccion),
-            'if [ -n "$CAMBIADOS" ]; then',
-            '    echo "PCM_UPDATE:$CAMBIADOS"',
-            '    MODS=$(echo "$CAMBIADOS" | tr " " ",")',
-            # lock_timeout generoso: el DDL del -u (columnas nuevas, etc.)
-            # compite por locks con los crons del servidor VIVO; el default
-            # corto lo mataba intermitente (LockNotAvailable, pcm-self).
-            "    sudo -u odoo env PGOPTIONS='-c lock_timeout=120s' "
-            '%s %s -c %s -d %s -u "$MODS" --no-http '
+            'MODS=$(echo "$CAMBIADOS" | tr " " ",")',
+        ] + self._lineas_update_detenido(
+            shlex.quote(target.service_name or "odoo"),
+            'sudo -u odoo %s %s -c %s -d %s -u "$MODS" --no-http '
             "--stop-after-init >>/var/log/pcm-deploy-update.log 2>&1"
             % (py, odoo_bin, conf, qdb),
-            "fi",
-        ]
+            bool(target.is_self),
+            guardia='[ -n "$CAMBIADOS" ]',
+            avisos=('echo "PCM_UPDATE:$CAMBIADOS"',))
+
+    @staticmethod
+    def _lineas_update_detenido(service, update_cmd, is_self, guardia=None,
+                                avisos=()):
+        """``stop → -u → start``: el DDL del -u JAMÁS compite con el server
+        vivo (lección 2026-11-17: ni 120 s de lock_timeout alcanzan contra
+        jobs de 20 s encadenados + el panel refrescando — LockNotAvailable
+        intermitente). El servicio SIEMPRE vuelve a arrancar (falle o no el
+        -u) y el fallo recién entonces corta el deploy. Para la instancia
+        self, el ciclo entero va DIFERIDO en una unit transitoria (el job
+        reporta antes de que PCM se apague) con marcador PCM_UPDATE_DIFERIDO.
+        ``guardia``: condición shell que gatilla la ejecución (el archivo se
+        escribe siempre; sin guardia, se ejecuta siempre).
+        """
+        # Heredoc SIN comillas: "$MODS" se expande al escribir el archivo;
+        # \\$PCM_U_OK queda literal para la ejecución.
+        interno = ("cat > /var/tmp/pcm_update_deploy.sh <<PCMUEOF\n"
+                   "systemctl stop %s\n"
+                   "if %s; then PCM_U_OK=1; else PCM_U_OK=0; fi\n"
+                   "systemctl start %s\n"
+                   '[ "\\$PCM_U_OK" = 1 ] || exit 1\n'
+                   "PCMUEOF" % (service, update_cmd, service))
+        pasos = list(avisos)
+        if is_self:
+            pasos.append('echo "PCM_UPDATE_DIFERIDO"')
+            pasos.append("sudo systemd-run --collect --on-active=5 "
+                         "bash /var/tmp/pcm_update_deploy.sh")
+        else:
+            pasos.append("bash /var/tmp/pcm_update_deploy.sh")
+        accion = "; ".join(pasos)
+        if guardia:
+            accion = "if %s; then %s; fi" % (guardia, accion)
+        return [interno, accion]
 
     def _db_name(self):
         """Nombre de la base de la instancia objetivo (para -u de Odoo)."""
@@ -394,32 +424,27 @@ class PrimateCloudDeployment(models.Model):
             # eso el subproceso choca con el puerto del Odoo vivo).
             lines += self._auto_update_lines(target)
             if deploy_type in ("checkout_branch", "checkout_commit"):
-                lines.append(reinicio(service))
-            else:
-                # El pull reinicia SOLO si hubo -u (sin cambios de módulos,
-                # el comportamiento es el de siempre: código en disco, sin
-                # corte; para la self el reinicio sale diferido).
-                lines.append('[ -n "$CAMBIADOS" ] && %s || true'
+                # Con cambios de módulos, el bloque del -u ya hizo su propio
+                # stop→start; sin cambios, el checkout reinicia como siempre.
+                lines.append('if [ -z "$CAMBIADOS" ]; then %s; fi'
                              % reinicio(service))
+            # pull sin cambios: sin corte, como siempre (el bloque del -u
+            # ya reinició cuando hubo módulos que actualizar).
             return "\n".join(lines)
         if deploy_type == "module_update":
             db = shlex.quote(self._db_name())
             mods = shlex.quote(self.module_names or "all")
-            return "\n".join([
-                "set -e",
-                # --no-http: sin esto el subproceso del -u intenta bindear el
-                # puerto del Odoo VIVO y muere con «Address already in use».
-                # lock_timeout generoso: el DDL compite con los crons del
-                # servidor vivo (LockNotAvailable intermitente, pcm-self).
-                "sudo -u odoo env PGOPTIONS='-c lock_timeout=120s' "
-                "%s %s -c %s -d %s -u %s --no-http "
-                "--stop-after-init" % (
+            # --no-http: sin esto el subproceso del -u intenta bindear el
+            # puerto del Odoo VIVO y muere con «Address already in use».
+            return "\n".join(["set -e"] + self._lineas_update_detenido(
+                service,
+                "sudo -u odoo %s %s -c %s -d %s -u %s --no-http "
+                "--stop-after-init >>/var/log/pcm-deploy-update.log 2>&1" % (
                     shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3"),
                     shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin"),
                     shlex.quote(target.conf_path or "/etc/odoo/odoo.conf"),
                     db, mods),
-                reinicio(service),
-            ])
+                bool(target.is_self)))
         # service_restart
         return ("set -e\n%s\n"
                 "sudo systemctl restart nginx || true" % reinicio(service))

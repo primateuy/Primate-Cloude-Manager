@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 """R4-B1: campos de runtime por instancia + GUARDS de flujos legacy.
 
 La regla permanente que fija esta suite: un flujo aún no recableado que
@@ -14,6 +15,17 @@ from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase, tagged
 
 from odoo.addons.primate_cloud_manager.services import aws_s3, aws_ssm
+
+
+def _legible(comando):
+    """Comando SSM con los scripts de ``odoo-bin shell`` decodificados: desde
+    el aviso de caché (post-M1) viajan en base64 dentro del heredoc."""
+    import base64
+    partes = [comando]
+    for b64 in re.findall(r"b64decode\('([A-Za-z0-9+/=]+)'\)", comando):
+        partes.append(base64.b64decode(b64).decode("utf-8"))
+    return "\n".join(partes)
+
 
 
 @tagged("post_install", "-at_install", "primate_cloud")
@@ -139,7 +151,9 @@ class TestR4B1(TransactionCase):
         self.assertIn("/opt/pcm/runtime/odoo-19/src/odoo-bin", script)
         self.assertIn("-c /etc/odoo/cliente-a.conf", script)
         self.assertIn("-d cliente_a_db -u sale", script)
-        self.assertIn("systemctl restart odoo-cliente-a", script)
+        # El -u corre con la unit de la instancia DETENIDA y la rearranca.
+        self.assertIn("systemctl stop odoo-cliente-a", script)
+        self.assertIn("systemctl start odoo-cliente-a", script)
         self.assertNotIn("/opt/odoo/", script)
         restart = self._deployment(server, "service_restart")
         self.assertIn("systemctl restart odoo-cliente-a",
@@ -155,7 +169,8 @@ class TestR4B1(TransactionCase):
         script = dep._build_deploy_script()
         self.assertIn("/opt/odoo/venv/bin/python3", script)
         self.assertIn("-c /etc/odoo/odoo.conf", script)
-        self.assertIn("systemctl restart odoo\n", script + "\n")
+        self.assertIn("systemctl stop odoo\n", script + "\n")
+        self.assertIn("systemctl start odoo\n", script + "\n")
 
     # ------------------------------------------------------------------
     # add_addon: ruta por instancia
@@ -305,7 +320,7 @@ class TestR4B2(TransactionCase):
             {"stdout": "PCM_HASH:h\n", "status": "Success"})
         with patcher:
             self.prim.fetch_config()
-        script = fake.run_script.call_args[0][1]
+        script = _legible(fake.run_script.call_args[0][1])
         self.assertIn('CONF = "/etc/odoo/cliente-a.conf"', script)
         self.assertNotIn('"/etc/odoo/odoo.conf"', script)
 
@@ -488,7 +503,7 @@ class TestR4B3Impersonate(TransactionCase):
                 mock.patch.object(type(self.machine), "restart_odoo"):
             self.inst_b.deploy_impersonate(["db_b"])
         scripts = "\n---\n".join(
-            c[0][1] for c in fake.run_script.call_args_list)
+            _legible(c[0][1]) for c in fake.run_script.call_args_list)
         # Runtime + addons_dir + unit del SLUG de B (no legacy, no de A).
         self.assertIn("/opt/pcm/instances/cliente-b/addons", scripts)
         self.assertIn("/opt/pcm/runtime/odoo-19/src/odoo-bin", scripts)
@@ -544,7 +559,7 @@ class TestR4B3Impersonate(TransactionCase):
         with patcher:
             res = self.machine._nginx_allowlist("9.9.9.9", self.inst_b)
         self.assertEqual(res, "fixed")
-        script = fake.run_script.call_args[0][1]
+        script = _legible(fake.run_script.call_args[0][1])
         self.assertIn("PORT = '%d'" % self.inst_b.http_port, script)
         self.assertNotIn("8069", script)
 
@@ -635,7 +650,7 @@ class TestR4B3Impersonate(TransactionCase):
         patcher, fake = self._patch_ssm()
         with patcher:
             self.inst_a.set_impersonate_enabled(["db_a"], False)
-        script = fake.run_script.call_args[0][1]
+        script = _legible(fake.run_script.call_args[0][1])
         # Deshabilitar sube el epoch (kill-switch) por el runtime de A.
         self.assertIn("pcm.impersonate.epoch", script)
         self.assertIn("/etc/odoo/cliente-a.conf", script)
@@ -849,7 +864,7 @@ class TestR4B4Backups(TransactionCase):
                 "instance_id": self.machine.id, "pre_backup": False,
                 "odoo_instance_id": self.inst_b.id})
         self.assertTrue(ok)
-        script = fake.run_script.call_args[0][1]
+        script = _legible(fake.run_script.call_args[0][1])
         self.assertIn("systemctl stop odoo-cliente-b", script)
 
     def test_backup_base_sin_instance_id_en_multi_falla_claro(self):
@@ -1305,7 +1320,7 @@ class TestR4B6Shims(TransactionCase):
         with mock.patch.object(type(self.machine), "_get_ssm_service",
                                return_value=fake):
             self.Dash.get_odoo_config(self.inst_b.id)
-        script = fake.run_script.call_args[0][1]
+        script = _legible(fake.run_script.call_args[0][1])
         self.assertIn('CONF = "/etc/odoo/b.conf"', script)   # el de B
         self.assertNotIn("/etc/odoo/a.conf", script)         # NO la primaria
 
