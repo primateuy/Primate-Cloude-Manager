@@ -329,8 +329,11 @@ class PrimateCloudRepository(models.Model):
         - unknown: falta información para decidir.
         """
         self.ensure_one()
-        if self.sync_state == "error":
-            return
+        # OJO: acá NO se preserva un sync_state="error" previo. Este método
+        # corre solo con información FRESCA (rev-parse/sync exitoso); los
+        # caminos de fallo setean "error" y salen antes de llegar acá. Con
+        # un guard, el error quedaba PEGAJOSO: ningún «Verificar estado»
+        # verde volvía a sacarlo (incidente pcm-self 2026-11-17).
         if not self.current_commit or not self.latest_commit:
             self.sync_state = "unknown"
             return

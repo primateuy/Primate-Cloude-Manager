@@ -231,6 +231,18 @@ class TestRepository(TransactionCase):
             self.repo.job_check_sync_state()
         self.assertEqual(self.repo.sync_state, "error")
 
+    def test_error_no_es_pegajoso(self):
+        """Un verificar estado VERDE saca al repo del estado error (incidente
+        pcm-self 2026-11-17: los deploys fallidos dejaban «error» para
+        siempre, aunque el commit desplegado ya fuera el último remoto)."""
+        self._seed_commits(["h1", "h2"])
+        with self._patch_ssm({"status": "Failed", "stderr": "no git"}):
+            self.repo.job_check_sync_state()
+        self.assertEqual(self.repo.sync_state, "error")
+        with self._patch_ssm({"status": "Success", "stdout": "h1\n"}):
+            self.repo.job_check_sync_state()
+        self.assertEqual(self.repo.sync_state, "updated")
+
     def test_check_sync_sin_instancia_falla(self):
         self.instance.environment_id = False
         with self.assertRaises(UserError):
