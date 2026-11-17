@@ -191,11 +191,19 @@ class PrimateCloudAccount(models.Model):
 
     def _auto_init(self):
         # La restricción vieja (UNIQUE(aws_account_id)) impedía cargar la
-        # misma cuenta AWS como lectura y como aprovisionamiento.
+        # misma cuenta AWS como lectura y como aprovisionamiento. El ALTER
+        # solo corre si la constraint EXISTE: un «DROP IF EXISTS» pelado pide
+        # el lock exclusivo de la tabla en CADA init y, con el servidor vivo
+        # (crons leyendo cuentas), muere por lock timeout — era la causa del
+        # -u intermitente en pcm-self (2026-11-17).
         res = super()._auto_init()
         self.env.cr.execute(
-            "ALTER TABLE primate_cloud_account "
-            "DROP CONSTRAINT IF EXISTS primate_cloud_account_aws_account_id_unique")
+            "SELECT 1 FROM pg_constraint WHERE conname = %s",
+            ["primate_cloud_account_aws_account_id_unique"])
+        if self.env.cr.fetchone():
+            self.env.cr.execute(
+                "ALTER TABLE primate_cloud_account DROP CONSTRAINT "
+                "primate_cloud_account_aws_account_id_unique")
         return res
 
     # ------------------------------------------------------------------

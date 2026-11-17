@@ -653,6 +653,7 @@ class TestPullConUAutomatico(_BaseMontaje):
         self.assertIn("__manifest__.py", script)         # detección por manifest
         self.assertIn('echo "PCM_UPDATE:$CAMBIADOS"', script)
         self.assertIn("--no-http", script)               # el -u no choca el puerto
+        self.assertIn("PGOPTIONS='-c lock_timeout=120s'", script)  # vs crons
         self.assertIn("-d altanapipa", script)
         # El pull reinicia SOLO si hubo -u.
         self.assertIn('[ -n "$CAMBIADOS" ] && sudo systemctl restart', script)
@@ -686,6 +687,7 @@ class TestPullConUAutomatico(_BaseMontaje):
                               repository_id=False)._build_deploy_script()
         self.assertIn("-u primate_cloud_manager --no-http --stop-after-init",
                       script)
+        self.assertIn("PGOPTIONS='-c lock_timeout=120s'", script)
 
     def test_script_pull_pasa_bash_n(self):
         self._con_db()

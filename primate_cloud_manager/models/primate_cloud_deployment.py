@@ -310,7 +310,11 @@ class PrimateCloudDeployment(models.Model):
             'if [ -n "$CAMBIADOS" ]; then',
             '    echo "PCM_UPDATE:$CAMBIADOS"',
             '    MODS=$(echo "$CAMBIADOS" | tr " " ",")',
-            '    sudo -u odoo %s %s -c %s -d %s -u "$MODS" --no-http '
+            # lock_timeout generoso: el DDL del -u (columnas nuevas, etc.)
+            # compite por locks con los crons del servidor VIVO; el default
+            # corto lo mataba intermitente (LockNotAvailable, pcm-self).
+            "    sudo -u odoo env PGOPTIONS='-c lock_timeout=120s' "
+            '%s %s -c %s -d %s -u "$MODS" --no-http '
             "--stop-after-init >>/var/log/pcm-deploy-update.log 2>&1"
             % (py, odoo_bin, conf, qdb),
             "fi",
@@ -404,9 +408,11 @@ class PrimateCloudDeployment(models.Model):
             return "\n".join([
                 "set -e",
                 # --no-http: sin esto el subproceso del -u intenta bindear el
-                # puerto del Odoo VIVO y muere con «Address already in use»
-                # (bug real destapado saneando pcm-self, 2026-11-17).
-                "sudo -u odoo %s %s -c %s -d %s -u %s --no-http "
+                # puerto del Odoo VIVO y muere con «Address already in use».
+                # lock_timeout generoso: el DDL compite con los crons del
+                # servidor vivo (LockNotAvailable intermitente, pcm-self).
+                "sudo -u odoo env PGOPTIONS='-c lock_timeout=120s' "
+                "%s %s -c %s -d %s -u %s --no-http "
                 "--stop-after-init" % (
                     shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3"),
                     shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin"),
