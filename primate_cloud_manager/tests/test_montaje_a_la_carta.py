@@ -445,6 +445,41 @@ class TestAddonsPathPorRepo(_BaseMontaje):
             [("name", "like", "Aplicar addons_path")], order="id desc", limit=1)
         self.assertEqual(log.result, "success")
 
+    def test_guardado_fallido_no_limpia_symlinks(self):
+        """Lección pcm-self 2026-11-17: si el guardado del conf NO aplica
+        (stale/error), los symlinks NO se tocan — son el puente de vida del
+        módulo. La limpieza corre SOLO tras un guardado exitoso."""
+        self._repo("pcm", "/opt/x/pcm", 10)
+        runtime = "/opt/pcm/runtime/odoo-19/src/addons"
+        addons_dir = self.inst.addons_dir or "/opt/odoo/custom-addons"
+        cfg = {"readonly": {"addons_path": "%s,%s" % (runtime, addons_dir)},
+               "config_hash": "h"}
+        for outcome in ("stale", "rolled_back", "error"):
+            with mock.patch.object(type(self.machine), "fetch_config",
+                                   return_value=cfg), \
+                 mock.patch.object(type(self.machine), "job_save_config",
+                                   return_value=outcome), \
+                 mock.patch.object(type(self.machine),
+                                   "_limpiar_symlinks_de_repos") as limpiar, \
+                 mock.patch.object(type(self.machine), "_get_ssm_service",
+                                   return_value=self._fake_ssm()):
+                self.machine._ensure_custom_addons_path(
+                    odoo_instance=self.inst)
+            limpiar.assert_not_called()
+        # Y con guardado exitoso, SÍ limpia (después del save).
+        with mock.patch.object(type(self.machine), "fetch_config",
+                               return_value=cfg), \
+             mock.patch.object(type(self.machine), "job_save_config",
+                               return_value="saved_deferred"), \
+             mock.patch.object(type(self.machine),
+                               "_limpiar_symlinks_de_repos") as limpiar, \
+             mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=self._fake_ssm()):
+            outcome = self.machine._ensure_custom_addons_path(
+                odoo_instance=self.inst)
+        self.assertEqual(outcome, "restarted")
+        limpiar.assert_called_once()
+
     def test_limpieza_saltea_paths_con_charset_raro(self):
         fake = self._fake_ssm()
         with mock.patch.object(type(self.machine), "_get_ssm_service",
@@ -584,6 +619,83 @@ class TestCheckoutBranchActualizaRama(_BaseMontaje):
                                return_value=self._fake_ssm(out)):
             deploy.job_deploy()
         self.assertEqual(repo.configured_branch, "19.0")
+
+
+# ----------------------------------------------------------------------------
+# Deploys git: -u automático cuando cambian los módulos (incidente pcm-self)
+# ----------------------------------------------------------------------------
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestPullConUAutomatico(_BaseMontaje):
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self.env["primate.cloud.repository"].create({
+            "name": "pcm", "environment_id": self.server.id,
+            "local_path": "/opt/x/pcm", "configured_branch": "19.0",
+        })
+
+    def _deploy(self, **vals):
+        base = {"environment_id": self.server.id, "deployment_type": "pull",
+                "repository_id": self.repo.id}
+        base.update(vals)
+        return self.env["primate.cloud.deployment"].create(base)
+
+    def _con_db(self):
+        db = self.env["primate.cloud.database"].create({
+            "name": "altanapipa", "account_id": self.account.id,
+            "environment_id": self.server.id})
+        self.inst.database_id = db
+
+    def test_pull_detecta_y_actualiza_modulos_cambiados(self):
+        self._con_db()
+        script = self._deploy()._build_deploy_script()
+        self.assertIn("ir_module_module", script)        # psql de instalados
+        self.assertIn("__manifest__.py", script)         # detección por manifest
+        self.assertIn('echo "PCM_UPDATE:$CAMBIADOS"', script)
+        self.assertIn("--no-http", script)               # el -u no choca el puerto
+        self.assertIn("-d altanapipa", script)
+        # El pull reinicia SOLO si hubo -u.
+        self.assertIn('[ -n "$CAMBIADOS" ] && sudo systemctl restart', script)
+
+    def test_pull_sin_base_degrada_a_vacio(self):
+        script = self._deploy()._build_deploy_script()
+        self.assertIn('CAMBIADOS=""', script)
+        self.assertNotIn("ir_module_module", script)
+        self.assertIn('[ -n "$CAMBIADOS" ]', script)     # inocuo con vacío
+
+    def test_checkout_sigue_reiniciando_siempre(self):
+        self._con_db()
+        script = self._deploy(deployment_type="checkout_branch",
+                              target_branch="19.0")._build_deploy_script()
+        self.assertIn('echo "PCM_UPDATE:$CAMBIADOS"', script)
+        # Reinicio incondicional del checkout (una sola vez, fuera del if).
+        self.assertIn("\nsudo systemctl restart", script)
+
+    def test_self_reinicia_diferido_tambien_en_el_u(self):
+        self._con_db()
+        self.inst.is_self = True
+        script = self._deploy()._build_deploy_script()
+        self.assertIn('[ -n "$CAMBIADOS" ] && sudo systemd-run --collect '
+                      "--on-active=10 systemctl restart", script)
+
+    def test_module_update_lleva_no_http(self):
+        """El -u manual del deploy tampoco choca el puerto del Odoo vivo."""
+        self._con_db()
+        script = self._deploy(deployment_type="module_update",
+                              module_names="primate_cloud_manager",
+                              repository_id=False)._build_deploy_script()
+        self.assertIn("-u primate_cloud_manager --no-http --stop-after-init",
+                      script)
+
+    def test_script_pull_pasa_bash_n(self):
+        self._con_db()
+        script = self._deploy()._build_deploy_script()
+        with tempfile.NamedTemporaryFile("w", suffix=".sh") as handle:
+            handle.write(script)
+            handle.flush()
+            proc = subprocess.run(["bash", "-n", handle.name],
+                                  capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 # ----------------------------------------------------------------------------

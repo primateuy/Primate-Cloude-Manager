@@ -250,6 +250,72 @@ class PrimateCloudDeployment(models.Model):
                 "despliegue ni el repo ni el entorno la definen)."))
         return instance
 
+    def _auto_update_lines(self, target):
+        """Bloque shell de detección + ``-u`` de módulos con versión nueva.
+
+        Compara, módulo por módulo del clon (primer nivel con manifest), la
+        ``version`` del ``__manifest__.py`` recién traído contra la
+        ``latest_version`` instalada en la base. Deja la lista en
+        ``$CAMBIADOS`` (vacía = nada que actualizar) y corre el ``-u`` con
+        ``--no-http`` + log propio. Sin base resoluble, la detección se
+        omite y el deploy queda como siempre (también degrada a vacío si
+        psql falla — p. ej. base RDS sin postgres local).
+        """
+        self.ensure_one()
+        try:
+            db = self._db_name()
+        except UserError:
+            return ['CAMBIADOS=""']
+        repo_path = self.repository_id.local_path or ""
+        qdb = shlex.quote(db)
+        qpath = shlex.quote(repo_path)
+        py = shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3")
+        odoo_bin = shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin")
+        conf = shlex.quote(target.conf_path or "/etc/odoo/odoo.conf")
+        deteccion = "\n".join([
+            "import ast, os, sys",
+            "ruta = sys.argv[1]",
+            "inst = {}",
+            'for linea in os.environ.get("INSTALADOS", "").splitlines():',
+            '    if "|" in linea:',
+            '        n, v = linea.split("|", 1)',
+            "        inst[n] = v",
+            "cambiados = []",
+            "try:",
+            "    hijos = sorted(os.listdir(ruta))",
+            "except OSError:",
+            "    hijos = []",
+            "for d in hijos:",
+            '    mf = os.path.join(ruta, d, "__manifest__.py")',
+            "    if d in inst and os.path.isfile(mf):",
+            "        try:",
+            "            datos = ast.literal_eval(open(mf).read())",
+            "        except Exception:",
+            "            continue",
+            '        version = str(datos.get("version") or "")',
+            "        if version and version != inst[d]:",
+            "            cambiados.append(d)",
+            'print(" ".join(cambiados))',
+        ])
+        return [
+            # psql puede no existir/fallar (BD remota): la detección degrada
+            # a vacío y el deploy sigue como siempre.
+            'INSTALADOS=$(sudo -u postgres psql -d %s -At -F"|" -c '
+            '"select name, coalesce(latest_version,\'\') from '
+            'ir_module_module where state=\'installed\'" 2>/dev/null '
+            '|| true)' % qdb,
+            "export INSTALADOS",
+            "CAMBIADOS=$(python3 - %s <<'PYU'\n%s\nPYU\n) || CAMBIADOS=\"\""
+            % (qpath, deteccion),
+            'if [ -n "$CAMBIADOS" ]; then',
+            '    echo "PCM_UPDATE:$CAMBIADOS"',
+            '    MODS=$(echo "$CAMBIADOS" | tr " " ",")',
+            '    sudo -u odoo %s %s -c %s -d %s -u "$MODS" --no-http '
+            "--stop-after-init >>/var/log/pcm-deploy-update.log 2>&1"
+            % (py, odoo_bin, conf, qdb),
+            "fi",
+        ]
+
     def _db_name(self):
         """Nombre de la base de la instancia objetivo (para -u de Odoo)."""
         self.ensure_one()
@@ -316,15 +382,32 @@ class PrimateCloudDeployment(models.Model):
             elif deploy_type == "checkout_commit":
                 lines.append("$GITRUN checkout %s" % shlex.quote(self.target_commit or ""))
             lines.append('echo "PCM_TARGET:$($GITRUN rev-parse HEAD)"')
+            # -u AUTOMÁTICO tras traer código: un Pull que cambia campos o
+            # versión de manifest SIN -u deja la base con columnas viejas
+            # (el UndefinedColumn de pcm-self, 2026-11-17). Se detectan los
+            # módulos instalados del clon cuya versión de manifest ya no
+            # coincide con la instalada y se actualizan con --no-http (sin
+            # eso el subproceso choca con el puerto del Odoo vivo).
+            lines += self._auto_update_lines(target)
             if deploy_type in ("checkout_branch", "checkout_commit"):
                 lines.append(reinicio(service))
+            else:
+                # El pull reinicia SOLO si hubo -u (sin cambios de módulos,
+                # el comportamiento es el de siempre: código en disco, sin
+                # corte; para la self el reinicio sale diferido).
+                lines.append('[ -n "$CAMBIADOS" ] && %s || true'
+                             % reinicio(service))
             return "\n".join(lines)
         if deploy_type == "module_update":
             db = shlex.quote(self._db_name())
             mods = shlex.quote(self.module_names or "all")
             return "\n".join([
                 "set -e",
-                "sudo -u odoo %s %s -c %s -d %s -u %s --stop-after-init" % (
+                # --no-http: sin esto el subproceso del -u intenta bindear el
+                # puerto del Odoo VIVO y muere con «Address already in use»
+                # (bug real destapado saneando pcm-self, 2026-11-17).
+                "sudo -u odoo %s %s -c %s -d %s -u %s --no-http "
+                "--stop-after-init" % (
                     shlex.quote(target.python_bin or "/opt/odoo/venv/bin/python3"),
                     shlex.quote(target.odoo_bin or "/opt/odoo/odoo/odoo-bin"),
                     shlex.quote(target.conf_path or "/etc/odoo/odoo.conf"),

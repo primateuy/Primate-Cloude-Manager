@@ -1403,15 +1403,19 @@ class PrimateCloudEc2Instance(models.Model):
                    + repo_paths + [addons_dir])
         if parts == desired:
             return "ready"
-        # Symlinks del esquema viejo: los que viven en el dir suelto y
-        # apuntan adentro de un clon se van ANTES del restart (duplicarían
-        # el módulo). Solo symlinks, solo hacia repos registrados.
-        if repo_paths:
-            self._limpiar_symlinks_de_repos(ssm, addons_dir, repo_paths)
         outcome = self.job_save_config(
             {"addons_path": ",".join(desired)}, cfg.get("config_hash"),
             internal_keys={"addons_path"}, instance_id=target.id)
         if outcome in ("saved", "saved_deferred"):
+            # Symlinks del esquema viejo: SOLO tras el guardado exitoso
+            # (lección pcm-self 2026-11-17: limpiarlos antes y que el CAS
+            # rechace el guardado por stale dejaba el módulo únicamente en
+            # memoria — conf viejo sin symlink). Con la entrada del repo ya
+            # en el conf, un symlink duplicado un boot es inocuo (gana la
+            # primera aparición del path); sin guardado, el symlink es el
+            # puente de vida y NO se toca.
+            if repo_paths:
+                self._limpiar_symlinks_de_repos(ssm, addons_dir, repo_paths)
             return "restarted"
         if outcome == "rolled_back":
             return "rolled_back"
