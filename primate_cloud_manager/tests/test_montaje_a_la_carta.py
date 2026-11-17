@@ -194,6 +194,76 @@ class TestMontajeALaCarta(_BaseMontaje):
 
 
 # ----------------------------------------------------------------------------
+# Montaje CON repos: clone en orden → addons_path → -i sobre los clones
+# ----------------------------------------------------------------------------
+@tagged("post_install", "-at_install", "primate_cloud")
+class TestMontajeConRepos(_BaseMontaje):
+
+    def _repo(self, name, seq):
+        return self.env["primate.cloud.repository"].create({
+            "name": name, "environment_id": self.server.id,
+            "github_url": "https://github.com/PrimateUy-SAS/%s" % name,
+            "local_path": "/opt/pcm/instances/altanapipa/repos/%s" % name,
+            "configured_branch": "19.0", "sequence": seq,
+        })
+
+    def test_clona_en_orden_activa_path_y_corre_i(self):
+        self._repo("alta_na_pipa", 40)
+        self._repo("webOCA", 10)
+        self.inst.write({"slug": "altanapipa",
+                         "service_name": "odoo-altanapipa",
+                         "conf_path": "/etc/odoo/altanapipa.conf"})
+        clones = []
+        fake = self._fake_ssm({"stdout": "PCM_INIT_MODULES_OK",
+                               "status": "Success"})
+        with mock.patch.object(
+                type(self.machine), "clone_addon",
+                side_effect=lambda url, path, **kw: clones.append(path) or True), \
+             mock.patch.object(type(self.machine), "_ensure_custom_addons_path",
+                               return_value="restarted") as ensure, \
+             mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=fake):
+            self.server._provision_repos_e_instalacion_inicial(
+                self.machine, self.inst,
+                {"init_modules": "alta_na_pipa_website,web_responsive",
+                 "load_language": "pt_BR"})
+        # Orden EXPLÍCITO: webOCA (10) antes que alta_na_pipa (40).
+        self.assertEqual(clones, [
+            "/opt/pcm/instances/altanapipa/repos/webOCA",
+            "/opt/pcm/instances/altanapipa/repos/alta_na_pipa"])
+        ensure.assert_called_once()
+        script = fake.run_script.call_args.args[1]
+        self.assertIn("systemctl stop odoo-altanapipa", script)
+        self.assertIn("-i alta_na_pipa_website,web_responsive", script)
+        self.assertIn("--load-language=pt_BR", script)
+        self.assertIn("systemctl start odoo-altanapipa", script)
+        # El -i corre DETENIDO y el start va después.
+        self.assertLess(script.index("stop"), script.index("-i "))
+        self.assertLess(script.index("-i "), script.index("start"))
+
+    def test_clone_fallido_corta_el_montaje(self):
+        self._repo("webOCA", 10)
+        with mock.patch.object(type(self.machine), "clone_addon",
+                               return_value=False):
+            with self.assertRaises(UserError):
+                self.server._provision_repos_e_instalacion_inicial(
+                    self.machine, self.inst, {"init_modules": "web"})
+
+    def test_sin_init_modules_solo_clona_y_activa(self):
+        self._repo("webOCA", 10)
+        fake = self._fake_ssm()
+        with mock.patch.object(type(self.machine), "clone_addon",
+                               return_value=True), \
+             mock.patch.object(type(self.machine), "_ensure_custom_addons_path",
+                               return_value="restarted"), \
+             mock.patch.object(type(self.machine), "_get_ssm_service",
+                               return_value=fake):
+            self.server._provision_repos_e_instalacion_inicial(
+                self.machine, self.inst, {})
+        fake.run_script.assert_not_called()   # sin -i no hay paso extra
+
+
+# ----------------------------------------------------------------------------
 # wkhtmltopdf desde release (gap a)
 # ----------------------------------------------------------------------------
 @tagged("post_install", "-at_install", "primate_cloud")

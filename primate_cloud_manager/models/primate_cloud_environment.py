@@ -1328,9 +1328,23 @@ class PrimateCloudEnvironment(models.Model):
             bus.provision_step(self.env, self,
                                _("Instalando Odoo por SSM (puede tardar varios minutos)…"))
             self._materialize_multiodoo_layout(instance_rec, params)
+            # Con repos registrados, el -i inicial NO corre dentro del
+            # install (los módulos viven en los clones, que todavía no
+            # existen): el install deja la base pelada y el -i corre en el
+            # paso de repos de abajo, con los clones ya en el addons_path.
+            repos_registrados = self.repository_ids.filtered("local_path")
+            install_params = dict(params, db_host=db_host)
+            if repos_registrados:
+                install_params.update(init_modules="", load_language="")
             self._provision_run_instance_install(
-                ssm, machine, instance_rec, dict(params, db_host=db_host),
+                ssm, machine, instance_rec, install_params,
                 region, domain, is_default=True)
+            if repos_registrados:
+                bus.provision_step(self.env, self,
+                                   _("Clonando repositorios y corriendo la "
+                                     "instalación inicial…"))
+                self._provision_repos_e_instalacion_inicial(
+                    machine, instance_rec, params)
         except Exception as error:  # noqa: BLE001 - se normaliza y se audita
             self.state = "error"
             if instance_rec:
@@ -1816,6 +1830,87 @@ class PrimateCloudEnvironment(models.Model):
                 status=output.get("status"),
                 detail=self._pcm_error_detail(stdout, output.get("stderr")),
             ))
+
+    def _provision_repos_e_instalacion_inicial(self, machine, instance_rec,
+                                               params):
+        """Clona los repos registrados (en su orden), activa el addons_path
+        por repo y corre la instalación inicial de módulos sobre los clones.
+
+        Es el camino del montaje con repos (Alta na Pipa): los módulos del
+        ``-i`` viven en los clones, así que el -i del install script no sirve
+        — acá corre DESPUÉS de clonar, con el servicio detenido, y el
+        arranque posterior valida el resultado.
+        """
+        self.ensure_one()
+        repos = self.repository_ids.filtered("local_path").sorted(
+            key=lambda r: (r.sequence, r.name or "", r.id))
+        for repo in repos:
+            token = repo._get_github_token()
+            clone_url = "https://%sgithub.com/%s.git" % (
+                "x-access-token@" if token else "", repo._repo_slug())
+            cloned = machine.clone_addon(
+                clone_url, repo.local_path, ref=repo.configured_branch or None,
+                token=token, odoo_instance=instance_rec)
+            if not cloned:
+                raise UserError(_(
+                    "El clone de «%s» falló: revisá URL/rama/token del repo.")
+                    % repo.name)
+            repo.sync_state = "updated"
+            self.message_post(body=_("Repo clonado: %(n)s (%(b)s).",
+                                     n=repo.name,
+                                     b=repo.configured_branch or "default"))
+        ensure = machine._ensure_custom_addons_path(odoo_instance=instance_rec)
+        if ensure in ("rolled_back", "error"):
+            raise UserError(_(
+                "El addons_path por repo no quedó activo (%s).") % ensure)
+        init_modules = (params.get("init_modules") or "").replace(" ", "")
+        if not init_modules:
+            return
+        if not INIT_MODULES_RE.match(init_modules):
+            raise UserError(_("Módulos iniciales inválidos: %r.") % init_modules)
+        load_language = (params.get("load_language") or "").strip()
+        if load_language and not LOAD_LANGUAGE_RE.match(load_language):
+            raise UserError(_("Código de idioma inválido: %r.") % load_language)
+        service = shlex.quote(instance_rec.service_name or LEGACY_SERVICE)
+        idioma = ("--load-language=%s " % load_language) if load_language else ""
+        script = "\n".join([
+            "set -e",
+            # Detenido durante el -i: el registry del server no queda a
+            # mitad de camino; el start de abajo levanta todo instalado.
+            "sudo systemctl stop %s" % service,
+            "sudo -u odoo %s %s -c %s -i %s %s--stop-after-init "
+            ">>/var/log/pcm-init-modules-%s.log 2>&1" % (
+                shlex.quote(instance_rec.python_bin or "python3"),
+                shlex.quote(instance_rec.odoo_bin or "odoo-bin"),
+                shlex.quote(instance_rec.conf_path or "/etc/odoo/odoo.conf"),
+                shlex.quote(init_modules), idioma,
+                shlex.quote(instance_rec.slug or "odoo")),
+            "sudo systemctl start %s" % service,
+            "echo PCM_INIT_MODULES_OK",
+        ])
+        out = machine._get_ssm_service().run_script(
+            machine.aws_instance_id, script, region=machine.region,
+            comment="pcm init modules: %s" % instance_rec.slug, timeout=2700,
+            check=False)   # el éxito lo marca el centinela; el detalle, el log
+        ok = (out.get("status") == "Success"
+              and "PCM_INIT_MODULES_OK" in (out.get("stdout") or ""))
+        self._log("ssm_command",
+                  name=_("Instalación inicial de módulos: %s") % init_modules,
+                  result="success" if ok else "failed",
+                  error_message=None if ok else (
+                      self._pcm_error_detail(out.get("stdout"),
+                                             out.get("stderr"))
+                      or out.get("status")),
+                  aws_request_id=out.get("command_id"), record=instance_rec)
+        if not ok:
+            raise UserError(_(
+                "La instalación inicial de módulos falló (estado %(s)s): ver "
+                "/var/log/pcm-init-modules-%(slug)s.log en el servidor.",
+                s=out.get("status"), slug=instance_rec.slug or "odoo"))
+        self.message_post(body=_(
+            "Instalación inicial: -i %(m)s%(l)s terminada sobre los clones.",
+            m=init_modules,
+            l=(" --load-language=%s" % load_language) if load_language else ""))
 
     @staticmethod
     def _pcm_error_detail(stdout, stderr=None):
