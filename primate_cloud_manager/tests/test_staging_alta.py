@@ -153,6 +153,20 @@ class TestNeutralizacionOficial(_BaseStaging):
         self.assertLess(script.index("PCM_NEUTRALIZE_CLI_OK"),
                         script.index("PCM_CHECKLIST_OK"))
 
+    def test_checklist_acepta_el_centinela_smtp_oficial(self):
+        """El neutralize OFICIAL deja activo «neutralization - disable
+        emails» (host 'invalid') a propósito: el conteo de smtp_active lo
+        excluye, o el juez pone en rojo lo que el propio Odoo sembró
+        (incidente del primer montaje verde-a-medias, 2026-11-18)."""
+        import base64 as b64mod
+        lineas = self.server._restore_lineas_checklist(
+            "altanapipa_staging", "echo", "https://stg.example.com")
+        script = "\n".join(lineas)
+        blob = script.split("printf '%s' ")[1].split(" | base64 -d")[0]
+        sql = b64mod.b64decode(blob.strip("'")).decode()
+        self.assertIn("neutralization - disable emails", sql)
+        self.assertIn("smtp_host = 'invalid'", sql)
+
     def test_sin_paths_el_cli_se_omite_compat(self):
         self.stg.write({"python_bin": False, "odoo_bin": False})
         sql = self.server._render_neutralization_sql("https://stg.example.com")

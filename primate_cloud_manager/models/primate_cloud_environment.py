@@ -5507,8 +5507,13 @@ class PrimateCloudEnvironment(models.Model):
             "ir_module_module where state = 'installed')",
             "union all select 'attachments_stored=' || (select count(*) from "
             "ir_attachment where store_fname is not null)",
+            # El neutralize OFICIAL deja a propósito UN servidor activo
+            # apuntando a host 'invalid' («neutralization - disable emails»,
+            # base/data/neutralize.sql): bloquea el fallback por CLI. El juez
+            # acepta ese centinela exacto y nada más.
             "union all select 'smtp_active=' || (select count(*) from "
-            "ir_mail_server where active)",
+            "ir_mail_server where active and not (smtp_host = 'invalid' "
+            "and name = 'neutralization - disable emails'))",
             "union all select 'smtp_with_credentials=' || (select count(*) "
             "from ir_mail_server where coalesce(smtp_user, '') <> '' or "
             "coalesce(smtp_pass, '') <> '')",
