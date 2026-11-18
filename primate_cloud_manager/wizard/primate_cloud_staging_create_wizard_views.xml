@@ -80,6 +80,12 @@
                             <field name="backup_retention_days"/>
                         </group>
                     </page>
+                    <page string="Repos" name="repos">
+                        <group>
+                            <field name="branch_overrides"
+                                   placeholder="repo:rama, p. ej. alta_na_pipa:19.0_staging — el resto espeja la rama del origen"/>
+                        </group>
+                    </page>
                     <page string="DNS" name="dns">
                         <group>
                             <field name="elastic_ip"/>

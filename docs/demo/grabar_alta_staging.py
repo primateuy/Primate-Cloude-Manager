@@ -246,8 +246,11 @@ def t1_wizard(page, env_id):
     # Bucket de transferencia del dump (obligatorio): el de backups de la
     # cuenta — ya existe y el rol de la máquina ya tiene acceso.
     page.locator("#transfer_bucket_0").fill("pcm-backups-512060111009")
-    if page.locator("#branch_overrides_0").count():
-        page.locator("#branch_overrides_0").fill("alta_na_pipa:19.0_staging")
+    # Pestaña Repos (campo nuevo 2026-11-18): el fill es ESTRICTO — si el
+    # campo no está, FRENO (saltearlo en silencio clonó alta en 19.0).
+    ox.clic(page, page.locator("a.nav-link", has_text="Repos").first)
+    page.wait_for_selector("#branch_overrides_0", timeout=10000)
+    page.locator("#branch_overrides_0").fill("alta_na_pipa:19.0_staging")
     ox.rotulo(page, "Staging en el MISMO servidor",
               "Segunda instancia · dominio propio en la misma IP fija · "
               "alta_na_pipa en 19.0_staging, el resto en 19.0", 4200)
@@ -311,6 +314,7 @@ def t1_wizard(page, env_id):
 
 
 def t2_checks_servidor(page):
+    abrir_app(page)   # estado limpio: t1 pudo dejar la pantalla en un detalle
     abrir_entorno(page)
     abrir_servidor(page)
     comando(page,
@@ -338,25 +342,26 @@ def t2_checks_servidor(page):
             "for r in %s; do echo \"$r: $(sudo -u odoo git -C %s/$r "
             "rev-parse --abbrev-ref HEAD)\"; done "
             "&& sudo -u odoo git -C %s/alta_na_pipa rev-parse "
-            "--abbrev-ref HEAD | grep -qx 19.0_staging "
-            "&& sudo -u odoo git -C %s/webOCA rev-parse --abbrev-ref HEAD "
-            "| grep -qx 19.0"
-            % (" ".join(ORDEN_REPOS), REPOS_DIR, REPOS_DIR, REPOS_DIR),
-            "Ramas: alta_na_pipa en 19.0_staging; el resto en 19.0")
+            "--abbrev-ref HEAD | grep -qx 19.0_staging"
+            % (" ".join(ORDEN_REPOS), REPOS_DIR, REPOS_DIR),
+            "Ramas: alta_na_pipa en 19.0_staging; el resto espeja el origen "
+            "(webOCA vive en 19.0_fix_responsive)")
     marca("conf + addons_path + ramas verificados")
     comando(page,
-            "sudo -u postgres psql -d %s -At -c \"select 'smtp_activos='"
-            "||count(*) from ir_mail_server where active\" "
+            "sudo -u postgres psql -d %s -At -c \"select 'smtp_reales='"
+            "||count(*) from ir_mail_server where active and not "
+            "(smtp_host='invalid' and name='neutralization - disable "
+            "emails')\" | grep -qx smtp_reales=0 "
             "&& sudo -u postgres psql -d %s -At -c \"select count(*) from "
-            "ir_mail_server where active\" | grep -qx 0 "
+            "ir_mail_server where active\" | grep -qx 1 "
             "&& sudo -u postgres psql -d %s -At -c \"select count(*) from "
             "ir_cron where active\" | grep -qx 0 "
             "&& sudo -u postgres psql -d %s -At -c \"select value from "
             "ir_config_parameter where key='web.base.url'\" "
             "| grep -qx https://%s"
             % (STG_DB, STG_DB, STG_DB, STG_DB, STG_DOMINIO),
-            "NEUTRALIZADO verificado: 0 SMTP activos, 0 crons activos, "
-            "URL del staging")
+            "NEUTRALIZADO: 0 SMTP reales (solo el centinela oficial a host "
+            "invalido), 0 crons, URL del staging")
     marca("neutralización verificada")
     comando(page,
             "sudo -u postgres psql -d %s -At -c \"select count(*) from "
@@ -449,9 +454,20 @@ def grabar():
                         ("Copia", "dump + restore + NEUTRALIZE verificado"),
                         ("Sonda", "producción vigilada todo el proceso")],
                        6000)
-            ox.tarjeta(page, "1 · Crear staging", "Wizard + maestra de Daryl")
-            t1_wizard(page, env_id)
-            evento("TRAMO 1 OK")
+            ya_activo = orm("primate.cloud.instance", "search_read",
+                            [[["slug", "=", STG_NOMBRE],
+                              ["state", "=", "active"]], ["id"]],
+                            {"context": {}})
+            if ya_activo:
+                # El montaje ya terminó en una corrida anterior: no se
+                # remonta nada, directo a los checks.
+                evento("instancia ya ACTIVA — directo a los checks")
+                abrir_app(page)
+            else:
+                ox.tarjeta(page, "1 · Crear staging",
+                           "Wizard + maestra de Daryl")
+                t1_wizard(page, env_id)
+                evento("TRAMO 1 OK")
             exigir_prod_viva()
             ox.tarjeta(page, "2 · El staging por dentro",
                        "cgroups · conf · repos · NEUTRALIZADO · padrón")
