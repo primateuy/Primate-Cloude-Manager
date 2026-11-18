@@ -206,31 +206,84 @@ def esperar_flag(page, nombre, titulo, detalle):
 
 
 def t1_wizard(page, env_id):
+    abrir_app(page)
+    # Guard: si una corrida anterior dejó la instancia creada, FRENO (no
+    # montar dos veces).
+    previa = orm("primate.cloud.instance", "search_read",
+                 [[["slug", "=", STG_NOMBRE]], ["id", "state", "env_type"]],
+                 {"context": {}})
+    if previa and previa[0]["state"] == "archived" \
+            and previa[0]["env_type"] == "staging":
+        # Desmontada con triple confirmación (teardown por slug ya corrido):
+        # el registro archivado retiene el slug (UNIQUE env+slug) — se borra
+        # para que el wizard recree limpio.
+        orm("primate.cloud.instance", "unlink", [[previa[0]["id"]]])
+        evento("registro archivado del staging borrado; se recrea limpio")
+    else:
+        # En ERROR el registro NO se borra: es el handle del botón
+        # «Desmontar instancia…» (la limpieza del servidor sale por ahí).
+        assert not previa, (
+            "ya existe una instancia %s (estado %s) — si está en error, "
+            "desmontala primero desde PCM y relanzá" %
+            (STG_NOMBRE, previa and previa[0]["state"]))
     abrir_entorno(page)
     ox.clic(page, page.locator("button", has_text="Crear staging").first)
     page.wait_for_selector("input#name_0, #name_0", timeout=15000)
     page.wait_for_timeout(1500)
+    # PISAR el default del wizard (fill limpia; tipear solo agrega).
+    page.locator("#name_0").fill("")
     ox.tipear(page, page.locator("#name_0"), STG_NOMBRE, 45)
     page.locator("#domain_0").fill(STG_DOMINIO)
     page.locator("#db_name_0").fill(STG_DB)
+    # Base de origen EXPLÍCITA: el intento fallido dejó registrada la base
+    # del staging en el mismo entorno y la validación ya no puede inferirla.
+    campo_db = page.locator("#origin_database_id_0").first
+    campo_db.click()
+    campo_db.fill(ENV_NOMBRE)
+    page.wait_for_timeout(1800)
+    campo_db.press("Enter")   # toma la primera opción (altanapipa)
+    page.wait_for_timeout(800)
+    # Bucket de transferencia del dump (obligatorio): el de backups de la
+    # cuenta — ya existe y el rol de la máquina ya tiene acceso.
+    page.locator("#transfer_bucket_0").fill("pcm-backups-512060111009")
     if page.locator("#branch_overrides_0").count():
         page.locator("#branch_overrides_0").fill("alta_na_pipa:19.0_staging")
     ox.rotulo(page, "Staging en el MISMO servidor",
               "Segunda instancia · dominio propio en la misma IP fija · "
               "alta_na_pipa en 19.0_staging, el resto en 19.0", 4200)
-    # DNS + HTTPS del subdominio de staging.
-    if page.locator("#create_dns_0").count() and not page.locator(
-            "#create_dns_0").is_checked():
+    # DNS + HTTPS del subdominio: los campos viven en la PESTAÑA DNS del
+    # notebook — hay que abrirla o count()=0 y se saltean en silencio.
+    ox.clic(page, page.locator("a.nav-link", has_text="DNS").first)
+    page.wait_for_selector("#create_dns_0", timeout=10000)
+    if not page.locator("#create_dns_0").is_checked():
         ox.clic(page, page.locator("#create_dns_0"))
-    if page.locator("#hosted_zone_id_0").count():
-        page.locator("#hosted_zone_id_0").fill(ZONA)
+    page.locator("#hosted_zone_id_0").fill(ZONA)
     esperar_flag(page, "flag_maestra_stg",
                  "PAUSA: Daryl tipea la maestra DEL STAGING",
                  "Distinta de la de producción, en el campo del wizard")
-    ox.clic(page, page.locator(
-        "button[name=action_create_staging], .o_form_button_save, "
-        "button.btn-primary", has_text=re.compile(
-            "Crear|Confirmar|Guardar")).first)
+    ox.clic(page, page.locator("button[name=action_create_staging]").first)
+    # Verificar que el submit PASÓ: el modal se cierra y la instancia existe.
+    for _ in range(30):
+        if not page.locator("#name_0").count():
+            break
+        page.wait_for_timeout(1000)
+    else:
+        # Leer el diálogo de error / notificación para saber QUÉ rebotó.
+        textos = []
+        for sel in (".o_dialog .modal-body", ".o_error_dialog",
+                    ".o_notification", ".o_form_label.o_field_invalid"):
+            try:
+                textos += [t.strip() for t in
+                           page.locator(sel).all_inner_texts() if t.strip()]
+            except Exception:
+                pass
+        page.screenshot(path=str(HERE / "bruto" / "stg_wizard_freno.png"),
+                        full_page=True)
+        raise RuntimeError("el wizard no se cerró tras Crear — FRENO · %s"
+                           % ("; ".join(textos)[:400] or "sin diálogo visible"))
+    stg = orm("primate.cloud.instance", "search_read",
+              [[["slug", "=", STG_NOMBRE]], ["id", "state"]], {"context": {}})
+    assert stg, "el wizard cerró pero la instancia no existe — FRENO"
     marca("staging encolado")
     ox.rotulo(page, "Montando el staging",
               "Instancia nueva + dump de PRODUCCIÓN (solo lectura) + restore "

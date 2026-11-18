@@ -49,8 +49,10 @@
                         origen de staging se bloquea para todos los grupos.
                     </div>
                     <!-- Desmontar (DESTRUCTIVO): solo el grupo manual, nunca
-                         sobre un importado; abre la triple confirmación. -->
-                    <button t-if="d.can_destroy and !d.is_imported and !d.is_self and d.state === 'active'"
+                         sobre un importado; abre la triple confirmación.
+                         También en ERROR: es el remedio del DIRTY_SLUG (un
+                         montaje fallido se desmonta para reintentar). -->
+                    <button t-if="d.can_destroy and !d.is_imported and !d.is_self and (d.state === 'active' or d.state === 'error')"
                             class="o_pcm_btn o_pcm_btn_danger"
                             t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_destroy_wizard')">
                         <i class="fa fa-trash"/> Desmontar instancia…
