@@ -59,3 +59,24 @@ Todo se administra desde Primate Cloud Manager
 (https://primatecloudmanager.com): estado del servidor, reinicios,
 despliegues de los repos, respaldos y restauración, registros DNS, HTTPS,
 métricas y bitácora de operaciones.
+
+## Staging (2026-11-18)
+
+Montado `https://altanapipa-staging.primatecloudmanager.com`: una segunda
+instancia Odoo en el mismo servidor, con recursos acotados por systemd
+(1 GB de memoria máx., prioridad baja de CPU/disco) para que producción
+siempre mande. Su base es una copia de producción **neutralizada**: correo
+saliente bloqueado (queda solo el centinela oficial de Odoo apuntando a un
+host inválido), crons apagados, URL propia, y el padrón del portal
+anonimizado — las fechas de nacimiento se borran y los usuarios portal
+reales quedan desactivados. Para probar el ingreso de alumnos hay dos
+fichas de prueba: `STAGING-TEST-1` y `STAGING-TEST-2`, fecha 01/01/2000.
+
+Los repos del staging son clones propios: `alta_na_pipa` sigue la rama
+`19.0_staging`; los demás espejan la rama de producción. Diego puede
+probar en staging y, cuando esté conforme, mergear a `19.0` y desplegar
+en producción desde PCM.
+
+Para recargar el staging con datos frescos de producción: pantalla de la
+instancia staging → «Refrescar desde producción» (vuelve a copiar y
+neutralizar; jamás escribe sobre producción).
