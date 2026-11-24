@@ -3285,6 +3285,175 @@ class PrimateCloudEnvironment(models.Model):
             comment="pcm domain switch rollback: %s" % slug,
             timeout=120, check=False)
 
+    # ==================================================================
+    # Dominio adicional (alias) — decisión 2026-11-24: una instancia puede
+    # servir por N URLs. El alias es vhost PARALELO + certificado propio.
+    # NUNCA toca el vhost/cert del dominio principal ni web.base.url.
+    # ==================================================================
+    @staticmethod
+    def _alias_vhost_file(instance, domain):
+        """Nombre determinístico del vhost del alias."""
+        return "pcm-%s-alias-%s.conf" % (
+            instance.slug, domain.replace(".", "-"))
+
+    def _alias_failed(self, instance, alias, reason):
+        """Deja el alias en failed con el motivo (el servidor quedó como
+        estaba: lo nuevo se desarma antes de llegar acá)."""
+        alias.sudo().write({"state": "failed",
+                            "error_message": (reason or "")[:400]})
+        instance.message_post(body=_(
+            "No se pudo montar el dominio adicional %(d)s: %(w)s. La "
+            "instancia sigue sirviendo por %(main)s.",
+            d=alias.name, w=reason, main=instance.main_url or "—"))
+        self._log("alias_add", result="failed",
+                  name=_("Dominio adicional: %s") % alias.name,
+                  error_message=reason, record=instance)
+        return False
+
+    def _mount_instance_alias(self, instance, alias):
+        """Monta ``alias.name`` como URL adicional de ``instance``.
+
+        Pasos: el dominio tiene que resolver a la IP del servidor (dig desde
+        el servidor, sin AAAA ajeno) → vhost paralelo con el template de la
+        instancia (adopción: si ya hay un vhost sirviendo ese server_name,
+        no se escribe otro) → certbot → GET https real. Si el certificado o
+        la verificación fallan y el vhost lo escribimos nosotros, se desarma
+        y el servidor queda como estaba.
+        """
+        self.ensure_one()
+        instance.ensure_one()
+        domain = alias.name
+        machine = self._active_machine()
+        if not machine or not machine.public_ip:
+            return self._alias_failed(instance, alias, _(
+                "El servidor no tiene máquina activa con IP pública."))
+        machine._exigir_gestion_habilitada("domain_change")
+        base = self.account_id._get_aws_service()
+        ssm = aws_ssm.AwsSsmService(base)
+        region = machine.region or self.account_id.default_region
+        use_staging = self._ssl_use_le_staging()
+
+        problem = self._domain_resolution_problem(
+            ssm, machine, region, domain)
+        if problem:
+            return self._alias_failed(instance, alias, problem)
+
+        # vhost paralelo (o adopción de uno ya montado a mano).
+        archivo = self._alias_vhost_file(instance, domain)
+        domain_re = domain.replace(".", r"\.")
+        script = (
+            "set -e\n"
+            "A=/etc/nginx/sites-available; E=/etc/nginx/sites-enabled\n"
+            "if grep -rqsE 'server_name[^;]*( |^)%(re)s( |;)' $E/; then\n"
+            '  echo "PCM_ALIAS_ADOPTADO"\n'
+            "else\n"
+            "cat > $A/%(f)s <<'PCM_NGINX'\n"
+            "%(vhost)s"
+            "PCM_NGINX\n"
+            "ln -sf $A/%(f)s $E/%(f)s\n"
+            "if ! nginx -t; then rm -f $E/%(f)s $A/%(f)s; exit 1; fi\n"
+            "systemctl reload nginx\n"
+            'echo "PCM_VHOST_OK"\n'
+            "fi" % {
+                "f": archivo, "re": domain_re,
+                "vhost": self._instance_vhost(instance, domain)})
+        output = ssm.run_script(
+            machine.aws_instance_id, script, region=region,
+            comment="pcm alias vhost: %s" % domain,
+            timeout=120, check=False)
+        stdout = output.get("stdout") or ""
+        adoptado = "PCM_ALIAS_ADOPTADO" in stdout
+        if not adoptado and "PCM_VHOST_OK" not in stdout:
+            why = (output.get("stderr") or output.get("status") or "?")[:200]
+            return self._alias_failed(instance, alias, _(
+                "No pude preparar nginx para %(d)s: %(w)s. No se cambió "
+                "nada.", d=domain, w=why))
+
+        # Certificado + verificación https REAL (idempotente si fue adopción).
+        ok, detail = self._ssl_run_certbot(
+            ssm, machine, region, instance, domain, use_staging)
+        if ok:
+            ok, detail = self._ssl_verify_https(
+                domain, verify=not use_staging)
+        if not ok:
+            if not adoptado:
+                self._domain_switch_rollback(
+                    ssm, machine, region, instance.slug, archivo, domain,
+                    instance.main_url)
+            return self._alias_failed(instance, alias, _(
+                "No se pudo emitir/verificar HTTPS para %(d)s: %(w)s.%(undo)s",
+                d=domain, w=detail,
+                undo="" if adoptado else _(" Se desarmó el vhost nuevo.")))
+
+        expiry = self._ssl_read_cert_expiry(ssm, machine, region, domain)
+        alias.sudo().write({"state": "active", "error_message": False,
+                            "ssl_cert_expiry": expiry})
+        instance.message_post(body=_(
+            "✅ Dominio adicional activo: https://%(d)s (certificado "
+            "verificado, vence el %(exp)s)%(adop)s. El principal sigue "
+            "siendo %(main)s y web.base.url no se tocó.",
+            d=domain, exp=expiry or "?",
+            adop=_(" — vhost ya montado, adoptado") if adoptado else "",
+            main=instance.main_url or "—"))
+        self._log("alias_add", name=_("Dominio adicional: %s") % domain,
+                  record=instance)
+        return True
+
+    def _remove_instance_alias(self, instance, alias):
+        """Quita el alias del servidor: borra su(s) vhost (NUNCA el del
+        dominio principal), su certificado, y recién entonces el registro."""
+        self.ensure_one()
+        instance.ensure_one()
+        domain = alias.name
+        machine = self._active_machine()
+        if machine:
+            machine._exigir_gestion_habilitada("domain_change")
+            ssm = aws_ssm.AwsSsmService(self.account_id._get_aws_service())
+            region = machine.region or self.account_id.default_region
+            domain_re = domain.replace(".", r"\.")
+            script = (
+                "set -e\n"
+                "A=/etc/nginx/sites-available; E=/etc/nginx/sites-enabled\n"
+                "MAIN=$A/pcm-%(slug)s.conf\n"
+                "for f in $(grep -lsE 'server_name[^;]*( |^)%(re)s( |;)' "
+                "$A/* 2>/dev/null); do\n"
+                '  [ "$f" = "$MAIN" ] && continue\n'
+                '  rm -f "$f" "$E/$(basename $f)"\n'
+                "done\n"
+                "nginx -t && systemctl reload nginx\n"
+                'echo "PCM_ALIAS_RM_OK"' % {
+                    "slug": instance.slug, "re": domain_re})
+            output = ssm.run_script(
+                machine.aws_instance_id, script, region=region,
+                comment="pcm alias remove: %s" % domain,
+                timeout=120, check=False)
+            if "PCM_ALIAS_RM_OK" not in (output.get("stdout") or ""):
+                why = (output.get("stderr")
+                       or output.get("status") or "?")[:200]
+                alias.sudo().write({"state": "failed",
+                                    "error_message": why})
+                instance.message_post(body=_(
+                    "No pude quitar el dominio adicional %(d)s del "
+                    "servidor: %(w)s. El alias sigue registrado.",
+                    d=domain, w=why))
+                self._log("alias_remove", result="failed",
+                          name=_("Quitar dominio adicional: %s") % domain,
+                          error_message=why, record=instance)
+                return False
+            self._ssl_delete_certificate(
+                ssm, machine, region, domain, record=instance)
+        instance.message_post(body=_(
+            "Dominio adicional quitado: %(d)s (vhost y certificado "
+            "borrados%(nm)s). El principal (%(main)s) no se tocó.",
+            d=domain,
+            nm="" if machine else _(" — sin máquina activa, solo registro"),
+            main=instance.main_url or "—"))
+        self._log("alias_remove",
+                  name=_("Quitar dominio adicional: %s") % domain,
+                  record=instance)
+        alias.sudo().unlink()
+        return True
+
     @staticmethod
     def _pg_engine_version(pg_version):
         """Mapea la versión mayor de PostgreSQL al EngineVersion de RDS, o None."""

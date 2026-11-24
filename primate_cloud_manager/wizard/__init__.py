@@ -14,3 +14,4 @@ from . import primate_cloud_server_import_wizard
 from . import primate_cloud_destruction_wizard
 from . import primate_cloud_external_import_wizard
 from . import primate_cloud_domain_wizard
+from . import primate_cloud_alias_wizard

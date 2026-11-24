@@ -69,6 +69,40 @@
                                 t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_attach_domain_wizard')">
                             <i class="fa fa-link"/> Asociar dominio existente
                         </button>
+                        <button class="o_pcm_btn"
+                                t-on-click="() => this.runOn('primate.cloud.instance', d.id, 'action_open_alias_wizard')">
+                            <i class="fa fa-plus-circle"/> Agregar dominio adicional
+                        </button>
+                    </div>
+                    <!-- Dominios adicionales (2026-11-24): URLs extra que
+                         sirven la misma instancia; la principal no se toca. -->
+                    <div t-if="d.aliases and d.aliases.length"
+                         class="o_pcm_note o_pcm_alias_list">
+                        <div t-foreach="d.aliases" t-as="al" t-key="al.id">
+                            <i t-att-class="al.state === 'active' ? 'fa fa-lock'
+                                : al.state === 'failed'
+                                ? 'fa fa-exclamation-triangle o_pcm_err'
+                                : 'fa fa-clock-o'"/>
+                            <b>Dominio adicional: </b>
+                            <a t-if="al.state === 'active'" class="o_pcm_link"
+                               t-att-href="'https://' + al.name" target="_blank"
+                               rel="noopener"><t t-out="al.name"/></a>
+                            <t t-else="" t-out="al.name"/>
+                            <span class="o_pcm_muted"> — <t t-out="al.state_label"/>
+                                <t t-if="al.error"> (<t t-out="al.error"/>)</t>
+                            </span>
+                            <t t-if="d.can_manage_domain and !d.is_imported">
+                                <button t-if="al.state === 'failed'"
+                                        class="o_pcm_btn o_pcm_btn_mini"
+                                        t-on-click="() => this.runOn('primate.cloud.instance.alias', al.id, 'action_retry')">
+                                    <i class="fa fa-refresh"/> Reintentar
+                                </button>
+                                <button class="o_pcm_btn o_pcm_btn_mini"
+                                        t-on-click="() => this.runOn('primate.cloud.instance.alias', al.id, 'action_remove', { confirm: 'Se borra el vhost y el certificado de ' + al.name + ' en el servidor. El dominio principal no se toca. ¿Quitar?' })">
+                                    <i class="fa fa-times"/> Quitar
+                                </button>
+                            </t>
+                        </div>
                     </div>
                     <div t-if="d.domain_switch and d.domain_switch.state === 'running'"
                          class="o_pcm_note o_pcm_ssl_note o_pcm_domain_switch">

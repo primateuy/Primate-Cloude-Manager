@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from . import primate_cloud_instance
+from . import primate_cloud_instance_alias
 from . import primate_cloud_operation_log
 from . import primate_cloud_backup_policy
 from . import primate_cloud_backup

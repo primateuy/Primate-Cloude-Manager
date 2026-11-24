@@ -43,3 +43,4 @@ from . import test_perfil_pcm
 from . import test_monitoreo_cloudwatch
 from . import test_montaje_a_la_carta
 from . import test_staging_alta
+from . import test_alias_dominio

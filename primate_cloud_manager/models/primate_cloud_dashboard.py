@@ -737,6 +737,16 @@ class PrimateCloudDashboard(models.AbstractModel):
                 "sync_state": r.sync_state,
                 "sync_state_label": sync_labels.get(r.sync_state, r.sync_state or ""),
             } for r in repos],
+            # Dominios adicionales (alias, 2026-11-24): N URLs extra que
+            # sirven la misma instancia, sin tocar la principal.
+            "aliases": [{
+                "id": a.id, "name": a.name, "state": a.state,
+                "state_label": dict(
+                    a._fields["state"].selection).get(a.state, ""),
+                "error": a.error_message or "",
+                "cert_expiry": fields.Datetime.to_string(
+                    a.ssl_cert_expiry) if a.ssl_cert_expiry else "",
+            } for a in inst.alias_ids],
             # Dominio definitivo (2026-10-27): cambio en curso o fallido.
             "domain_switch": {
                 "target": inst.domain_switch_target or "",

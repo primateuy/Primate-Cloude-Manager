@@ -272,6 +272,13 @@ class PrimateCloudInstance(models.Model):
     domain_switch_error = fields.Char(
         string="Motivo (cambio de dominio)", copy=False, readonly=True)
 
+    # --- Dominios adicionales (alias, decisión 2026-11-24) ---
+    # La instancia puede servir por N URLs además de main_url: vhost paralelo
+    # + certificado propio por cada una, sin tocar el principal.
+    alias_ids = fields.One2many(
+        "primate.cloud.instance.alias", "instance_id",
+        string="Dominios adicionales", copy=False)
+
     active = fields.Boolean(string="Activo", default=True)
     notes = fields.Text(string="Notas")
 
@@ -779,6 +786,20 @@ class PrimateCloudInstance(models.Model):
         """Botón «Asociar dominio existente»: el registro lo cargó el usuario
         (Route 53 a mano u otro DNS); PCM solo verifica y cambia."""
         return self._open_domain_wizard("manual")
+
+    def action_open_alias_wizard(self):
+        """Botón «Agregar dominio adicional»: una SEGUNDA URL para la misma
+        instancia (vhost paralelo + certificado), sin tocar la principal."""
+        self.ensure_one()
+        self._pcm_assert_not_imported(_("agregar un dominio adicional"))
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "primate.cloud.alias.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "name": _("Agregar dominio adicional"),
+            "context": {"default_instance_id": self.id},
+        }
 
     def _domain_switch_failed(self, reason, code):
         """Deja el motivo a la vista (la instancia sigue como estaba)."""

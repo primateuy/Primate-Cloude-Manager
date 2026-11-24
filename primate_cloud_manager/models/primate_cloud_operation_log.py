@@ -59,6 +59,9 @@ ACTION_TYPES = [
     # las instancias Odoo de cada uno (sólo lectura en el servidor).
     ("server_import", "Importar servidores"),
     ("instance_discover", "Descubrir instancias Odoo"),
+    # Dominio adicional (alias) de una instancia — decisión 2026-11-24.
+    ("alias_add", "Agregar dominio adicional"),
+    ("alias_remove", "Quitar dominio adicional"),
     ("other", "Otra"),
 ]
 

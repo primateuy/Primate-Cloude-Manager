@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "Primate Cloud Manager",
-    "version": "19.0.1.10.1",
+    "version": "19.0.1.11.0",
     "author": "PrimateUY",
     "website": "https://primate.uy",
     "category": "Technical",
@@ -63,6 +63,7 @@ Arquitectura extensible para Azure y GCP en fases futuras.
         "views/primate_cloud_menus.xml",
         "wizard/primate_cloud_external_import_wizard_views.xml",
         "wizard/primate_cloud_domain_wizard_views.xml",
+        "wizard/primate_cloud_alias_wizard_views.xml",
         # Importación de servidores (F2): después de los menús, porque su
         # menuitem cuelga de menu_primate_cloud_operations.
         "views/primate_cloud_server_import_views.xml",
