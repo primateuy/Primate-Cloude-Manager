@@ -4,9 +4,11 @@
 Cruza el historial remoto (GitHub API) y el estado real del servidor (commit
 desplegado y módulos en disco/base, vía SSM) para detectar desfasajes.
 """
+import base64
 import json
 import logging
 import shlex
+import zlib
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -23,10 +25,17 @@ TOKEN_MASK = "********"
 # Cantidad de commits que se traen por sincronización.
 COMMITS_PER_SYNC = 50
 
+# Centinela de la salida comprimida del escáner (ver _SCAN_MODULES_PY).
+_SCAN_Z64 = "PCMZ64:"
+
 # Script remoto (python) que escanea los módulos Odoo bajo una ruta y emite JSON.
 # Se corre vía SSM; lee cada __manifest__.py con ast.literal_eval (sin ejecutar).
+# La salida va COMPRIMIDA (zlib+base64, centinela PCMZ64:): SSM devuelve como
+# máximo 24.000 caracteres de stdout y el JSON plano de un repo grande los
+# pasa (sale-workflow, 110 módulos ≈ >24 KB → JSON truncado → job muerto,
+# bj-uat 2026-11-25). Comprimido entra con ~10× de margen.
 _SCAN_MODULES_PY = r"""
-import ast, json, os
+import ast, base64, json, os, zlib
 base = {path!r}
 mods = []
 for root, dirs, files in os.walk(base):
@@ -47,7 +56,8 @@ for root, dirs, files in os.walk(base):
             "depends": ",".join(data.get("depends") or []),
         }})
         dirs[:] = []  # los módulos no se anidan: no descender más
-print(json.dumps(mods))
+crudo = json.dumps(mods).encode("utf-8")
+print("PCMZ64:" + base64.b64encode(zlib.compress(crudo, 9)).decode("ascii"))
 """
 
 
@@ -399,7 +409,18 @@ class PrimateCloudRepository(models.Model):
         if output.get("status") != "Success":
             raise UserError(_("El escaneo de módulos falló: %s")
                             % (output.get("stderr") or output.get("status")))
-        return json.loads((output.get("stdout") or "[]").strip() or "[]")
+        raw = (output.get("stdout") or "").strip()
+        if raw.startswith(_SCAN_Z64):
+            raw = zlib.decompress(
+                base64.b64decode(raw[len(_SCAN_Z64):])).decode("utf-8")
+        try:
+            return json.loads(raw or "[]")
+        except ValueError as error:
+            # Un JSON ilegible acá casi siempre es el truncado de SSM (24.000
+            # caracteres de stdout): que el mensaje lo diga, no «Expecting ','».
+            raise UserError(_(
+                "La salida del escaneo no es JSON válido (¿truncada por el "
+                "límite de 24.000 caracteres de SSM?): %s") % error) from error
 
     def _fetch_db_module_states(self, ssm, instance, names):
         """Consulta ir_module_module de la base remota. Devuelve {name: (state, ver)}.

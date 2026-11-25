@@ -310,6 +310,53 @@ class TestRepository(TransactionCase):
         consulta = _shlex.split(comando)[-1]   # el argumento de psql -c
         self.assertIn("WHERE name IN ('alfa', 'zeta')", consulta)
 
+    def test_scan_comprimido_repo_grande_entra_en_el_tope_ssm(self):
+        """La salida del escáner va comprimida (PCMZ64:): el JSON plano de un
+        repo grande pasa los 24.000 caracteres de stdout que devuelve SSM y
+        el truncado mataba el job (sale-workflow, 110 módulos, bj-uat
+        2026-11-25). Comprimido, 120 módulos entran con margen de sobra."""
+        import base64 as _b64
+        import json as _json
+        import zlib as _zlib
+        mods = [{
+            "technical_name": "modulo_%03d" % i,
+            "functional_name": "Módulo de prueba número %d" % i,
+            "author": "Odoo Community Association (OCA)",
+            "category": "Sales/Sales",
+            "version": "19.0.1.0.%d" % i,
+            "depends": "sale,stock,account,sale_management",
+        } for i in range(120)]
+        plano = _json.dumps(mods)
+        self.assertGreater(len(plano), 24000)   # el plano NO entraba
+        stdout = "PCMZ64:" + _b64.b64encode(
+            _zlib.compress(plano.encode("utf-8"), 9)).decode("ascii")
+        self.assertLess(len(stdout), 24000)     # el comprimido SÍ entra
+        fake_ssm = mock.Mock()
+        fake_ssm.run_script.return_value = {
+            "status": "Success", "stdout": stdout + "\n"}
+        with mock.patch.object(type(self.instance), "_get_ssm_service",
+                               return_value=fake_ssm):
+            ok = self.repo.job_detect_modules()
+        self.assertTrue(ok)
+        self.assertEqual(len(self.repo.module_ids), 120)
+
+    def test_scan_truncado_da_error_claro(self):
+        """Si igual llega JSON ilegible (truncado SSM), el job no muere con
+        «Expecting ','»: el error nombra el límite de 24.000 caracteres."""
+        fake_ssm = mock.Mock()
+        fake_ssm.run_script.return_value = {
+            "status": "Success",
+            "stdout": '[{"technical_name": "alfa", "vers'}  # cortado
+        with mock.patch.object(type(self.instance), "_get_ssm_service",
+                               return_value=fake_ssm):
+            ok = self.repo.job_detect_modules()
+        self.assertFalse(ok)
+        log = self.env["primate.cloud.operation.log"].search(
+            [("resource_id", "=", self.repo.id),
+             ("action_type", "=", "module_detect"), ("result", "=", "failed")],
+            order="id desc", limit=1)
+        self.assertIn("24.000", log.error_message or "")
+
     def test_job_detect_modules_sin_base_queda_not_found(self):
         scan_json = '[{"technical_name": "mod_a", "version": "1.0"}]'
         fake_ssm = mock.Mock()
